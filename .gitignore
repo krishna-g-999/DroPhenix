@@ -68,3 +68,4 @@ fix_*.bat
 run_*.bat 
 validate_drophenix*.py 
 generate_protocol_diagram.py 
+_archive/ 

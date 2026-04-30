@@ -160,7 +160,6 @@ PAGES = [
     "Trajectory Clustering",
     "Translational Score",
     "Statistical Analysis",
-    "Live Recording",
     "Video Analysis",
     "CSV Upload",
     "Export",
@@ -1756,10 +1755,10 @@ def page_recording():
         from modules.auto_recording import render as _ar_render
         _ar_render(st.subheader, st.info, st.warning, st.success)
     except ImportError:
-        render_header("Live Recording", "Camera configuration and recording control")
+        render_header( "Camera configuration and recording control")
         st.error("auto_recording module not found. Place auto_recording.py in modules/ folder.")
     except Exception as _e:
-        render_header("Live Recording", "Camera configuration and recording control")
+        render_header( "Camera configuration and recording control")
         st.error(f"Recording page error: {_e}")
         import traceback
         st.code(traceback.format_exc())
