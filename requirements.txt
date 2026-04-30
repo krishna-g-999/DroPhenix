@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DroPhenix  |  requirements.txt  (v2.0  –  April 2026)
+# Install:  pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Core data science ────────────────────────────────────────────────────────
+numpy>=1.26.0,<3.0.0
+pandas>=2.0.0,<3.0.0
+scipy>=1.11.0,<2.0.0
+scikit-learn>=1.4.0,<2.0.0
+scikit-image>=0.21.0,<1.0.0
+
+# ── Visualisation ────────────────────────────────────────────────────────────
+plotly>=5.18.0,<7.0.0
+
+# ── Streamlit & live video stack ─────────────────────────────────────────────
+streamlit>=1.32.0,<2.0.0
+streamlit-webrtc>=0.47.0       # browser-based webcam capture
+av>=11.0.0                     # PyAV — video decode/encode (required by webrtc)
+
+# ── Computer vision (video analysis + live recording) ────────────────────────
+opencv-python-headless>=4.9.0  # headless build — no Qt/GUI dependency needed
+                               # in server / conda envs; drop-in for opencv-python
+
+# ── File I/O ─────────────────────────────────────────────────────────────────
+openpyxl>=3.1.0,<4.0.0        # Excel read/write
+pdfplumber>=0.10.0,<1.0.0     # PDF data extraction
+
+# ── Cheminformatics (optional — SMILES / SAI-Net descriptors) ────────────────
+# Uncomment if RDKit is installed via conda (preferred) or pip:
+# rdkit>=2023.9.0
+#
+# Conda install (recommended — avoids pip build issues):
+#   conda install -c conda-forge rdkit
+
+# ── Statistics ───────────────────────────────────────────────────────────────
+# scipy already covers: stats, integrate, optimize  (listed above)
+# No extra statsmodels needed — BH correction implemented natively in
+# DroPhenix stats_engine.py
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTES
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. opencv-python-headless is preferred over opencv-python in conda envs
+#    because it avoids Qt/libGL conflicts on Windows HPC / server nodes.
+#    Both provide identical cv2 API — video_analyzer.py works unchanged.
+#
+# 2. streamlit-webrtc requires a STUN/TURN server for remote (non-localhost)
+#    deployments.  For local lab use (localhost:8501), no config needed.
+#    For cloud (Streamlit Community Cloud / SSSIHL server), add to app.py:
+#      RTC_CONFIGURATION = {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+#
+# 3. av (PyAV) version must match opencv-python-headless major version.
+#    av>=11 is tested with opencv>=4.9.  Do not mix av<10 with opencv>=4.10.
+#
+# 4. rdkit: always install via conda, never pip in production:
+#      conda install -c conda-forge rdkit
+#    Pip builds of rdkit can silently fail on Windows without Visual C++ 14+.
+# ─────────────────────────────────────────────────────────────────────────────

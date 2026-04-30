@@ -1,0 +1,145 @@
+DroPhenix Analytics — Data Collection & CSV Upload Protocol
+=============================================================
+Version 2.0 | SSSIHL | Science for Society
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — CSV TEMPLATE SPECIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Required columns (header row must match exactly):
+
+  Column           Type      Description
+  ───────────────────────────────────────────────────────────
+  Genotype         text      Fly line name, e.g. Oregon-R_WT
+  Treatment        text      Drug / condition, e.g. Spermine_1mM
+  Sex              text      Male  OR  Female  (case-sensitive)
+  Replicate        integer   Trial number, e.g. 1, 2, 3
+  Time             integer   Seconds after tap, e.g. 10, 20, 30, 60
+  Count_climbed    integer   Flies ABOVE threshold line
+  n_total_flies    integer   All flies in vial (climbed + not climbed)
+
+Minimum experiment:
+  ≥ 2 genotypes (at least one must be Wild-type)
+  ≥ 2 treatments (at least one must be Vehicle/Untreated)
+  Both sexes (required for SDQ calculation)
+  ≥ 3 replicates per group
+  ≥ 3 time-points (e.g. 10 s, 30 s, 60 s)
+
+Example row:
+  Oregon-R_WT, Untreated, Male, 1, 30, 17, 22
+
+Notes:
+  - Separator: comma (CSV)
+  - No spaces around commas
+  - No merged cells (this is NOT Excel formatting)
+  - Genotype and Treatment names must be consistent across all rows
+    (spelling must match exactly — "Oregon-R_WT" ≠ "OregonWT")
+  - Wild-type label and vehicle label are selected in DroPhenix
+    during configuration (Data Input → Group Metadata tab)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — VIAL PREPARATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Materials:
+  • Clear borosilicate glass vials: 25 mm diameter × 95 mm height
+    (standard Drosophila culture vials work perfectly)
+  • Permanent marker (fine-tip, black or blue)
+  • Ruler or printed threshold-line sticker
+  • Foam-padded surface for tapping
+
+Threshold line:
+  • Mark a horizontal line at 8 cm from the BOTTOM of the vial
+  • Flies above this line = "climbed" = Count_climbed
+  • Flies at or below this line = "not climbed"
+  • Use the same line height for ALL vials in the experiment
+
+Fly density:
+  • 15–25 flies per vial (20 is optimal)
+  • Do not mix sexes within a vial
+  • Use flies aged 3–7 days post-eclosion for best sensitivity
+  • Age-match all groups within ± 1 day
+
+Vial labelling:
+  • Label each vial on the side (not the bottom) before flies are added
+  • Format: Genotype_Treatment_Sex_Replicate
+    Example: TDP43_Spermine_Male_Rep1
+  • Arrange vials in a consistent grid rack:
+      Row    = Genotype (e.g. Row 1 = WT, Row 2 = TDP43, Row 3 = FUS)
+      Column = Treatment-Replicate (e.g. Col 1 = Unt_R1, Col 2 = Unt_R2 …)
+    Keep Male and Female vials in separate rack sections (left / right)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — RECORDING PROTOCOL (Negative Geotaxis)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1 — Acclimatise (30 min before assay)
+  Transfer flies to fresh vials (avoids food contamination artefact).
+  Optional: fast for 4 h to reduce inter-fly variance.
+
+Step 2 — Camera setup
+  Place camera or phone on a tripod at a fixed distance.
+  The threshold line on ALL vials must be visible in the same frame.
+  Recommended: record all vials simultaneously as a single video.
+  Ensure uniform lighting (diffuse, no shadows on threshold line).
+
+Step 3 — Settle period (60 seconds, no tapping)
+  Place vials upright in rack. Wait 60 s. Do NOT disturb.
+  This allows flies to walk to random positions before the tap.
+
+Step 4 — Tap down and start timer
+  Tap vials sharply on the padded surface THREE times in rapid succession.
+  Start stopwatch/video timer IMMEDIATELY after the third tap.
+  All flies should now be at the bottom of the vial.
+
+Step 5 — Count at each time-point
+  Count flies ABOVE the threshold line at:
+    T = 10 s   (early climbing burst — sensitive to acute motor function)
+    T = 20 s   (intermediate — most discriminative for PI)
+    T = 30 s   (plateau start — used for AUC and t50 calculation)
+    T = 60 s   (late — detects sustained vs. transient rescue)
+  If using video: pause frame at each time-point and count manually.
+  If counting live: have one observer per vial OR one observer per row.
+
+Step 6 — Rest interval
+  Wait 5 minutes between consecutive trials on the SAME vials.
+  This avoids fatigue artefact.
+  Each trial = one Replicate in DroPhenix.
+  Perform ≥ 3 replicates (= 3 full tap-count cycles per vial).
+
+Step 7 — Enter data
+  Open drophenix_data_template.csv (supplied with DroPhenix).
+  Enter one row per Vial × Time-point × Replicate.
+  Save as CSV (not Excel .xlsx — convert before upload if needed).
+  Upload via DroPhenix → Data Input → Upload CSV or Excel.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — DRUG TREATMENT GUIDELINES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Administration route: mix compound in fly food (most common)
+    or dissolve in 1% sucrose solution (for compounds insoluble in agar).
+  Duration: chronic exposure 7–14 days is recommended for neuromodulators.
+  Vehicle control: 1% DMSO in food (if compound is DMSO-soluble)
+    OR standard fly food (for water-soluble compounds).
+  Dose-response: test ≥ 3 concentrations if doing TCS ranking.
+  Label the Treatment column with the compound name AND concentration:
+    e.g.  Spermine_1mM   Pantothenate_50uM   Vehicle_1pctDMSO
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — COMMON ERRORS TO AVOID
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ✗  Inconsistent genotype names across rows (caps / spelling)
+  ✗  Count_climbed > n_total_flies (impossible count — DroPhenix flags this)
+  ✗  Missing Sex column or using M/F instead of Male/Female
+  ✗  Only one sex group (SDQ cannot be computed)
+  ✗  Only one time-point per vial (t50 and AUC require ≥ 3 time-points)
+  ✗  Counting within 5 s of the tap (flies still mid-flight — wait 10 s)
+  ✗  Different threshold line heights across vials
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Citation:
+  Gunanathan K, Sivaramakrishnan V. (2026). DroPhenix Analytics v2.0.
+  SSSIHL / SAI-Net. Science for Society.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

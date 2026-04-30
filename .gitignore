@@ -1,0 +1,62 @@
+# Backups and patch scripts
+app*.bak*
+app_backup_*
+app_before_*
+app_broken_*
+app.py.bak*
+app.backup_*
+app.bak_*
+fix_*.py
+patch_*.py
+install_*.py
+quick_install_*.py
+restore_*.py
+apply_design_*.py
+nuclear_fix.py
+nuclear_clean_push.bat
+diagnose_*.py
+ast_fix_*.py
+block*.py
+page_home_v*.py
+page_motor_decline.py
+styles_v*.py
+config.toml
+gitignore
+manuscript_readiness.md
+# Old folders
+pages_old/
+modules_frozen_v2/
+modules/__pycache__/
+__pycache__/
+# Module artefacts
+modules/*.alibak
+modules/*.bak_dshow
+modules/*.vizbak
+modules/*_backup*.py
+modules/*_bak*.py
+modules/patch_visualizer.py
+modules/test_modules.py
+modules/app_fixed_tabs.py
+modules/styles_backup_*.py
+modules/fly_detector_bak.py
+modules/videoanalyzer.py
+modules/auto_recording.py
+modules/camera_manager.py
+modules/page_video_analyzer.py
+# Generated outputs
+recordings/
+validation_output/
+drophenix_figures/
+vial_setup_protocol.png
+# Python artefacts
+*.pyc
+*.pyo
+*.egg-info/
+.env
+.venv/
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+# Secrets
+.streamlit/secrets.toml
