@@ -60,3 +60,11 @@ Thumbs.db
 desktop.ini
 # Secrets
 .streamlit/secrets.toml
+INSTALL_GUIDE.txt 
+add_missing_deps.bat 
+clean_and_push.bat 
+deploy_auto_recording.bat 
+fix_*.bat 
+run_*.bat 
+validate_drophenix*.py 
+generate_protocol_diagram.py 
