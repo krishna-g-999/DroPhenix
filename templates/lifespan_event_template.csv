@@ -1,0 +1,12 @@
+Genotype,Treatment,Sex,Time,Event
+Oregon-WT,Vehicle,Male,62,1
+Oregon-WT,Vehicle,Male,68,1
+Oregon-WT,Vehicle,Male,90,0
+Oregon-WT,Drug,Male,65,1
+Oregon-WT,Drug,Male,71,1
+TDP43,Vehicle,Male,28,1
+TDP43,Vehicle,Male,33,1
+TDP43,Vehicle,Male,41,1
+TDP43,Drug,Male,44,1
+TDP43,Drug,Male,52,1
+TDP43,Drug,Male,90,0

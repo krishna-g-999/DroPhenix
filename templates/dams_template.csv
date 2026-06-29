@@ -1,0 +1,11 @@
+Genotype,Treatment,Sex,FlyID,Time_min,Activity
+Oregon-WT,Vehicle,Male,WT_V_M_01,0,12
+Oregon-WT,Vehicle,Male,WT_V_M_01,1,8
+Oregon-WT,Vehicle,Male,WT_V_M_01,2,0
+Oregon-WT,Vehicle,Male,WT_V_M_01,3,0
+Oregon-WT,Vehicle,Male,WT_V_M_01,4,5
+TDP43,Vehicle,Male,TD_V_M_01,0,3
+TDP43,Vehicle,Male,TD_V_M_01,1,0
+TDP43,Vehicle,Male,TD_V_M_01,2,0
+TDP43,Vehicle,Male,TD_V_M_01,3,0
+TDP43,Vehicle,Male,TD_V_M_01,4,2

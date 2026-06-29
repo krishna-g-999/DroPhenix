@@ -1,0 +1,16 @@
+Genotype,Treatment,Sex,Replicate,Age,Time,Count_climbed,n_total_flies
+Oregon-WT,Vehicle,Male,1,5,30,18,20
+Oregon-WT,Vehicle,Male,1,15,30,17,20
+Oregon-WT,Vehicle,Male,1,25,30,17,20
+Oregon-WT,Vehicle,Male,1,35,30,16,20
+Oregon-WT,Vehicle,Male,1,45,30,16,20
+TDP43,Vehicle,Male,1,5,30,16,20
+TDP43,Vehicle,Male,1,15,30,12,20
+TDP43,Vehicle,Male,1,25,30,8,20
+TDP43,Vehicle,Male,1,35,30,5,20
+TDP43,Vehicle,Male,1,45,30,3,20
+TDP43,Drug,Male,1,5,30,16,20
+TDP43,Drug,Male,1,15,30,14,20
+TDP43,Drug,Male,1,25,30,11,20
+TDP43,Drug,Male,1,35,30,9,20
+TDP43,Drug,Male,1,45,30,7,20

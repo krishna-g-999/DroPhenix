@@ -1,0 +1,11 @@
+Genotype,Treatment,Sex,Day,Dead_count,Censored_count,Total_start
+Oregon-WT,Vehicle,Male,20,1,0,50
+Oregon-WT,Vehicle,Male,40,8,0,50
+Oregon-WT,Vehicle,Male,60,22,0,50
+Oregon-WT,Vehicle,Male,80,17,2,50
+TDP43,Vehicle,Male,15,4,0,48
+TDP43,Vehicle,Male,30,20,0,48
+TDP43,Vehicle,Male,45,21,3,48
+TDP43,Drug,Male,20,3,0,50
+TDP43,Drug,Male,40,18,0,50
+TDP43,Drug,Male,60,24,5,50

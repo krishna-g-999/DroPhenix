@@ -1,0 +1,7 @@
+Genotype,Treatment,Sex,FlyID,duration_s,mean_speed_mm_s,path_length_mm,displacement_mm,tortuosity
+Oregon-WT,Vehicle,Male,WT_V_01,60,1.02,61.2,53.0,1.15
+Oregon-WT,Vehicle,Male,WT_V_02,60,0.98,58.8,51.1,1.15
+TDP43,Vehicle,Male,TD_V_01,60,0.51,30.6,21.1,1.45
+TDP43,Vehicle,Male,TD_V_02,60,0.55,33.0,22.0,1.50
+TDP43,Drug,Male,TD_D_01,60,0.79,47.4,37.0,1.28
+TDP43,Drug,Male,TD_D_02,60,0.76,45.6,36.2,1.26
