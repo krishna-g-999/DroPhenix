@@ -34,9 +34,12 @@ pdfplumber>=0.10.0,<1.0.0     # PDF data extraction
 #   conda install -c conda-forge rdkit
 
 # ── Statistics ───────────────────────────────────────────────────────────────
-# scipy already covers: stats, integrate, optimize  (listed above)
-# No extra statsmodels needed — BH correction implemented natively in
-# DroPhenix stats_engine.py
+# scipy covers stats/integrate/optimize; BH-FDR is implemented natively in
+# stats_engine.py. statsmodels IS required at runtime — it is the numerical core
+# of the survival module (Kaplan-Meier SurvfuncRight, log-rank survdiff, Cox
+# PHReg) and the meta-analytic drug-ranking pooling. (statsmodels pulls in patsy
+# automatically.)
+statsmodels>=0.14.0,<1.0.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NOTES
