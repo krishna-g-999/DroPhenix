@@ -33,8 +33,14 @@ plt.rcParams.update({
 })
 
 def _panel(ax, letter):
-    ax.text(-0.16, 1.06, letter, transform=ax.transAxes, fontsize=15,
+    ax.text(-0.16, 1.06, letter, transform=ax.transAxes, fontsize=14,
             fontweight="bold", va="top", ha="left")
+
+# Single, consistent figure-title style for ALL figures (same font/size/weight/align)
+SUP_KW = dict(fontsize=13, fontweight="bold", ha="left", x=0.02)
+
+def _subtitle(fig, text, y):
+    fig.text(0.02, y, text, ha="left", fontsize=9.5, color="#5A5A5A")
 
 # Freireich 1963 6-MP data
 MP_T=[10,7,32,23,22,6,16,34,32,25,11,20,19,6,17,35,6,13,9,6,10]
@@ -139,8 +145,7 @@ def fig_validation():
         f.text(i,r["Therapeutic_Score"]+0.03,f"rank {r['Rank']}",ha="center",va="bottom",fontsize=9)
     _panel(f,"F")
 
-    fig.suptitle("Figure 1.  DroPhenix multi-assay analysis and validation",
-                 fontsize=14,fontweight="bold",y=1.005,x=0.02,ha="left")
+    fig.suptitle("Figure 1.  DroPhenix multi-assay analysis and validation", y=1.005, **SUP_KW)
     fig.tight_layout(rect=[0,0,1,0.99])
     for ext in ("png","pdf"): fig.savefig(OUT/f"Figure1_validation.{ext}",bbox_inches="tight")
     plt.close(fig); print("wrote Figure1_validation.png/pdf")
@@ -202,8 +207,8 @@ def fig_innovation():
     b.legend(frameon=False, loc="upper right")
     _panel(b,"B")
 
-    fig.suptitle("Figure 2.  Core innovation — actuarial cross-strain compound comparison with unequal N",
-                 fontsize=13,fontweight="bold",y=1.02,x=0.02,ha="left")
+    fig.suptitle("Figure 2.  Core innovation: actuarial cross-strain compound comparison with unequal N",
+                 y=1.02, **SUP_KW)
     fig.tight_layout(rect=[0,0,1,0.99])
     for ext in ("png","pdf"): fig.savefig(OUT/f"Figure2_innovation.{ext}",bbox_inches="tight")
     plt.close(fig); print("wrote Figure2_innovation.png/pdf")
@@ -217,15 +222,18 @@ def fig_agreement():
     cs.compare_R(); cs.compare_pyboat()
     rows=[r for r in cs.ROWS if r[6] in ("yes","NO")]
     dp=np.array([float(r[2]) for r in rows]); ref=np.array([float(r[4]) for r in rows])
-    fig,a=plt.subplots(figsize=(5.4,5.2))
+    fig,a=plt.subplots(figsize=(6.6,5.6))
     lim=[min(dp.min(),ref.min())-0.5,max(dp.max(),ref.max())+0.5]
     a.plot(lim,lim,color=OI["grey"],ls="--",lw=1,label="identity (perfect agreement)")
     a.scatter(ref,dp,s=55,color=OI["blue"],edgecolors=OI["black"],linewidth=0.5,zorder=3)
     r=np.corrcoef(ref,dp)[0,1]
     a.set_xlabel("Reference-tool value"); a.set_ylabel("DroPhenix value")
-    a.set_title(f"Figure 3.  Agreement with established tools\n(n={len(rows)} metrics; r={r:.4f}; R, lifelines, statsmodels,\nscipy, pingouin, astropy, pyBOAT)")
+    a.set_title("")  # figure title carried by the suptitle, like Figs 1–2
     a.legend(frameon=False,loc="upper left")
-    fig.tight_layout()
+    fig.suptitle("Figure 3.  Agreement with established tools", y=0.99, **SUP_KW)
+    _subtitle(fig, f"n = {len(rows)} metrics; Pearson r = {r:.4f}; vs R, lifelines, "
+                   f"statsmodels, scipy, pingouin, astropy, pyBOAT", y=0.945)
+    fig.tight_layout(rect=[0,0,1,0.93])
     for ext in ("png","pdf"): fig.savefig(OUT/f"Figure3_tool_agreement.{ext}",bbox_inches="tight")
     plt.close(fig); print(f"wrote Figure3_tool_agreement.png/pdf (n={len(rows)}, r={r:.4f})")
 

@@ -7,6 +7,7 @@ numbered hanging references.
 Run:  python manuscript/build_docx.py  ->  manuscript/DroPhenix_manuscript.docx
 """
 import re
+import sys
 from pathlib import Path
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
@@ -16,9 +17,9 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 HERE = Path(__file__).resolve().parent
-MD = HERE / "DroPhenix_manuscript.md"
+MD = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "DroPhenix_manuscript.md"
+OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else HERE / "DroPhenix_manuscript.docx"
 FIGDIR = HERE / "figures"
-OUT = HERE / "DroPhenix_manuscript.docx"
 FIG_IMG = {"Figure 1.": "Figure1_validation.png",
            "Figure 2.": "Figure2_innovation.png",
            "Figure 3.": "Figure3_tool_agreement.png"}
