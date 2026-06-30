@@ -10,7 +10,7 @@ from __future__ import annotations
 
 
 # -- Version --
-_VERSION = "2.0"
+_VERSION = "3.0"
 
 import io
 import tempfile
@@ -2133,9 +2133,11 @@ def page_home():
         'margin:2px;display:inline-block;letter-spacing:.03em;'
     )
     _pills = [
-        'Negative Geotaxis Assay', 'Performance Index', 'AUC &amp; t50',
-        'CRI &middot; SDQ &middot; TSW', 'Motor Decline Rate',
-        'DTW Trajectory Clustering', 'Translational Score',
+        'Negative Geotaxis Assay', 'Lifespan / Survival (KM &middot; log-rank &middot; Cox)',
+        'Y-maze Cognition', 'Sleep &amp; Circadian (DAMS)', 'Larval Crawling', 'Grooming',
+        'Performance Index', 'AUC &amp; t50', 'CRI &middot; SDQ &middot; TSW',
+        'Motor Decline Rate (over age)', 'DTW Trajectory Clustering',
+        'Cross-Strain Drug Ranking (meta-analysis)', 'Translational Score',
         'Sex-Stratified Analysis', '300 DPI Publication Figures', 'BH-FDR Statistics',
     ]
     _ph = ''.join(
@@ -2158,20 +2160,22 @@ def page_home():
         + '<div style="font-size:2.55rem;font-weight:900;color:#FFFFFF;'
         'line-height:1.05;margin-bottom:.4rem;letter-spacing:-.01em;">'
         'DroPhenix <span style="color:#F0A500;">Analytics</span>'
-        ' <span style="font-size:1rem;font-weight:600;color:#64748B;vertical-align:middle;">v2.0</span></div>'
+        ' <span style="font-size:1rem;font-weight:600;color:#64748B;vertical-align:middle;">v3.0</span></div>'
         + '<div style="font-size:1.02rem;color:#94A3B8;font-weight:500;'
         'margin-bottom:1rem;letter-spacing:.01em;">'
-        'Drosophila Climbing &amp; Motor Assay Analysis Platform</div>'
+        'Multi-Assay Drosophila Phenotyping &amp; Cross-Strain Compound Ranking</div>'
         + '<p style="font-size:.9rem;color:#CBD5E1;line-height:1.8;'
         'max-width:680px;margin-bottom:1.1rem;">'
-        'DroPhenix automates the end-to-end analysis pipeline for the '
-        '<em>negative geotaxis</em> climbing assay in '
-        '<em>Drosophila melanogaster</em> &mdash; the gold-standard '
-        '<em>in vivo</em> model for neuromotor phenotyping. From raw vial counts '
-        'to publication-ready figures, it integrates kinetic metrics, '
-        'novel composite rescue indices, sex-stratified analysis, '
-        'unsupervised trajectory clustering, and multi-criteria '
-        'translational scoring in a single reproducible workflow.'
+        'DroPhenix provides one reproducible, statistically rigorous workflow for '
+        '<em>Drosophila melanogaster</em> neuromotor and behavioural phenotyping across '
+        '<b>six assays</b> &mdash; climbing (negative geotaxis), lifespan, Y-maze, '
+        'activity/sleep (DAMS), larval crawling, and grooming. It pairs assumption-aware '
+        'statistics (normality/variance-gated tests, effect sizes, BH-FDR, bootstrap) with '
+        'actuarial survival analysis (Kaplan&ndash;Meier, log-rank, Cox), circadian '
+        'periodograms, age-resolved motor-decline kinetics, and a meta-analytic engine that '
+        'ranks compounds <b>across strains of unequal size</b> by inverse-variance / '
+        'DerSimonian&ndash;Laird pooling. Every result is benchmarked against published data '
+        'and established tools.'
         '</p>'
         + '<div>' + _ph + '</div>'
         + '</div></div>',
@@ -2309,9 +2313,33 @@ def page_home():
          '<b>CRI</b>: Composite Rescue Index. '
          '<b>SDQ</b>: Sex Dimorphism Quotient (&gt;0.5 = strong dimorphism). '
          '<b>TSW</b>: Therapeutic Selectivity Window (&gt;1.0 = disease-selective).'),
-        ('Motor Decline', 'Decay Modelling',
-         'Non-linear exponential decay fitting. Reports <em>k</em>, PI&#8320;, R&sup2;, '
-         'and &Delta;<em>k</em> (treatment rescue). Motor-Survival Coupling Index (MSCI).'),
+        ('Motor Decline', 'Decay Modelling (over age)',
+         'Exponential decay PI(age)&nbsp;=&nbsp;PI&#8320;&middot;e<sup>&minus;k&middot;age</sup> '
+         'fit over <b>age (days)</b>. Reports <em>k</em>, half-life, R&sup2;, and '
+         '&Delta;<em>k</em> (treatment rescue). Motor-Survival Coupling Index (MSCI).'),
+        ('Survival Analysis', 'Lifespan / Actuarial',
+         'Kaplan&ndash;Meier curves with Greenwood CIs, median survival, '
+         'Mantel&ndash;Cox <b>log-rank</b> (BH-FDR pairwise), and <b>Cox proportional '
+         'hazards</b> (HR, 95% CI). Accepts event-level or daily-cohort data.'),
+        ('Y-maze', 'Cognition / Individuality',
+         'Spontaneous <b>alternation</b> (% vs chance, working memory), '
+         '<b>turn bias</b>/handedness with a Monte-Carlo individuality test, '
+         'and exploration. Input: per-fly arm-entry sequences.'),
+        ('Activity Monitoring (DAMS)', 'Sleep &amp; Circadian',
+         '<b>Sleep</b> by the &ge;5-min inactivity rule (total/day/night, bouts), '
+         'and free-running <b>circadian period</b> via the chi-square '
+         '(Sokolove&ndash;Bushell) periodogram with Lomb&ndash;Scargle cross-check.'),
+        ('Larval Crawling', 'Locomotion',
+         'Video centroid tracking of a single larva &rarr; crawling speed (mm&nbsp;s&#8315;&sup1;), '
+         'path length, displacement, and tortuosity; plus summary-table analysis '
+         'and group comparison.'),
+        ('Grooming', 'Behaviour',
+         'Quantifies scored grooming bouts &rarr; %&nbsp;time grooming, bout count and '
+         'duration, grooming rate, with group statistics. Wild-type ~13% of time.'),
+        ('Drug Ranking', 'Cross-Strain Meta-analysis',
+         'Ranks compounds across strains of <b>unequal N</b>: per-strain Hedges&rsquo;&nbsp;<em>g</em> '
+         'pooled by inverse-variance / DerSimonian&ndash;Laird random effects, '
+         'composited across all assays into a Therapeutic Score with heterogeneity (I&sup2;).'),
         ('Trajectory Clustering', 'Unsupervised ML',
          'DTW pairwise distance + Ward-linkage clustering. Silhouette-optimal k. '
          'Archetypes: Sustained Rescue, Transient, Progressive Decline, Plateau.'),

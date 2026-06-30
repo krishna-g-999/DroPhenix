@@ -1,10 +1,12 @@
-# DroPhenix Analytics v2.0
+# DroPhenix Analytics v3.0
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://drophenix.streamlit.app)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://python.org)
 
-> **A web-based analytics platform for quantitative Drosophila melanogaster motor phenotyping in neurodegeneration research**
+> **A web-based, statistically rigorous platform for multi-assay Drosophila melanogaster phenotyping and cross-strain compound ranking**
+
+**New in v3.0:** five additional assays beyond climbing — **lifespan/survival** (Kaplan–Meier, log-rank, Cox), **Y-maze** (alternation + handedness), **activity/sleep (DAMS)** (5-min sleep rule + chi-square circadian periodogram), **larval crawling**, and **grooming** — plus a **cross-strain drug-ranking** engine (Hedges' *g* + inverse-variance / DerSimonian–Laird meta-analysis handling unequal sample sizes), a runnable validation suite benchmarked against published data, a head-to-head comparison vs R `survival`/lifelines/statsmodels/scipy/pingouin/astropy/pyBOAT (24/24 metrics agree), per-assay data templates, and the NAR manuscript.
 
 Developed at the **Department of Bioinformatics, SSSIHL, Puttaparthi, India**  
 PI: Prof. Venketesh Sivaramakrishnan · Scholar: Krishnasalini Gunanathan
@@ -44,13 +46,20 @@ DroPhenix addresses all four gaps through a suite of purpose-built composite met
 
 ## Features
 
-- **Data Input** — Upload CSV/Excel or load built-in SSSIHL ALS demo dataset
-- **Trajectory Analysis** — Longitudinal climbing curves with SEM ribbons
-- **Statistical Engine** — ANOVA / Kruskal-Wallis, Tukey HSD, BH-FDR correction, bootstrap CI
-- **Novel Metrics** — CRI, SDQ, TSW, MDR with 300 DPI export
+- **Data Input** — Upload CSV/Excel or load built-in demo datasets; per-assay templates in `templates/`
+- **Climbing** — Longitudinal curves (SEM ribbons), Performance Index, AUC, t50
+- **Survival Analysis** — Kaplan–Meier (Greenwood CIs), median survival, log-rank (BH-FDR pairwise), Cox proportional hazards
+- **Y-maze** — Spontaneous alternation (vs chance), turn-bias/handedness with Monte-Carlo individuality test, exploration
+- **Activity Monitoring (DAMS)** — Sleep (≥5-min rule: total/day/night, bouts) and circadian period (chi-square periodogram + Lomb–Scargle)
+- **Larval Crawling** — Video centroid tracking → speed (mm/s), path, tortuosity
+- **Grooming** — %-time grooming, bout count/duration, group statistics
+- **Novel Metrics** — CRI, SDQ, TSW, and MDR (decline **over age**) with 300 DPI export
+- **Statistical Engine** — Normality/variance-gated ANOVA / Kruskal-Wallis, BH-FDR, effect sizes, bootstrap CI
 - **Clustering** — DTW-based trajectory clustering, dendrogram, PCA/UMAP
-- **Translational Scoring** — Tier I–III compound ranking (TCS)
-- **Live Recording** — Webcam / MP4 upload with automated fly counting (OpenCV)
+- **Drug Ranking (cross-strain)** — Hedges' *g* + inverse-variance / DerSimonian–Laird meta-analysis across **unequal-N strains** → Therapeutic Score
+- **Translational Scoring** — Tier I–V compound ranking (TCS)
+- **Video / Live Recording** — Webcam / MP4 with automated fly counting (OpenCV)
+- **Validation & Benchmarking** — `validation/run_all.py` (12 suites vs published data) and `comparison_study.py` (vs 7 established tools)
 - **Export** — CSV, PNG, SVG, PDF, ZIP bundle
 
 ---
