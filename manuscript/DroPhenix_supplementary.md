@@ -87,3 +87,20 @@ Naïve equal-weight mean of *g* = 0.420; inverse-variance pooled (fixed) = 0.453
 | Inverse-variance pooled | 0.267 | 0.066 | 95.8% |
 
 Inverse-variance pooling reduces RMSE by **19.9%** and is well-calibrated (coverage ≈ nominal), confirming it is the efficient, correct estimator under unequal N (Figure 2).
+
+---
+
+## Supplementary Note S2. Literature-referenced reference datasets (≥3 per assay)
+
+To exercise every module on data tied to the literature, the repository ships
+`reference_datasets/` with three datasets per assay, in each module's upload-template
+format, generated and analysed by `reference_datasets/build_and_run.py` (provenance in
+`reference_datasets/PROVENANCE.md`, results in `reference_datasets/RESULTS.md`). Survival
+sample 1 is the **real** Freireich et al. (1963) raw 6-MP data; circadian sample 1 uses the
+**real** Konopka & Benzer (1971) free-running periods (24/19/28 h). The remaining datasets
+are simulated from text-verified published parameters (alternation chance 50%, Lewis 2017;
+turn-bias mean 0.50 and 23.5% extreme, Buchanan/de Bivort 2015; wild-type lifespan median
+≈50 d, Linford 2013; larval speed ≈1 mm s⁻¹; grooming ≈13% of time, Qiao 2018), each cited
+in PROVENANCE.md and clearly labelled as simulated (machine-readable raw supplements were
+not retrievable for those assays). **All 18 datasets reproduce the cited published
+expectation** when run through DroPhenix.
