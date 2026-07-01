@@ -218,7 +218,7 @@ def _require_metrics() -> bool:
     return True
 
 
-def _template_button(filename: str, label: str = "⬇ Download data template",
+def _template_button(filename: str, label: str = "Download data template",
                      key: Optional[str] = None):
     """Offer the matching CSV template (from templates/) as a download."""
     p = Path("templates") / filename
@@ -606,7 +606,7 @@ def page_data_input():
                 "Long format: Genotype, Sex, Treatment, Replicate, Time, Count, n  |  "
                 "Wide format: Genotype, Sex, Treatment, Replicate, t10, t20, t30, ..."
             )
-            _template_button("climbing_template.csv", "⬇ Download climbing template", "tpl_clim")
+            _template_button("climbing_template.csv", "Download climbing template", "tpl_clim")
             uploaded = st.file_uploader("Upload file", type=["csv","xlsx","xls"],
                                         label_visibility="collapsed")
             if uploaded:
@@ -2194,7 +2194,7 @@ def page_home():
     _innovations = [
         (
             _wi1,
-            '&#9889; Novel Composite Metrics',
+            'Novel Composite Metrics',
             (
                 'Three purpose-built metrics transcend the classical Performance Index. '
                 'The <b>Composite Rescue Index (CRI)</b> integrates PI, AUC, and t50 '
@@ -2207,7 +2207,7 @@ def page_home():
         ),
         (
             _wi2,
-            '&#128200; Motor Decline Kinetics',
+            'Motor Decline Kinetics',
             (
                 'DroPhenix fits an exponential decay model '
                 'PI(t)&nbsp;=&nbsp;PI&#8320;&nbsp;&middot;&nbsp;e<sup>&minus;kt</sup> '
@@ -2222,7 +2222,7 @@ def page_home():
         ),
         (
             _wi3,
-            '&#127919; Translational Candidate Scoring',
+            'Translational Candidate Scoring',
             (
                 'The <b>Translational Candidate Score (TCS)</b> integrates CRI (35%), '
                 'TSW (25%), SDQ consistency (15%), MDR rescue (15%), and trajectory '
@@ -2509,9 +2509,9 @@ def page_survival():
     )
     _tc1, _tc2, _ = st.columns([1, 1, 2])
     with _tc1:
-        _template_button("lifespan_event_template.csv", "⬇ Event-level template", "tpl_ls_ev")
+        _template_button("lifespan_event_template.csv", "Event-level template", "tpl_ls_ev")
     with _tc2:
-        _template_button("lifespan_cohort_template.csv", "⬇ Daily-cohort template", "tpl_ls_co")
+        _template_button("lifespan_cohort_template.csv", "Daily-cohort template", "tpl_ls_co")
 
     src = st.radio("Data source", ["Synthetic demo (Gompertz)", "Upload CSV / Excel"],
                    horizontal=True, key="surv_src")
@@ -3029,7 +3029,7 @@ def page_larval():
         st.error(f"Larval module import failed: {_e}")
         return
 
-    _template_button("larval_template.csv", "⬇ Summary CSV template", key="tpl_lv")
+    _template_button("larval_template.csv", "Summary CSV template", key="tpl_lv")
     mode = st.radio("Mode", ["Synthetic demo (summary)", "Track a video",
                              "Upload summary CSV"], horizontal=True, key="lv_mode")
 

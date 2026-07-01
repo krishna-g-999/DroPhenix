@@ -41,7 +41,7 @@ def inject_css() -> None:
             + '<div style="font-size:1rem;font-weight:800;color:#FFFFFF;'
             'line-height:1.2;letter-spacing:-.01em;">DroPhenix</div>'
             '<div style="font-size:.68rem;color:#94A3B8;letter-spacing:.05em;'
-            'text-transform:uppercase;margin-top:2px;">Analytics v2.0</div>'
+            'text-transform:uppercase;margin-top:2px;">Analytics v3.0</div>'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -268,7 +268,7 @@ def render_header(title: str, subtitle: str = "", extra: str = "") -> None:
         + logo_html
         + '<div style="flex:1;">'
         + '<div class="dpx-page-header-brand">'
-        + 'DroPhenix Analytics v2.0 \u00b7 Science for Society</div>'
+        + 'DroPhenix Analytics v3.0 \u00b7 Science for Society</div>'
         + f'<div class="dpx-page-header-title">{title}</div>'
         + sub_html
         + '</div></div>',

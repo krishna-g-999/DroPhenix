@@ -22,7 +22,13 @@ OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else HERE / "DroPhenix_manuscript.d
 FIGDIR = HERE / "figures"
 FIG_IMG = {"Figure 1.": "Figure1_validation.png",
            "Figure 2.": "Figure2_innovation.png",
-           "Figure 3.": "Figure3_tool_agreement.png"}
+           "Figure 3.": "Figure3_tool_agreement.png",
+           "Figure S1.": "FigureS1_climbing.png",
+           "Figure S2.": "FigureS2_survival.png",
+           "Figure S3.": "FigureS3_ymaze.png",
+           "Figure S4.": "FigureS4_dams.png",
+           "Figure S5.": "FigureS5_larval.png",
+           "Figure S6.": "FigureS6_grooming.png"}
 
 doc = Document()
 normal = doc.styles["Normal"]

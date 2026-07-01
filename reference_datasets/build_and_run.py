@@ -128,7 +128,7 @@ def ymaze():
                     b=rng.beta(4.6,4.6); turns=["R" if rng.random()<b else "L"]
                     for _ in range(199):
                         turns.append(turns[-1] if rng.random()<rho else ("R" if rng.random()<b else "L"))
-                    rows.append({"Genotype":g,"Treatment":"NA","Sex":sex,"FlyID":f"f{fid}",
+                    rows.append({"Genotype":g,"Treatment":"Untreated","Sex":sex,"FlyID":f"f{fid}",
                                  "Sequence":"".join(turns_to_arm_sequence(turns))}); fid+=1
         df=pd.DataFrame(rows); save("ymaze",f"sample{i}_{dis}",df)
         res=YM.run_ymaze_analysis(df); pf=YM.per_fly_metrics(YM.load_ymaze(df))
@@ -153,7 +153,7 @@ def dams():
             u=np.clip(pos/0.6,0,1)
             rate=(1.3*np.exp(-((u-0.1)**2)/(2*0.1**2))+1.6*np.exp(-((u-0.9)**2)/(2*0.12**2))+0.25)*active
             cnt=rng.poisson(np.maximum(rate,0)*6.0).astype(float); cnt[~active]=0
-            rows.append(pd.DataFrame({"Genotype":geno,"Treatment":"NA","Sex":"Pooled",
+            rows.append(pd.DataFrame({"Genotype":geno,"Treatment":"Untreated","Sex":"Pooled",
                 "FlyID":f"{geno}_{k}","Time_min":mins,"Activity":cnt}))
     df=pd.concat(rows,ignore_index=True); save("dams","sample1_KonopkaBenzer_periods",df)
     ppf=DM.period_per_fly(DM.load_dams(df)); per=ppf.groupby("Genotype")["Period_h_chisq"].mean()
@@ -181,7 +181,7 @@ def larval():
             for sex in ("Male","Female"):
                 for _ in range(int(rng.integers(10,16))):
                     v=max(0.05,rng.normal(spd,0.12)); tort=max(1.0,rng.normal(1.2 if g=="Oregon-WT" else 1.45,0.1))
-                    rows.append({"Genotype":g,"Treatment":"NA","Sex":sex,"FlyID":f"l{fid}","duration_s":60.0,
+                    rows.append({"Genotype":g,"Treatment":"Untreated","Sex":sex,"FlyID":f"l{fid}","duration_s":60.0,
                                  "mean_speed_mm_s":round(v,3),"path_length_mm":round(v*60,2),
                                  "displacement_mm":round(v*60/tort,2),"tortuosity":round(tort,3)}); fid+=1
         df=pd.DataFrame(rows); save("larval",f"sample{i}_{dis}",df)
@@ -205,7 +205,7 @@ def grooming():
                     while acc<target and tcur<obs:
                         gap=rng.exponential(25.0); bout=max(0.5,rng.normal(4.0,1.2)); tcur+=gap
                         if tcur+bout>obs: break
-                        rows.append({"Genotype":g,"Treatment":"NA","Sex":sex,"FlyID":f"f{fid}",
+                        rows.append({"Genotype":g,"Treatment":"Untreated","Sex":sex,"FlyID":f"f{fid}",
                                      "Bout_start_s":round(tcur,1),"Bout_end_s":round(tcur+bout,1),"Observation_s":obs})
                         tcur+=bout; acc+=bout
                     fid+=1

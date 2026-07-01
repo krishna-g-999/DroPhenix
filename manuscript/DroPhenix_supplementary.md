@@ -104,3 +104,41 @@ turn-bias mean 0.50 and 23.5% extreme, Buchanan/de Bivort 2015; wild-type lifesp
 in PROVENANCE.md and clearly labelled as simulated (machine-readable raw supplements were
 not retrievable for those assays). **All 18 datasets reproduce the cited published
 expectation** when run through DroPhenix.
+
+---
+
+## Supplementary Figures
+
+Analysis results produced live by the DroPhenix modules on the literature-referenced reference datasets (Supplementary Note S2). Colour-blind-safe (Okabe-Ito) palette; single Arial font.
+
+**Figure S1. Climbing (negative geotaxis).** Endpoint Performance Index (PI = 2·%climbed − 100) by group for three disease-model datasets (PD α-synuclein, ALS TDP-43, HD polyQ). In every dataset wild-type PI exceeds the disease-model vehicle and the drug partially rescues.
+
+**Figure S2. Lifespan.** Kaplan–Meier survival curves; sample 1 is the real Freireich et al. (1963) 6-MP trial (median 23 vs 8 weeks), samples 2–3 are Gompertz fly cohorts (wild-type median ≈50 d; disease shorter; drug extends).
+
+**Figure S3. Y-maze.** Mean spontaneous alternation (± SEM) per genotype against the 50% chance line (Lewis 2017); wild-type alternates above chance and above the memory-mutant cohorts.
+
+**Figure S4. DAMS circadian period.** Chi-square (Sokolove–Bushell) periodograms for wild-type, per-short and per-long, recovering the Konopka & Benzer (1971) periods of 24, 19 and 28 h respectively; dashed line = Bonferroni-corrected significance threshold.
+
+**Figure S5. Larval crawling.** Mean crawling speed (± SEM) by genotype for three disease contrasts; wild-type ≈1 mm s⁻¹, disease models slower, drug partially restored.
+
+**Figure S6. Grooming.** Percentage of time grooming (± SEM) by genotype; wild-type ≈13% (Qiao 2018), reduced in the disease models and partially restored by drug.
+
+---
+
+## Supplementary Methods: formula summary
+
+| Quantity | Formula |
+|---|---|
+| Performance Index | PI = 2·(climbed/total)·100 − 100 |
+| Kaplan–Meier | Ŝ(t) = Π_{tᵢ≤t}(1 − dᵢ/nᵢ); Greenwood Var = Ŝ(t)²·Σ dᵢ/[nᵢ(nᵢ−dᵢ)] |
+| Log-rank (Mantel–Cox) | χ² = (Σ(O₁ⱼ − E₁ⱼ))² / Σ V₁ⱼ; df = G−1 |
+| Cox PH | h(t\|x)=h₀(t)·exp(βᵀx); HR = exp(β); Breslow ties |
+| χ² periodogram | Q_P = N′·K·Σ_h(X̄_h−X̄)² / Σ(Xᵢ−X̄)² ~ χ²_{p−1}; Bonferroni across periods |
+| Sleep | bout = ≥5 consecutive min of zero activity |
+| Spontaneous alternation | %alt = 100·(alternation triads)/(entries−2); chance = 50% |
+| Turn bias | b = R/(R+L); individuality: observed MAD vs binomial-null MAD |
+| Motor Decline Rate | PI(age) = PI₀·e^(−k·age); Δk = k_vehicle − k_drug |
+| Hedges' g | g = J·(x̄_t−x̄_c)/s_p, J = 1 − 3/[4(n₁+n₂)−9] |
+| Var(g) | J²·[(n₁+n₂)/(n₁n₂) + g²/(2(n₁+n₂−2))] |
+| Inverse-variance pooling | g_pooled = Σwᵢgᵢ/Σwᵢ, wᵢ = 1/Var(gᵢ), Var = 1/Σwᵢ |
+| DerSimonian–Laird | τ² = max(0,(Q−(k−1))/C); wᵢ* = 1/(Var(gᵢ)+τ²); I² = max(0,(Q−(k−1))/Q) |
