@@ -1,143 +1,227 @@
 # DroPhenix presentation — speaker notes
 
-Dual-audience notes (expert + non-scientific / commercial) for each slide of DroPhenix_presentation.pptx. All content is grounded in the project's verified results.
+Dual-audience notes (plain-language explanation, expert Q&A, non-scientific/commercial Q&A) for each slide. All content is grounded in the project's verified results.
 
 ## Slide 1. Title
 
-IN PLAIN TERMS: DroPhenix is a free website that automatically analyses experiments done on fruit flies (Drosophila melanogaster). Fruit flies are the workhorse "model organism" for brain-disease research — they share roughly three-quarters of human disease genes, are cheap, and live only weeks, so a whole disease-and-drug experiment finishes fast. We turned six separate, commonly-used fly tests into one reliable, automated analysis tool, and added a brand-new statistical method for comparing drugs fairly.
+IN PLAIN TERMS: DroPhenix is a free website that automatically analyses experiments on fruit flies (Drosophila) — the standard cheap, fast stand-in for human brain disease. We turned six common fly tests into one reliable automated tool and added a new statistical method for comparing drugs fairly.
 
-TALKING POINTS: Built at SSSIHL. Free, no login. Headline proof up front: it agrees with the world's gold-standard analysis software on 24 out of 24 checks (perfect correlation), and every one of its results was checked against published scientific data.
+LEAD WITH: it agrees with the world's gold-standard analysis software on 24/24 checks (perfect correlation) and reproduces published scientific data exactly.
 
-EXPERT MIGHT ASK: "Why Drosophila rather than mice?" — Faster, far cheaper, genetically tractable, and the standard first-pass model for ALS, Parkinson's and Huntington's. "Is this novel or just a wrapper?" — Both: it standardises best-practice statistics AND introduces a genuinely new cross-strain ranking method (slide 4).
+EXPERT Q: "Why flies?" — ~75% of human disease genes conserved; weeks-long lifespan; the standard first-pass ALS/PD/HD model. "Novel or a wrapper?" — both: standardises best practice AND a new ranking method.
 
-NON-SCIENTIST / INVESTOR MIGHT ASK: "What does it actually do for a user?" — You upload your experiment's raw numbers; it produces the correct graphs and statistics automatically and tells you which drug candidate performs best. "Who is it for?" — Academic fly labs and pre-clinical drug-screening groups.
+NON-SCIENTIST Q: "What does it do?" — you upload your numbers, it makes the correct graphs and statistics and ranks which drug works best. "Who is it for?" — fly labs and pre-clinical drug screening.
 
 ## Slide 2. The problem
 
-IN PLAIN TERMS: An "assay" is just a standard laboratory test. Today, labs analyse each of these six tests separately, often by hand in Excel, using inconsistent statistics. Worse, when different genetic strains of fly are tested with different numbers of animals, there is no accepted, fair way to combine the results.
+IN PLAIN TERMS: An "assay" is a standard lab test. Today each is analysed separately in spreadsheets with inconsistent statistics, and there is no fair way to combine results when strains have different numbers of flies.
 
-DEFINE: "Under-powered" = too little data / wrong method, so real effects are missed or false ones appear. "Kaplan-Meier / log-rank / Cox" = the standard, rigorous ways to analyse survival (lifespan) data used in clinical trials.
+DEFINE: Kaplan–Meier / log-rank / Cox = the rigorous, clinical-grade ways to analyse lifespan data.
 
-EXPERT MIGHT ASK: "Isn't survival analysis already standard?" — In clinical statistics yes, but fly-lifespan papers frequently report only the median and skip the survival curve, the log-rank test and the hazard model; we bring those to the bench by default.
+EXPERT Q: "Isn't survival analysis standard?" — In clinical stats yes, but fly papers often report only median; we bring the full toolkit to the bench.
 
-NON-SCIENTIST MIGHT ASK: "Why is unequal numbers such a big deal?" — Analogy: if you average a survey of 3 people and a survey of 700 people with equal weight, the tiny, noisy survey distorts the answer. The same happens when you compare drug effects across fly strains of very different size — and that is exactly the everyday screening situation.
+NON-SCIENTIST Q: "Why does unequal numbers matter?" — Averaging a 3-person survey and a 700-person survey equally is misleading; the small noisy group distorts the answer — exactly the fly-strain problem.
 
 ## Slide 3. What we developed
 
-IN PLAIN TERMS: This is the full menu. Each card is one analysis module. Six are biological tests: climbing (do the flies climb up — a motor/health readout), lifespan (how long they live), Y-maze (a simple memory/behaviour test), DAMS (sleep and body-clock), larval crawling (baby-fly movement), and grooming (self-cleaning behaviour). The other three are analytical: Motor Decline Rate (how fast climbing worsens with age), trajectory clustering (grouping similar response patterns automatically), and Drug Ranking (our headline innovation).
+IN PLAIN TERMS: The full menu of modules. Six are biological tests (climbing = motor health, lifespan, Y-maze = memory, DAMS = sleep/body-clock, larval crawling, grooming) and three are analytical engines (Motor Decline Rate, trajectory clustering, and the Drug Ranking innovation).
 
-DEFINE: "Negative geotaxis" = flies instinctively climb upward after being tapped down; how well they climb measures neuromuscular health.
+DEFINE: "negative geotaxis" = flies climb up after being tapped down; climbing measures neuromuscular health.
 
-EXPERT MIGHT ASK: "Do the video modules replace dedicated trackers?" — For counting and single-larva speed, yes; full multi-animal pose tracking is out of scope and stated as such.
+EXPERT Q: "Do the video tools replace dedicated trackers?" — for counting and single-larva speed yes; multi-animal pose tracking is out of scope and stated.
 
-NON-SCIENTIST MIGHT ASK: "Why so many tests?" — Different diseases hit different systems (movement, memory, sleep, lifespan). Testing across all of them gives a fuller, more trustworthy picture of whether a drug truly helps.
+NON-SCIENTIST Q: "Why so many tests?" — different diseases hit movement, memory, sleep, or lifespan; testing across all gives a fuller, more trustworthy picture.
 
-## Slide 4. Core innovation (unequal-N ranking)
+## Slide 4. How it works (pipeline)
 
-IN PLAIN TERMS — THE KEY SLIDE: This is what makes DroPhenix new. When you test a drug in several fly disease-strains that have different numbers of animals, how do you fairly combine the results into one score? We borrow a method from medical "meta-analysis" (the science of combining many studies). Each strain's result is weighted by how reliable it is: bigger, less-noisy strains count more; small noisy ones count less but are not thrown away.
+IN PLAIN TERMS: This infographic is the assembly line. You load your data (or a video, or the built-in demo); the tool cleans and checks it; the relevant module computes the metrics; the statistics engine runs; and you get tables, figures and CSV files out.
 
-DEFINE: "Hedges' g / effect size" = a standardised measure of how big a drug's effect is, comparable across experiments. "Inverse-variance / DerSimonian-Laird pooling" = the mathematically optimal recipe for weighting and combining those results. The forest plot (right) shows each strain's effect and the combined answer (green diamond).
+TALKING POINT: every step is deterministic — same input, same output — and inspectable; nothing is a hidden trained model.
 
-PROOF: In 3,000 simulated experiments where we knew the true answer, our method was 19.9% more accurate than simple averaging and its confidence intervals were correctly calibrated (95.8% vs a 95% target).
+EXPERT Q: "What QC happens at parse?" — column auto-detection, format validation, duplicate/outlier flagging, standardisation to long format.
 
-EXPERT MIGHT ASK: "Why DerSimonian-Laird over a fixed effect?" — It accounts for genuine strain-to-strain differences (heterogeneity, reported as I-squared). "Is the pooling implemented correctly?" — It matches statsmodels to six decimals.
+NON-SCIENTIST Q: "How hard is it to use?" — upload a spreadsheet, click; the five-step flow is automatic.
 
-NON-SCIENTIST MIGHT ASK: "So what's the business value?" — A more accurate, defensible ranking of drug candidates means fewer wrong bets carried forward — real money saved in a screening pipeline.
+## Slide 5. Statistics decision flow
 
-## Slide 5. Modules & calculations
+IN PLAIN TERMS: Good statistics means choosing the RIGHT test for your data, not always the same one. Box 1: DroPhenix checks whether the data are bell-shaped (Shapiro–Wilk), whether groups vary similarly (Levene), and whether samples are big enough. Box 2: it then picks a parametric test if those hold, otherwise a non-parametric one. Box 3: it always reports the effect size, corrects for multiple comparisons, and gives a confidence interval.
 
-IN PLAIN TERMS: For transparency, here is the exact formula behind each module and, crucially, WHY we use it. There is no hidden "black box"; every number can be traced to a published, standard equation.
+DEFINE: effect size = how big the difference is; FDR correction = a safeguard against flukes when testing many things; bootstrap CI = a reliability range from resampling.
 
-DEFINE a few: "PI (Performance Index)" scales climbing from -100 (none climb) to +100 (all climb). "Hazard ratio" = how many times higher the risk of death is in one group vs another. "Periodogram" = a method that finds the body-clock period (near 24 h) hidden in activity data.
+EXPERT Q: "Thresholds?" — Shapiro/Levene at 0.05, minimum n=5 for parametric.
 
-EXPERT MIGHT ASK: "Why fit motor decline over age, not over the assay seconds?" — Because within one climbing test the flies are rising (PI increases over seconds); decline is a property of ageing across days. Fitting decay to the seconds axis is a category error we deliberately avoid.
+NON-SCIENTIST Q: "Why care?" — it's the difference between a result that survives peer review / due-diligence and one that doesn't.
 
-NON-SCIENTIST MIGHT ASK: "Why show formulas at all?" — Trust. Reviewers and regulators want to see that we use the accepted, textbook methods — not something invented and unverifiable.
+## Slide 6. Module: Climbing
 
-## Slide 6. Statistics engine
+IN PLAIN TERMS: The climbing test. Flies are tapped to the bottom and instinctively climb; we measure the fraction that climb past a line over seconds. The Performance Index (PI) scales this from −100 (none) to +100 (all). AUC and t50 summarise the speed of climbing.
 
-IN PLAIN TERMS: Good statistics is about choosing the right test for your data, not always using the same one. DroPhenix first checks the shape of your data (is it bell-curved? do the groups vary similarly?) and then automatically picks the correct test. It always reports not just "is it significant" but "how big is the effect", and it corrects for the fact that running many comparisons produces false positives by chance.
+DEFINE: PI = 2×(% climbed) − 100.
 
-DEFINE: "Effect size" = the practical size of a difference. "False-discovery-rate (Benjamini-Hochberg) correction" = a safeguard so that testing many things at once doesn't throw up flukes. "Bootstrap confidence interval" = a range showing how sure we are, obtained by resampling the data thousands of times.
+EXPERT Q: "What are CRI/SDQ/TSW?" — composite rescue, sex-dimorphism and disease-selectivity indices layered on PI/AUC/t50.
 
-EXPERT MIGHT ASK: "What are the gating thresholds?" — Shapiro-Wilk and Levene at 0.05, with a minimum n of 5 before a parametric test is allowed; otherwise non-parametric.
+NON-SCIENTIST Q: "What does the output look like?" — a table of scores per group plus climbing curves, downloadable as CSV and 300-dpi images.
 
-NON-SCIENTIST MIGHT ASK: "Why does this matter commercially?" — It is the difference between a result that survives peer review / due-diligence and one that quietly falls apart.
+## Slide 7. Module: Lifespan
 
-## Slide 7. Tools & techniques
+IN PLAIN TERMS: The lifespan test. We track how long flies live, correctly handling those still alive at the end (censoring). Kaplan–Meier draws the survival curve; the log-rank test asks if two groups differ; Cox gives a hazard ratio — how many times higher the risk of death is.
 
-IN PLAIN TERMS: The software is built entirely from well-established, open-source scientific tools — nothing exotic or proprietary. Streamlit gives the browser interface; NumPy/pandas/SciPy do the maths; statsmodels provides the peer-reviewed survival and meta-analysis engine; OpenCV reads the videos; Matplotlib/Plotly draw the figures.
+DEFINE: hazard ratio = relative risk of death between groups.
 
-IMPORTANT DISTINCTION: DroPhenix is NOT an "AI model" that was "trained" on data with hidden weights. It is deterministic — the fly detection uses a classic image-brightness threshold (Otsu), the clustering is unsupervised, and every statistic is a closed-form formula. Same input always gives the same output, and every step is inspectable.
+EXPERT Q: "Median convention and ties?" — smallest t with S(t)≤0.5 (R/Prism), Breslow ties for Cox.
 
-EXPERT MIGHT ASK: "Why not scikit-survival?" — It would not build in our environment (needs a C compiler / no Python-3.13 wheel); we instead validate survival against R's survival package and lifelines, covering both tie-handling methods.
+NON-SCIENTIST Q: "How do we know it's right?" — it reproduces the famous 1963 leukemia trial's published numbers exactly and matches R and lifelines.
 
-NON-SCIENTIST MIGHT ASK: "Is it a machine-learning / AI product?" — No, and that is a strength here: results are exact, reproducible and explainable, not a probabilistic guess.
+## Slide 8. Module: Y-maze
 
-## Slide 8. Data sources
+IN PLAIN TERMS: The memory/behaviour test. In a Y-shaped maze a healthy fly tends to explore the arm it visited least recently (spontaneous alternation) — a working-memory read-out. We also measure left/right handedness and how individual flies differ.
 
-IN PLAIN TERMS: Any tool is only as trustworthy as the data used to test it. We were scrupulously honest about our data. Where real published raw data existed and was retrievable, we used it directly (the famous 1963 leukemia survival dataset; a classic statistics dataset). Where only summary numbers were published, we generated example datasets calibrated to those published numbers and clearly LABELLED them as simulated — we never present a simulation as if it were real data.
+DEFINE: alternation % vs a 50% chance level; turn bias = fraction of right turns.
 
-DEFINE: "Free-running period" = the fly's internal body-clock length when kept in constant darkness; wild-type is ~24 h.
+EXPERT Q: "Why is 50% the chance level?" — under the arm geometry an alternation equals two same-direction turns, so an unbiased fly alternates at exactly 50% — it emerges from the model, not assumed.
 
-EXPERT MIGHT ASK: "Why not pull raw supplements for every assay?" — Many are deposited as binary Excel/zip on repositories that were not machine-readable in our build environment; rather than fabricate, we used cited parameters and labelled them.
+NON-SCIENTIST Q: "What does a low score mean?" — poorer working memory, e.g. in a disease or drug-impaired fly.
 
-NON-SCIENTIST MIGHT ASK: "How do I know the numbers aren't cherry-picked?" — Every dataset lists its source; 18 of 18 reproduce the published expectation; and the code to regenerate them ships with the tool.
+## Slide 9. Module: DAMS (sleep & circadian)
 
-## Slide 9. Testing parameters
+IN PLAIN TERMS: The sleep and body-clock test, from minute-by-minute activity. A fly is "asleep" after 5 minutes of no movement (the field standard). The circadian period (near 24 h) is found with a periodogram — a method that detects the dominant rhythm in the data.
 
-IN PLAIN TERMS: A common worry is that developers "tune" settings until the tool gives a flattering answer. We did the opposite: every key setting comes straight from the published literature, with the citation. For example, a fly is scored as "asleep" after 5 minutes of no movement — that is the field's accepted definition, not our choice.
+DEFINE: free-running period = the internal clock length in constant darkness.
 
-WHY EACH: the 5-minute sleep rule, the 50% chance level for the memory test, the 24/19/28-hour reference clock periods, and the Breslow method for the survival model are all standard, published values. Using them means our results are directly comparable to the literature.
+EXPERT Q: "Multiplicity control?" — Bonferroni across tested periods; 0% false positives on rhythm-free data; Lomb–Scargle cross-check.
 
-EXPERT MIGHT ASK: "Is the periodogram multiplicity-corrected?" — Yes; without a Bonferroni correction across tested periods the false-positive rate would balloon; we verified 0% false positives on rhythm-free data.
+NON-SCIENTIST Q: "Proof it works?" — it recovers the classic mutant clock periods 24/19/28 h and agrees with two other clock tools.
 
-NON-SCIENTIST MIGHT ASK: "In one sentence, why trust the settings?" — Because we did not invent them — they are the community's own standards, cited on this slide.
+## Slide 10. Module: Larval crawling
 
-## Slide 10. Results: validation
+IN PLAIN TERMS: The larval movement test. From a video we track a single larva and measure how fast and how straight it crawls, in real units (mm per second) once you tell it the pixels-per-millimetre scale.
 
-IN PLAIN TERMS: This is the evidence that the tool is correct. We ran 12 automated test suites; all 12 pass. On famous published datasets, DroPhenix returns the exact published numbers — for example the 1963 leukemia trial's log-rank statistic (16.79) and hazard ratio (4.52). The six-panel figure shows one real result per module.
+DEFINE: tortuosity = how winding the path is (1 = straight line).
 
-DEFINE: "Log-rank / hazard ratio" = standard survival statistics; matching the published value to the decimal means our maths is right.
+EXPERT Q: "Detection method?" — largest dark object per frame by Otsu thresholding; no training.
 
-EXPERT MIGHT ASK: "Are these live or hard-coded?" — Live: generated by the shipped scripts; anyone can rerun run_all.py and reproduce them.
+NON-SCIENTIST Q: "How accurate?" — on a test video with a known speed it recovers 4.472 mm/s exactly; wild-type larvae are ≈1 mm/s.
 
-NON-SCIENTIST MIGHT ASK: "What does '12/12 pass' mean?" — Think of it as 12 independent MOT/inspection tests of the tool's accuracy; it passed every one.
+## Slide 11. Module: Grooming
 
-## Slide 11. Results: tool comparison
+IN PLAIN TERMS: The grooming test. Flies clean themselves; we quantify what fraction of the observation time they spend grooming and the number and length of grooming bouts, from scored start/stop times.
 
-IN PLAIN TERMS: Beyond matching published papers, we ran the SAME data through seven independent, world-standard analysis programs (including R, the statistics language used across academia and pharma) and compared every number. Across 24 comparisons the agreement is perfect (correlation r = 1.0000) — the scatter plot shows every point sitting exactly on the diagonal "perfect-agreement" line.
+EXPERT Q: "Does it detect grooming from raw video?" — no; automated behaviour classification is a separate ML problem; we analyse the scored intervals, which is the standard output.
 
-DEFINE: "R survival / lifelines / statsmodels / astropy / pyBOAT" = the reference tools domain experts already trust; if we match them, we inherit that trust.
+NON-SCIENTIST Q: "Reference value?" — healthy flies groom ≈13% of the time (Qiao 2018), which our demo reproduces.
 
-EXPERT MIGHT ASK: "You noted one Cox value differs (4.52 vs 4.82)?" — That is the known Breslow-vs-Efron tie-handling difference, not an error; our Breslow value matches R's Breslow to five figures and the published value. We report it transparently as a method note.
+## Slide 12. Engine: Motor Decline Rate
 
-NON-SCIENTIST MIGHT ASK: "Why compare to other tools if yours is new?" — To prove we did not reinvent the wheel incorrectly; matching the trusted tools is the strongest possible reassurance.
+IN PLAIN TERMS: Motor Decline Rate measures how fast climbing worsens with AGE — a progression read-out. We fit an exponential-decay curve to Performance Index versus age and read off the decline rate k; a drug that slows decline lowers k.
 
-## Slide 12. Why it is reliable
+KEY POINT: decline is over days of age, NOT the seconds within a single climbing test (where flies are rising) — conflating the two is a common error we deliberately avoid.
 
-IN PLAIN TERMS: Pulling it together — five concrete reasons the tool can be trusted. It reproduces published results, it agrees with gold-standard software, it uses the correct method by design, anyone can independently rerun and verify every number with a single command, and we are explicit about every limitation rather than hiding them.
+EXPERT Q: "What if it doesn't fit?" — a linear fallback and an R² are reported.
 
-TALKING POINT: "Correct by construction" means correctness is built into the method choice, not patched afterwards.
+NON-SCIENTIST Q: "Why is this better than a single score?" — it captures disease PROGRESSION and slowing, not just a snapshot.
 
-EXPERT MIGHT ASK: "How is reproducibility guaranteed?" — Fixed random seeds and the full validation + comparison code ship with the software; results are deterministic.
+## Slide 13. Engine: Trajectory clustering
 
-NON-SCIENTIST MIGHT ASK: "What if it gives a wrong answer?" — Because it is transparent and benchmarked, any discrepancy is visible and traceable — unlike a black-box tool where you simply have to hope.
+IN PLAIN TERMS: Trajectory clustering automatically groups response curves that behave similarly — for example separating 'keeps declining' from 'stays healthy' — without being told the labels in advance.
 
-## Slide 13. Applications
+DEFINE: DTW (dynamic time warping) = a way to measure how similar two time-curves are even if shifted.
 
-IN PLAIN TERMS: Where this helps. The biggest use is drug screening for brain diseases: quickly and fairly judging whether a compound helps across several fly disease models and several types of test. Other uses include ageing and body-clock research, teaching rigorous statistics, and open, reproducible science.
+EXPERT Q: "How is k chosen?" — silhouette-optimal over Ward-linkage clustering.
 
-COMMERCIAL ANGLE: In a screening pipeline, a fairer, more accurate ranking of candidates means fewer false leads advanced — directly reducing wasted downstream cost. It is free and browser-based, so adoption cost is essentially zero.
+NON-SCIENTIST Q: "What is it for?" — spotting distinct response patterns in a screen at a glance.
 
-EXPERT MIGHT ASK: "Can it ingest my lab's existing data?" — Yes; each module has a documented upload template, and the formats match common bench outputs.
+## Slide 14. Innovation: Drug Ranking
 
-NON-SCIENTIST MIGHT ASK: "What is the path to impact / revenue?" — Adoption by fly labs and pre-clinical CROs; the transparent, validated core is also a foundation for paid, hosted or extended commercial versions.
+IN PLAIN TERMS — THE INNOVATION: How do you fairly combine a drug's effect across several fly strains of DIFFERENT sizes into one score? We borrow medical meta-analysis. Each strain's effect (Hedges' g) is weighted by its reliability (inverse of its variance): bigger, cleaner strains count more; small noisy ones count less but aren't discarded. These combine across strains and then across all assays into one Therapeutic Score.
 
-## Slide 14. Closing
+DEFINE: Hedges' g = standardised effect size; inverse-variance / DerSimonian–Laird = the optimal weighting recipe; I² = how much strains genuinely differ.
 
-IN PLAIN TERMS: The takeaway. We turned six scattered, manually-analysed fly experiments into a single, automated, rigorously-validated web tool — and added a genuinely new, more efficient way to rank drugs across unequal-sized strains. It is free, open, and prepared for publication in a leading journal (Nucleic Acids Research).
+PROOF: in 3,000 simulations it was 19.9% more accurate than simple averaging with correctly-calibrated confidence intervals (95.8%), and the maths matches statsmodels to six decimals.
 
-CLOSE ON: reliability (24/24 tool agreement, reproduces published data) + novelty (19.9% more efficient ranking) + accessibility (free web app).
+EXPERT Q: "Why random-effects?" — to account for real strain-to-strain heterogeneity.
 
-LIKELY FINAL QUESTIONS: Expert — "What's next?" More assays and community-contributed modules; hosted deployment. Non-scientist — "How do I try it?" Just open drophenix.streamlit.app in any browser; no install, no login.
+NON-SCIENTIST Q: "Business value?" — fewer wrong drug bets carried forward — real money saved.
+
+## Slide 15. Validation strategy (3 pillars)
+
+IN PLAIN TERMS: We tested the tool three independent ways. (1) Published benchmark data — reproduce a paper's exact answer. (2) Analytic ground truth — feed in data whose correct answer we built in, and check it comes back out. (3) Reference datasets — ≥3 per assay tied to cited literature. A fourth check compares against seven trusted tools.
+
+EXPERT Q: "Which pillar is strongest?" — analytic ground truth for exactness, published data for real-world validity; together they cover both.
+
+NON-SCIENTIST Q: "In plain words?" — we checked it against textbook answers, against puzzles with known solutions, and against other trusted programs — and it passed all of them.
+
+## Slide 16. Test data / testing samples
+
+IN PLAIN TERMS: Where the test data came from, and honesty about it. Real raw data (a famous 1963 survival trial; a classic stats dataset) is used directly. Real published parameters (the classic clock periods) drive some signals. Some data is generated with a known answer to test exactness. The rest are example datasets calibrated to cited published numbers and clearly labelled 'simulated'.
+
+KEY POINT: we never present a simulation as if it were real measured data.
+
+EXPERT Q: "Why not pull every raw supplement?" — many are binary files on repositories not machine-readable in our environment; rather than fabricate, we cite parameters and label them.
+
+NON-SCIENTIST Q: "How do I know it's not cherry-picked?" — every dataset lists its source and 18/18 reproduce the published expectation.
+
+## Slide 17. Testing parameters
+
+IN PLAIN TERMS: A common worry is that developers tweak settings until the tool looks good. We did the opposite — every key setting comes straight from the literature, with a citation. A fly counts as asleep after 5 minutes still; chance memory is 50%; the reference clock periods are 24/19/28 h.
+
+EXPERT Q: "Periodogram multiplicity?" — Bonferroni-corrected; verified 0% false positives on rhythm-free data.
+
+NON-SCIENTIST Q: "One-sentence reassurance?" — we didn't invent the settings; they are the community's own published standards.
+
+## Slide 18. Results: validation
+
+IN PLAIN TERMS: The evidence the tool is correct. Twelve automated test suites all pass. On famous datasets it returns the exact published numbers — the 1963 trial's log-rank (16.79) and hazard ratio (4.52). The six-panel figure shows one real result from each area.
+
+EXPERT Q: "Live or hard-coded?" — live; rerun run_all.py to reproduce.
+
+NON-SCIENTIST Q: "What does 12/12 mean?" — twelve independent accuracy inspections, all passed.
+
+## Slide 19. Results: tool comparison
+
+IN PLAIN TERMS: Beyond matching papers, we ran the SAME data through seven independent, world-standard programs (including R, used across academia and pharma) and compared every number: perfect agreement (r = 1.0000) — every point sits on the diagonal.
+
+EXPERT Q: "The one Cox difference (4.52 vs 4.82)?" — the known Breslow-vs-Efron tie method, not an error; our Breslow matches R's Breslow to five figures; reported transparently.
+
+NON-SCIENTIST Q: "Why compare if yours is new?" — to prove we didn't reinvent the wheel wrongly; matching trusted tools is the strongest reassurance.
+
+## Slide 20. Results: reference datasets
+
+IN PLAIN TERMS: We also built three literature-referenced datasets for EACH assay (18 total) in the exact upload format, and ran them through the tool: all 18 reproduce their cited published expectation — wild-type outperforms disease models and drugs partially rescue, exactly as the literature reports.
+
+EXPERT Q: "Are these downloadable?" — yes, in each module's template, with provenance and results files.
+
+NON-SCIENTIST Q: "Why does this matter?" — it shows the tool gives sensible, literature-consistent answers on realistic data, not just toy examples.
+
+## Slide 21. Output formats
+
+IN PLAIN TERMS: What you actually get out. On-screen sortable tables; one-click CSV downloads; publication-quality 300-dpi figures; a full statistics report (test, p-value, effect size, confidence interval); the drug ranking; and a single ZIP bundle ready for a journal submission.
+
+EXPERT Q: "Figure formats?" — PNG/SVG/PDF at 300 dpi, colour-blind-safe palette.
+
+NON-SCIENTIST Q: "Can I put these straight in a paper or report?" — yes, that is the design goal.
+
+## Slide 22. Why it is reliable
+
+IN PLAIN TERMS: Five concrete reasons to trust it: it reproduces published results; it agrees with gold-standard software; it uses the correct method by design; anyone can rerun and verify every number; and we are explicit about every limitation.
+
+EXPERT Q: "Reproducibility mechanism?" — fixed random seeds plus the shipped validation/comparison suite.
+
+NON-SCIENTIST Q: "What if it's ever wrong?" — because it's transparent and benchmarked, any discrepancy is visible and traceable — unlike a black box.
+
+## Slide 23. Applications
+
+IN PLAIN TERMS: Where it helps. The biggest use is brain-disease drug screening — judging a compound fairly across several fly disease models and several tests at once. It also serves ageing/clock research, teaching rigorous statistics, and open reproducible science.
+
+COMMERCIAL ANGLE: a fairer, more accurate candidate ranking means fewer false leads advanced — lower downstream cost; and it's free and browser-based, so adoption cost is near zero.
+
+EXPERT Q: "Can it take my lab's data?" — yes; documented templates match common bench outputs.
+
+NON-SCIENTIST Q: "Path to impact/revenue?" — adoption by fly labs and pre-clinical CROs; a validated core that can underpin paid hosted or extended versions.
+
+## Slide 24. Closing
+
+IN PLAIN TERMS: The takeaway — six scattered, manually-analysed fly experiments turned into one automated, rigorously-validated web tool, plus a genuinely new, more efficient way to rank drugs across unequal-sized strains. Free, open, and prepared for a leading journal.
+
+CLOSE ON: reliable (24/24 tool agreement, reproduces published data) + novel (19.9% more efficient ranking) + accessible (free web app).
+
+FINAL Qs: Expert — "what's next?" more assays, hosted deployment. Non-scientist — "how do I try it?" open drophenix.streamlit.app; no install, no login.
