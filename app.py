@@ -153,7 +153,9 @@ if not _IMPORTS_OK:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 PAGES = [
     "Home",
+    "Plan a Run",
     "Data Input",
+    "Design Check",
     "Climbing Curves",
     "Core Metrics",
     "Novel Metrics",
@@ -163,11 +165,21 @@ PAGES = [
     "Activity Monitoring (DAMS)",
     "Larval Crawling",
     "Grooming",
+    "Dose-Response",
+    "Time-of-Day",
     "Drug Ranking",
     "Trajectory Clustering",
+    "Trajectory Forecast",
     "Translational Score",
     "Statistical Analysis",
+    "Hierarchical Statistics",
+    "Survivor Bias",
+    "Historical Controls",
+    "Live Recording",
     "Video Analysis",
+    "Climbing Video",
+    "Draw Vials",
+    "Video Scoring",
     "CSV Upload",
     "Export",
 ]
@@ -289,270 +301,6 @@ def _run_pipeline(df: pd.DataFrame, wt: Optional[str], veh: Optional[str]):
     st.success("Analysis pipeline complete. Use the sidebar to explore results.")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 1 — Home
-# ══════════════════════════════════════════════════════════════════════════════
-# HOME PAGE BODY (replace the `if current == 'Home':` block) ────────
-
-HOME_PAGE_CODE = '''
-if current == 'Home':
-    col_text, col_img = st.columns([3, 1])
-    with col_text:
-        st.markdown("""
-        <div style="padding:.8rem 0 .6rem 0">
-          <div style="font-size:1.8rem;font-weight:800;color:#0d1b2e;
-                      line-height:1.15;margin-bottom:.6rem">
-            Drosophila Motor Phenotyping<br>
-            <span style="color:#f0a500">Analytics Platform</span>
-          </div>
-          <div style="font-size:.92rem;color:#1a2332;line-height:1.75;max-width:640px">
-            <strong>DroPhenix</strong> is a computational phenotyping platform for
-            quantifying motor behaviour in <em>Drosophila melanogaster</em> climbing
-            assays. It integrates multi-trial normalisation, novel motor rescue
-            indices, and sex-stratified analysis to support translational neuroscience
-            research in <strong>motor neuron disorders</strong> .
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_img:
-        if SAINET_URI:
-            st.markdown(f"""
-            <div style="display:flex;justify-content:center;padding:1rem 0">
-              <img src="{SAINET_URI}"
-                   style="width:150px;height:150px;border-radius:50%;object-fit:contain;
-                          border:3px solid #f0a500;
-                          box-shadow:0 4px 20px rgba(240,165,0,.22)" alt="SAI-Net">
-            </div>""", unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Quick Start ──────────────────────────────────────────────────────
-    sec("Quick Start — Load Your Data")
-    info("Upload your climbing assay CSV / Excel, or click <b>Demo Dataset</b> "
-         "to explore instantly. All metrics and plots populate automatically.")
-
-    load_c1, load_c2 = st.columns(2)
-    with load_c1:
-        st.markdown("""<div class="data-load-card">
-          <h4>Upload Your Dataset</h4>
-          <p>Accepts CSV or Excel.<br>
-          Required columns: <code>Genotype</code>, <code>Treatment</code>,
-          <code>Sex</code>, <code>Time</code>, <code>Count climbed</code>,
-          <code>n total flies</code>.</p></div>""", unsafe_allow_html=True)
-        home_upload = st.file_uploader(
-            "Choose file", type=["csv","xlsx","xls"],
-            label_visibility="visible", key="home_upload")
-        if home_upload and st.button("Load Uploaded File", key="home_load_btn"):
-            with st.spinner("Parsing…"):
-                try:
-                    df, _, _ = load_data(home_upload)
-                    st.session_state.df    = df
-                    st.session_state.base  = compute_all_metrics(df)
-                    st.session_state.novel = run_novel(df, st.session_state.base)
-                    st.session_state.loaded = True
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error loading file: {e}")
-    with load_c2:
-        st.markdown("""<div class="data-load-card">
-          <h4>Try the Demo Dataset</h4>
-          <p>Built-in SSSIHL ALS dataset — Oregon-WT, TDP-43, FUS.
-          Untreated + 3 treatments across both sexes. No file needed.</p>
-          </div>""", unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("▶  Load Demo Dataset", key="home_demo_btn"):
-            with st.spinner("Generating demo…"):
-                try:
-                    df, _, _ = load_data(None)
-                    st.session_state.df    = df
-                    st.session_state.base  = compute_all_metrics(df)
-                    st.session_state.novel = run_novel(df, st.session_state.base)
-                    st.session_state.loaded = True
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-    if st.session_state.loaded:
-        agg = st.session_state.base["aggregated"]
-        success(f"Data loaded — <b>{agg['Genotype'].nunique()} genotypes</b>, "
-                f"<b>{agg['Treatment'].nunique()} treatments</b>, "
-                f"<b>{agg['Sex'].nunique()} sexes</b>, "
-                f"<b>{agg['Time'].nunique()} timepoints</b>. "
-                "Use the navigation bar above to explore.")
-        nav_btns = st.columns(4)
-        for col, pg in zip(nav_btns, ["Data Overview","Climbing Kinetics",
-                                       "Performance Index","Novel Metrics"]):
-            with col:
-                if st.button(f"→ {pg}", key=f"home_goto_{pg}"):
-                    st.session_state.page = pg
-                    st.rerun()
-
-    st.divider()
-
-    # ── Feature Cards ────────────────────────────────────────────────────
-    sec("Platform Modules — What Each Tab Does")
-
-    # Row 1
-    r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-    row1 = [
-        (r1c1, "Data Overview", "Data Overview",
-         "Data QC & Statistics",
-         "Aggregates raw vial counts per group, computes SEM, validates "
-         "completeness, and flags outliers. Provides a full statistical "
-         "summary table before any downstream analysis.",
-         "1 Load data → 2 Data Overview tab → 3 Inspect the aggregated table → "
-         "4 Download <code>aggregated_data.csv</code>"),
-
-        (r1c2, "Climbing Kinetics", "Climbing Kinetics",
-         "Kinetics, AUC, t₅₀",
-         "Plots time-resolved climbing performance curves for each "
-         "Genotype × Treatment × Sex group. Computes Area Under the Curve "
-         "(AUC, normalised) and time to 50 % climb (t₅₀) for each group.",
-         "1 Load data → 2 Climbing Kinetics → 3 Filter by genotype/sex → "
-         "4 Toggle t₅₀ line → 5 View AUC radar"),
-
-        (r1c3, "Performance Index", "Performance Index",
-         "PI = (climbed − not climbed) / total × 100",
-         "Standardised motor capacity index ranging −100 to +100. "
-         "Positive PI = more flies climbed than stayed. "
-         "PI is the primary outcome for treatment-vs-control comparisons.",
-         "1 Load data → 2 Performance Index → 3 View bar chart with SEM → "
-         "4 Download <code>performance_index.csv</code>"),
-
-        (r1c4, "Novel Metrics", "Novel Metrics",
-         "CRI · SDQ · TSW",
-         "<b>CRI</b> (Compound Rescue Index) — composite rescue score "
-         "normalised to untreated control. ≥ 0.6 = strong rescue.<br>"
-         "<b>SDQ</b> (Sex Dimorphism Quotient) — sex-differential response. "
-         "≥ 0.5 → sex-stratify follow-ups.<br>"
-         "<b>TSW</b> (Therapeutic Safety Window) — disease rescue vs WT toxicity.",
-         "1 Load data → 2 Novel Metrics → 3 CRI tab (rescue) → "
-         "4 SDQ tab (sex dimorphism) → 5 TSW tab (safety)"),
-    ]
-    for col, pg, nav_pg, badge, desc, howto in row1:
-        with col:
-            st.markdown(f"""
-            <div class="home-card">
-              <span class="feat-badge">{badge}</span>
-              <h4>{pg}</h4>
-              <p>{desc}</p>
-              <div class="feat-how">
-                <b>How to use:</b><br>{howto}
-              </div>
-            </div>""", unsafe_allow_html=True)
-            if st.button("Open", key=f"feat_{nav_pg}"):
-                st.session_state.page = nav_pg
-                st.rerun()
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Row 2
-    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-    row2 = [
-        (r2c1, "Sex Analysis", "Sex Analysis",
-         "Sex-Stratified Analysis",
-         "Side-by-side male vs female climbing kinetics and a full SDQ "
-         "heatmap per genotype. Identifies sex-dimorphic drug responses "
-         "that are masked in sex-averaged data.",
-         "1 Load data → 2 Sex Analysis → 3 Select genotype → "
-         "4 View curves + SDQ heatmap → 5 Download sex PI CSV"),
-
-        (r2c2, "Auto Recording", "Auto Recording",
-         "Live Camera Recording",
-         "Detects webcam automatically (MSMF backend on Windows). "
-         "Configurable resolution, FPS, duration, and settle time. "
-         "Records MP4 with timestamp overlay; supports offline QC analysis "
-         "on any uploaded video.",
-         "1 Connect tab → Detect Cameras → 2 Capture test frame → "
-         "3 Record tab → Start Recording → 4 Download video + metadata → "
-         "5 Offline Analysis tab → Analyse for fly counts"),
-
-        (r2c3, "Export Report", "Export Report",
-         "Data Export",
-         "Downloads all seven computed metric tables individually or as a "
-         "single ZIP bundle with an auto-generated README for journal "
-         "submission reproducibility. Includes platform version, date, "
-         "and investigator details.",
-         "1 Load data → 2 Export Report → 3 Download individual CSVs OR → "
-         "4 Build ZIP Archive → 5 Cite as Gunanathan et al. 2026"),
-
-        (r2c4, "Trajectory Translational", "Trajectory Translational",
-         "MDR · Clustering · TCS",
-         "<b>MDR</b> (Motor Decline Rate) — exponential decay fitting on "
-         "PI over time; k = decline constant.<br>"
-         "<b>Trajectory Clustering</b> — DTW-based agglomerative grouping "
-         "of PI shapes (sustained rescue, transient, decline, plateau).<br>"
-         "<b>TCS</b> (Translational Compound Score) — integrates CRI, BBB, "
-         "GSH, and Tox into a Tier I–III CNS drug priority score.",
-         "1 Load data → 2 Trajectory Translational → 3 MDR table → "
-         "4 Adjust clusters slider → 5 Upload compound annotation for TCS"),
-    ]
-    for col, pg, nav_pg, badge, desc, howto in row2:
-        with col:
-            st.markdown(f"""
-            <div class="home-card">
-              <span class="feat-badge">{badge}</span>
-              <h4>{pg}</h4>
-              <p>{desc}</p>
-              <div class="feat-how">
-                <b>How to use:</b><br>{howto}
-              </div>
-            </div>""", unsafe_allow_html=True)
-            if st.button("Open", key=f"feat2_{nav_pg}"):
-                st.session_state.page = nav_pg
-                st.rerun()
-
-    st.divider()
-
-    # ── SAI-Net Connection ────────────────────────────────────────────────
-    sec("SAI-Net Translational Connection")
-    sql, sqr = st.columns([3, 2])
-    with sql:
-        st.markdown("""
-        <p style="font-size:.88rem;color:#1a2332;line-height:1.78">
-        DroPhenix is a translational module of <strong>SAI-Net</strong> —
-        a computational neuropharmacology framework integrating multi-omics
-        data with graph neural networks for drug discovery in
-        neurodegenerative diseases.</p>
-        """, unsafe_allow_html=True)
-    with sqr:
-        st.markdown("""
-        <div class="dpx-quote">
-          Let the world achieve the glory of becoming a family through Love.
-          <div class="dpx-quote-attr">Bhagawan Sri Sathya Sai Baba</div>
-        </div>""", unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Research Team ─────────────────────────────────────────────────────
-    sec("Research Team")
-    st.markdown("""
-    <div class="team-card">
-      <div>
-        <span class="team-role role-pi">Principal Investigator</span>
-        <div style="font-size:.9rem;font-weight:700;color:#0d1b2e;margin-top:.3rem">
-          Prof. Venketesh Sivaramakrishnan</div>
-        <div style="font-size:.76rem;color:#1a2332;margin-top:.15rem">
-          Department of Biosciences · Sri Sathya Sai Institute of Higher Learning</div>
-      </div>
-    </div>
-    <div class="team-card">
-      <div>
-        <span class="team-role role-dev">Developer</span>
-        <div style="font-size:.9rem;font-weight:700;color:#0d1b2e;margin-top:.3rem">
-          Krishnasalini Gunanathan</div>
-        <div style="font-size:.76rem;color:#1a2332;margin-top:.15rem">
-          Doctoral Research Scholar · Biosciences · SSSIHL<br>
-        </div>
-    </div>""", unsafe_allow_html=True)
-
-    st.markdown(
-        f'<div style="text-align:center;font-size:.7rem;color:#8ca0b8;'
-        f'margin-top:2rem;padding-top:1rem;border-top:1px solid #dde3ec">'
-        f'DroPhenix Analytics v2.0 &nbsp;·&nbsp; SAI-Net · SSSIHL &nbsp;·&nbsp; '
-        f'{datetime.now().strftime("%B %Y")}</div>',
-        unsafe_allow_html=True)
-'''
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 2 — Data Input
 # ══════════════════════════════════════════════════════════════════════════════
@@ -922,80 +670,6 @@ _MDR_TCOLOURS = {
     "Pantothenate":          "#F0A500",
     "Spermine+Pantothenate": "#22C55E",
 }
-
-
-def _msci_interpret(r):
-    import math
-    if math.isnan(float(r)):
-        return "Insufficient data"
-    r = float(r)
-    if abs(r) < 0.3:
-        return "Uncoupled (motor != survival)"
-    if abs(r) < 0.6:
-        return "Weakly coupled"
-    if r >= 0.6:
-        return "Strongly coupled (motor ~ survival)"
-    return "Inverse coupling"
-
-
-def _render_mdr_plotly(filt, sel_sex):
-    import numpy as np
-    try:
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-    except ImportError:
-        st.warning("Install plotly: pip install plotly")
-        return
-    genotypes = sorted(filt["Genotype"].dropna().unique().tolist())
-    n = len(genotypes)
-    if n == 0:
-        st.warning("No data for selected filters.")
-        return
-    fig = make_subplots(
-        rows=1, cols=n, subplot_titles=genotypes,
-        shared_yaxes=True, horizontal_spacing=0.05,
-    )
-    added = set()
-    for ci, geno in enumerate(genotypes, 1):
-        sub = filt[filt["Genotype"] == geno]
-        for _, row in sub.iterrows():
-            trt    = str(row.get("Treatment", ""))
-            sex    = str(row.get("Sex", ""))
-            k      = float(row.get("k",   0) or 0)
-            PI0    = float(row.get("PI0", 80) or 80)
-            r2     = float(row.get("R2",  0) or 0)
-            colour = _MDR_TCOLOURS.get(trt, "#64748B")
-            t_fit  = np.linspace(0, 120, 200)
-            pi_fit = PI0 * np.exp(-k * t_fit)
-            lk = trt + "_line"
-            fig.add_trace(go.Scatter(
-                x=t_fit, y=pi_fit, mode="lines",
-                line=dict(color=colour, dash="dash", width=2),
-                name=trt + " k=" + str(round(k, 4)),
-                legendgroup=trt, showlegend=(lk not in added),
-                hovertemplate=(
-                    "<b>" + trt + "</b><br>"
-                    "k=" + str(round(k, 4)) + "  R2=" + str(round(r2, 2))
-                    + "<extra>" + geno + " " + sex + "</extra>"
-                ),
-            ), row=1, col=ci)
-            added.add(lk)
-        fig.update_xaxes(title_text="Age (days)", row=1, col=ci)
-    suffix = "" if sel_sex == "Both" else (" - " + sel_sex)
-    fig.update_yaxes(title_text="PI (mean)", row=1, col=1)
-    fig.update_layout(
-        title_text="Motor Decline Rate - Exponential Decay" + suffix,
-        title_font_size=15, height=440,
-        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
-        legend=dict(
-            orientation="v", x=1.01, y=1,
-            bgcolor="rgba(255,255,255,0.9)",
-            bordercolor="#C5D7F0", borderwidth=1, font=dict(size=11),
-        ),
-        margin=dict(l=55, r=200, t=55, b=50),
-        font=dict(color="#0D2137"),
-    )
-    st.plotly_chart(fig, width='stretch')
 
 
 def _render_msci_results(msci_df, mdr_df):
@@ -1458,7 +1132,6 @@ def _msci_interpret(r: float) -> str:
     if r >= 0.6:
         return "Strongly coupled (motor \u2248 survival)"
     return "Inverse coupling (motor rescue \u2260 lifespan)"
-
 
 def _render_msci(msci_df: pd.DataFrame) -> None:
     """Display MSCI table + scatter."""
@@ -1957,6 +1630,2289 @@ def page_video_analysis():
                         "batch_counts.csv", "text/csv")
                 else:
                     st.error("No data extracted from any video.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — Video Scoring (climbing_video pipeline)
+# ══════════════════════════════════════════════════════════════════════════════
+_VS_DEFAULT_TIMES = [5.0, 10.0, 15.0, 20.0, 30.0, 60.0]
+_VS_SPEC_FIELDS = ("x0", "x1", "y_top", "y_bottom", "line_y")
+
+
+def _vs_stamp(path: str) -> float:
+    """File identity for the caches: a re-encoded file at the same path is new."""
+    try:
+        return float(Path(path).stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _vs_specs_to_vials(specs):
+    """Rebuild VialSpec objects from the plain tuples the caches are keyed on."""
+    from modules.climbing_video import VialSpec
+    return [VialSpec(x0=int(a), x1=int(b), y_top=int(c), y_bottom=int(d),
+                     line_y=int(e), label=str(lab), source=str(src))
+            for (lab, a, b, c, d, e, src) in specs]
+
+
+def _vs_spec_tuple(s: dict) -> tuple:
+    return (str(s["label"]), int(s["x0"]), int(s["x1"]), int(s["y_top"]),
+            int(s["y_bottom"]), int(s["line_y"]), str(s.get("source", "manual")))
+
+
+_VS_VIDEO_EXT = (".mp4", ".mov", ".avi", ".m4v", ".mkv")
+
+# Calibration and scoring rule are carried around the page as plain tuples for
+# the same reason the regions are: `st.cache_data` keys on its arguments, and a
+# dataclass instance is a new object on every rerun.
+_VS_CAL_MODES = {
+    "not_calibrated": "Not calibrated",
+    "tube_width_mm": "Cylinder outside diameter (mm)",
+    "tube_height_mm": "Tube height in shot (mm)",
+    "px_per_mm": "Pixels per mm, given directly",
+}
+_VS_RULE_MODES = {
+    "drawn_line": "Marked line on the cylinder",
+    "height_fraction": "Fraction of tube height",
+    "height_mm": "Height above the base in mm",
+}
+
+
+def _vs_calibration(calib: tuple):
+    """Rebuild a Calibration from the plain tuple the caches are keyed on."""
+    if not calib or calib[0] == "not_calibrated":
+        return None
+    from modules.climbing_video import Calibration
+    kind, value = str(calib[0]), float(calib[1])
+    return Calibration(**{kind: value}, source=_VS_CAL_MODES.get(kind, kind))
+
+
+def _vs_rule(rule: tuple):
+    """Rebuild a ScoringRule from the plain tuple the caches are keyed on."""
+    from modules.climbing_video import ScoringRule
+    if not rule:
+        return ScoringRule(mode="drawn_line")
+    mode = str(rule[0])
+    if mode == "height_fraction":
+        return ScoringRule(mode="height_fraction", fraction=float(rule[1]))
+    if mode == "height_mm":
+        return ScoringRule(mode="height_mm", height_mm=float(rule[1]))
+    return ScoringRule(mode="drawn_line")
+
+
+def _vs_calibration_controls(prefix: str) -> tuple:
+    """
+    The calibration control group, shared by the single-video and batch flows.
+
+    Returns the plain tuple the caches are keyed on, or () when the recording is
+    left uncalibrated.
+    """
+    st.caption(
+        "Give **one** known physical dimension and the pixels-to-millimetres "
+        "scale follows. This matters more than it looks: a count above a "
+        "hand-drawn line is not comparable between laboratories, or even "
+        "between two recordings in the same laboratory, because it depends on "
+        "where somebody drew the line and how far away the camera was. Height "
+        "climbed **in millimetres** is a physical quantity, comparable to "
+        "anyone, and it is what the RING assay was originally defined on.")
+    c1, c2 = st.columns([2, 1])
+    mode = c1.radio("Known dimension", list(_VS_CAL_MODES),
+                    format_func=lambda k: _VS_CAL_MODES[k], index=1,
+                    key=f"{prefix}_cal_mode")
+    if mode == "not_calibrated":
+        c2.caption("Heights will be reported only as a fraction of tube "
+                   "height, which is comparable within this recording but not "
+                   "between recordings at different zoom levels.")
+        return ()
+    if mode == "tube_width_mm":
+        val = c2.number_input(
+            "Outside diameter (mm)", 1.0, 500.0, 25.0, 0.5,
+            key=f"{prefix}_cal_width",
+            help="A 50 ml graduated cylinder is about 25 mm across; a standard "
+                 "Drosophila vial is about 23.5 mm. Diameter is usually the "
+                 "easier dimension to state accurately, and it is measured "
+                 "across the region the detector already knows.")
+    elif mode == "tube_height_mm":
+        val = c2.number_input(
+            "Tube height in shot (mm)", 1.0, 2000.0, 150.0, 1.0,
+            key=f"{prefix}_cal_height",
+            help="The height of the graduated portion actually visible in the "
+                 "frame, not the catalogue height of the cylinder.")
+    else:
+        val = c2.number_input("Pixels per mm", 0.1, 500.0, 5.0, 0.1,
+                              key=f"{prefix}_cal_ppm")
+    return (str(mode), float(val))
+
+
+def _vs_rule_controls(prefix: str, calibrated: bool) -> tuple:
+    """The scoring-rule selector, shared by the single-video and batch flows."""
+    st.caption(
+        "The rule is applied to stored fly **heights**, not baked into the "
+        "detection, so the same recording can be re-scored under a "
+        "collaborator's criterion without touching the video again.")
+    c1, c2 = st.columns([2, 1])
+    mode = c1.radio("How a fly counts as climbed", list(_VS_RULE_MODES),
+                    format_func=lambda k: _VS_RULE_MODES[k], index=0,
+                    key=f"{prefix}_rule_mode")
+    if mode == "height_fraction":
+        frac = c2.slider("Fraction of tube height", 0.05, 0.95, 0.5, 0.05,
+                         key=f"{prefix}_rule_frac",
+                         help="Needs no mark on the glass at all.")
+        return ("height_fraction", float(frac))
+    if mode == "height_mm":
+        hmm = c2.number_input(
+            "Height above the base (mm)", 1.0, 1000.0, 80.0, 1.0,
+            key=f"{prefix}_rule_mm", disabled=not calibrated,
+            help="The standard RING criterion, and the only rule that is "
+                 "directly comparable between laboratories.")
+        if not calibrated:
+            st.warning(
+                "A height in millimetres needs a calibration. Give the "
+                "cylinder diameter or the tube height above; until then the "
+                "marked line is used instead.")
+        return ("height_mm", float(hmm))
+    return ("drawn_line", 0.0)
+
+
+def _vsb_new_manifest():
+    """A different manifest is now in play: drop the old batch result and give
+    the editor a fresh key."""
+    st.session_state["_vsb_manifest_n"] = (
+        int(st.session_state.get("_vsb_manifest_n", 0)) + 1)
+    st.session_state.pop("_vsb_result", None)
+    st.session_state.pop("_vsb_sig", None)
+
+
+def _vs_default_spec(i: int, n: int, width: int, height: int) -> dict:
+    """Evenly spaced regions, as a starting point for manual placement."""
+    pad  = int(0.05 * width)
+    span = max(1, (width - 2 * pad) // max(n, 1))
+    x0   = pad + i * span
+    return {"label": f"R{i + 1}",
+            "x0": int(x0 + 0.10 * span), "x1": int(x0 + 0.90 * span),
+            "y_top": int(0.10 * height), "y_bottom": int(0.90 * height),
+            "line_y": int(0.45 * height)}
+
+
+@st.cache_data(show_spinner=False)
+def _vs_probe(path: str, stamp: float) -> dict:
+    from modules.climbing_video import probe_video
+    return probe_video(path).to_dict()
+
+
+@st.cache_resource(show_spinner=False)
+def _vs_background(path: str, stamp: float):
+    """The temporal-median background. Cached as a resource: it is a large array,
+    every later step needs it, and it depends only on the file."""
+    from modules.climbing_video import build_background
+    return build_background(path)
+
+
+@st.cache_data(show_spinner=False)
+def _vs_detect(path: str, stamp: float, n_vials: int) -> dict:
+    from modules.climbing_video import detect_vials
+    det = detect_vials(path, n_vials=int(n_vials),
+                       background=_vs_background(path, stamp))
+    # The activity map and background are megabyte-scale arrays the page never
+    # draws, and the background is already cached in its own entry.
+    return {k: v for k, v in det.items() if k not in ("activity", "background")}
+
+
+@st.cache_data(show_spinner=False)
+def _vs_tap(path: str, stamp: float) -> dict:
+    from modules.climbing_video import detect_tap_time
+    tap = detect_tap_time(path)
+    return {k: v for k, v in tap.items() if k not in ("motion", "times")}
+
+
+@st.cache_data(show_spinner=False)
+def _vs_annotate(path: str, stamp: float, specs: tuple,
+                 at_time_s: float, t0_s: float):
+    """One annotated frame, as RGB. Keyed on the regions, so moving a region
+    re-renders it but changing anything else does not."""
+    import cv2 as _cv2
+    from modules.climbing_video import annotate_frame
+    vis = annotate_frame(path, _vs_specs_to_vials(specs),
+                         _vs_background(path, stamp),
+                         at_time_s=float(at_time_s), t0_s=float(t0_s))
+    return _cv2.cvtColor(vis, _cv2.COLOR_BGR2RGB)
+
+
+@st.cache_data(show_spinner=False)
+def _vs_analyze(path: str, stamp: float, specs: tuple, times: tuple,
+                totals: tuple, t0_s: float,
+                calib: tuple = (), rule: tuple = ()) -> dict:
+    """The 60-90 second step. Keyed on every input that can change the numbers,
+    so no widget interaction on the page can trigger it a second time."""
+    from modules.climbing_video import analyze_climbing_video
+    res = analyze_climbing_video(
+        path, vials=_vs_specs_to_vials(specs),
+        scoring_times_s=[float(t) for t in times],
+        t0_s=float(t0_s),
+        n_total_flies={str(k): int(v) for k, v in totals} or None,
+        calibration=_vs_calibration(calib),
+        scoring_rule=_vs_rule(rule),
+    )
+    res.pop("background", None)
+    return res
+
+
+def _vs_reset_downstream():
+    """Forget everything derived from the previous recording."""
+    for k in ("_vs_det", "_vs_auto", "_vs_specs", "_vs_result", "_vs_table",
+              "_vs_preview_ok"):
+        st.session_state.pop(k, None)
+    for k in [k for k in list(st.session_state.keys())
+              if isinstance(k, str) and k.startswith("vs_spec_")]:
+        st.session_state.pop(k, None)
+    st.session_state.pop("vs_t0", None)
+
+
+def page_draw_vials():
+    """
+    Draw the cylinders, mark the line, score -- with a zoom for checking the counts.
+
+    Automatic geometry is what failed hardest on real footage: the scoring line was
+    found outside the tube in 4 of 15 recordings, once BELOW the base; boxes landed on
+    the frame edges while the cylinders stood in the middle; three cylinders were
+    found where two exist; and half the exported rows of that dataset came from
+    recordings in that state. Drawing the geometry removes that whole class of error,
+    which is the reason this page exists.
+    """
+    import tempfile
+
+    import cv2
+    from PIL import Image
+
+    from modules import climbing_detectors as CD
+    from modules import climbing_layout as LAY
+    from modules import climbing_simple as CS
+    from modules import climbing_video as CVm
+
+    render_header("Draw Vials",
+                  "Draw the cylinders, mark the line, and score -- with a zoom to "
+                  "check every count")
+
+    try:
+        from streamlit_drawable_canvas import st_canvas
+    except ImportError:
+        st.error("`streamlit-drawable-canvas` is not installed. Run "
+                 "`pip install streamlit-drawable-canvas` and reload.")
+        return
+
+    # 1 - the recording
+    st.subheader("1 - Recording")
+    up = st.file_uploader("Video", type=["mp4", "avi", "mov", "mkv", "wmv"], key="dv_up")
+    local = st.text_input("...or a path already on this machine", key="dv_path")
+    path = None
+    if up is not None:
+        k = f"dv_tmp_{up.name}_{up.size}"
+        if k not in st.session_state:
+            t = tempfile.NamedTemporaryFile(delete=False, suffix=Path(up.name).suffix)
+            t.write(up.read()); t.flush(); t.close()
+            st.session_state[k] = t.name
+        path = st.session_state[k]
+    elif local.strip():
+        path = local.strip() if Path(local.strip()).is_file() else None
+        if path is None:
+            st.error(f"No file at {local}")
+    if not path:
+        st.info("Upload a recording, or give the path to one.")
+        return
+
+    try:
+        info = CVm.probe_video(path)
+    except Exception as exc:
+        st.error(f"Could not open that video: {exc}")
+        return
+    st.caption(f"{Path(path).name} - {info.width}x{info.height}, {info.fps:.2f} fps, "
+               f"{info.duration_s:.1f} s")
+
+    # 2 - the tap
+    st.subheader("2 - When were they tapped down?")
+    st.caption("One second of error here moves the 10-second score by more than its "
+               "own value. The suggestion below is the moment the flies are "
+               "physically lowest in the tube, which is measurable rather than eyeballed.")
+    if st.button("Find the tap for me", key="dv_findtap"):
+        with st.spinner("Looking for the moment the flies are lowest..."):
+            st.session_state["dv_t0"] = _suggest_tap(path, CVm)
+    t0 = st.slider("Tap (seconds into the file)", 0.0,
+                   float(max(info.duration_s - 1, 0.1)),
+                   float(st.session_state.get("dv_t0", 0.0)), 0.1, key="dv_t0slider")
+
+    # 3 - draw
+    st.subheader("3 - Draw a box round each cylinder")
+    at_s = st.slider("Show the frame this many seconds after the tap",
+                     0.0, 60.0, 10.0, 1.0, key="dv_at")
+    frames = CVm._read_frames(path, [int((t0 + at_s) * info.fps)])
+    if not frames:
+        st.error("That frame could not be read.")
+        return
+    rgb = cv2.cvtColor(frames[0], cv2.COLOR_GRAY2RGB)
+    disp_w = 700
+    disp_h = int(round(info.height * disp_w / max(info.width, 1)))
+    bg_img = Image.fromarray(cv2.resize(rgb, (disp_w, disp_h)))
+
+    st.caption("Drag a rectangle over each cylinder, covering its full height. They "
+               "are numbered left to right as R1, R2 ... the same names the rest of "
+               "DroPhenix uses.")
+    canvas = st_canvas(fill_color="rgba(255,165,0,0.15)", stroke_width=2,
+                       stroke_color="#FF6A00", background_image=bg_img,
+                       update_streamlit=True, height=disp_h, width=disp_w,
+                       drawing_mode="rect", key="dv_canvas")
+
+    objs = (canvas.json_data or {}).get("objects", []) if canvas.json_data else []
+    layout = LAY.layout_from_canvas(objs, disp_w, disp_h, info.width, info.height,
+                                    int(disp_h * 0.45), Path(path).name, float(t0))
+    if not layout.vials:
+        st.info("Draw at least one box to continue.")
+        return
+
+    # 3b - the scoring line, PROPOSED per cylinder and CONFIRMED by the operator
+    st.subheader("3b - The scoring line, one per cylinder")
+    st.caption(
+        "The software proposes a line and says how sure it is; you decide. This is "
+        "what the published method does -- Cao et al. 2017 have the operator mark the "
+        "vial baselines with a cursor, and nothing automatic here is better than that."
+        "\n\nThe proposal is the darkest horizontal feature in the middle of the box "
+        "that does **not** continue past the glass. That last condition is what "
+        "matters: a mark drawn on the tube stops at the glass, while a bench mat, a "
+        "shelf or a skirting board runs across the whole frame. Without it the rule "
+        "put the line on the mat at the 10 mL mark, 400 px low, on 12 of 12 vials."
+        "\n\n**Margin** is how much darker the winner is than the next candidate. "
+        "Near 1.0 means a coin toss: those lines were wrong while looking confident, "
+        "so anything under 1.3 must be confirmed by eye before it will score.")
+
+    if st.button("Propose a line in each cylinder", key="dv_findlines"):
+        with st.spinner("Building the background and measuring each cylinder..."):
+            bgm = CVm.build_background(path)
+            props = {}
+            for v in layout.vials:
+                box = CS.Box(x0=v.x0, y0=v.y0, x1=v.x1, y1=v.y1,
+                             label=v.label, n_flies=max(v.n_flies, 1))
+                fit = CS.find_line(bgm, box)
+                props[v.label] = {"row": int(fit.row), "depth": float(fit.depth),
+                                  "margin": float(fit.margin),
+                                  "clear": bool(fit.is_clear()),
+                                  "verdict": fit.verdict()}
+            st.session_state["dv_lineprops"] = props
+            st.session_state["dv_bg_key"] = Path(path).name
+
+    props = st.session_state.get("dv_lineprops") or {}
+    # a proposal belongs to one recording and one set of boxes; anything else is stale
+    if props and (st.session_state.get("dv_bg_key") != Path(path).name
+                  or set(props) != {v.label for v in layout.vials}):
+        props = {}
+        st.session_state.pop("dv_lineprops", None)
+        st.info("The boxes or the recording changed, so the previous proposals were "
+                "discarded. Press the button again.")
+    scale = info.height / max(disp_h, 1)          # native rows per display row
+    scale_x = info.width / max(disp_w, 1)         # native cols per display col
+    rows_native, unconfirmed = {}, []
+    if props:
+        for v in layout.vials:
+            pr = props.get(v.label)
+            c1, c2 = st.columns([3, 2])
+            with c1:
+                default_disp = int(round((pr["row"] if pr else info.height * 0.45) / scale))
+                default_disp = int(np.clip(default_disp, 0, disp_h))
+                d = st.slider(f"{v.label} - line (pixels from the top of the picture)",
+                              0, disp_h, default_disp, 1, key=f"dv_line_{v.label}")
+                # The picture is shown at 700 px wide, so one slider step is
+                # several native rows. Routing an untouched proposal through the
+                # slider would round it away, so an unmoved slider keeps the measured
+                # row exactly; moving it hands the choice to the operator.
+                rows_native[v.label] = (int(pr["row"]) if (pr and d == default_disp)
+                                        else int(round(d * scale)))
+                st.caption(f"row {rows_native[v.label]} of {info.height} in the "
+                           f"full-size frame"
+                           + ("  (the measured proposal)" if pr and d == default_disp
+                              else "  (moved by you)"))
+            with c2:
+                if pr is None:
+                    st.warning("no proposal - set it yourself")
+                    unconfirmed.append(v.label)
+                elif pr["clear"]:
+                    st.success(f"clear (depth {pr['depth']:.0f}, "
+                               f"margin {pr['margin']:.2f})")
+                else:
+                    st.error(pr["verdict"])
+                    if not st.checkbox(f"I have checked {v.label}'s line",
+                                       key=f"dv_ok_{v.label}"):
+                        unconfirmed.append(v.label)
+    else:
+        st.info("Press the button above, or set each line by hand below.")
+        for v in layout.vials:
+            d = st.slider(f"{v.label} - line (pixels from the top of the picture)",
+                          0, disp_h, int(disp_h * 0.45), 1, key=f"dv_line_{v.label}")
+            rows_native[v.label] = int(round(d * scale))
+            st.caption(f"row {rows_native[v.label]} of {info.height} in the "
+                       f"full-size frame")
+        # Nothing has been measured and nothing has been confirmed: these sliders
+        # start at 45% of frame height, which is a guess, not a line. Scoring on an
+        # untouched guess is the exact failure this section exists to prevent, so it
+        # takes one explicit statement that a person actually looked.
+        if not st.checkbox("I have placed every line on the mark myself",
+                           key="dv_manual_ok"):
+            unconfirmed.append("all cylinders (no proposal, none confirmed)")
+
+    # every line drawn where it will actually be used
+    prev = np.array(bg_img).copy()
+    for v in layout.vials:
+        r_disp = int(round(rows_native.get(v.label, info.height * 0.45) / scale))
+        x0d, x1d = int(v.x0 / scale_x), int(v.x1 / scale_x)
+        pr = props.get(v.label)
+        col = (0, 170, 0) if (pr and pr["clear"]) else (220, 0, 0)
+        cv2.rectangle(prev, (x0d, int(v.y0 / scale)), (x1d, int(v.y1 / scale)),
+                      (255, 140, 0), 1)  # y by scale, x by scale_x
+        cv2.line(prev, (max(0, x0d - 12), r_disp), (min(disp_w - 1, x1d + 12), r_disp),
+                 col, 2)
+        cv2.putText(prev, v.label, (x0d, max(12, int(v.y0 / scale) - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 140, 0), 1)
+    st.image(prev, caption="Green = the software is confident; red = you must confirm it",
+             width="stretch")
+
+    # carry the confirmed rows into the layout (shared height + per-vial offset)
+    LAY.set_vial_lines(layout, rows_native)
+
+    if unconfirmed:
+        why = ("nothing has been measured and nothing confirmed - those sliders are "
+               "still at 45% of frame height, which is a starting position, not a line"
+               if not props else
+               "the proposal there is not distinguishable from another dark feature")
+        st.warning(
+            f"Not scoring yet: {', '.join(unconfirmed)} - {why}. Check the picture "
+            f"above, then tick the box or move the line. A line placed 400 px wrong "
+            f"still produces a confident-looking number, which is the failure this "
+            f"stops.")
+
+    # 4 - label
+    st.subheader("4 - Label the cylinders")
+    st.caption("The number of flies loaded is required. Without it the denominator is "
+               "taken from the detector, and that changed across timepoints in 24 of "
+               "24 vials the last time it was relied on - for sealed cylinders whose "
+               "count cannot change.\n\n"
+               "**The vial column is editable, and you should check it.** Boxes are "
+               "numbered left to right as a starting point, but that is only a "
+               "convenience: in the Day7 recordings the tubes are marked R1/R2/R3 in "
+               "pen and their physical order changes between videos (R3,R2,R1 in one, "
+               "R1,R2,R3 in the next). Type what is written on the glass.")
+    ed = st.data_editor(
+        pd.DataFrame([{"vial": v.label, "Genotype": "", "Treatment": "Untreated",
+                       "Sex": "Mixed", "flies_loaded": 20}
+                      for v in layout.vials]),
+        hide_index=True, width="stretch", key="dv_labels")
+    for v, (_, r) in zip(layout.vials, ed.iterrows()):
+        # the label is what is written on the tube, not where it happens to stand
+        lab = str(r.get("vial") or "").strip()
+        if lab:
+            v.label = lab
+        v.genotype = str(r.get("Genotype") or v.label)
+        v.treatment = str(r.get("Treatment") or "Untreated")
+        v.sex = str(r.get("Sex") or "Mixed")
+        v.n_flies = int(r.get("flies_loaded") or 0)
+        # line_nudge_px is NOT edited here -- it carries the line confirmed in 3b
+
+    probs = layout.problems()
+    if probs:
+        for msg in probs:
+            st.error(msg)
+        return
+    st.success(f"{len(layout.vials)} cylinder(s) drawn and labelled.")
+    st.download_button("Save this layout", layout.to_json(),
+                       file_name=f"layout_{Path(path).stem}.json",
+                       mime="application/json", key="dv_savelayout",
+                       help="Re-use it on the other recordings of this session. The "
+                            "software realigns it to each one and refuses if the "
+                            "camera moved too far for the boxes to still fit.")
+
+    # 5 - score
+    st.subheader("5 - Score")
+    tp_txt = st.text_input("Timepoints after the tap (seconds)",
+                           "10, 20, 30, 40, 50, 60", key="dv_times")
+    try:
+        times = [float(x) for x in tp_txt.split(",") if x.strip()]
+    except ValueError:
+        st.error("Timepoints must be numbers separated by commas.")
+        return
+    backend = st.selectbox("Detection method", list(CD.BACKENDS),
+                           format_func=lambda b: CD.BACKEND_LABELS[b],
+                           index=list(CD.BACKENDS).index(CD.DEFAULT_BACKEND),
+                           key="dv_backend")
+    # The published rule is the NET of up- and down-crossings, which is simply how
+    # many are standing above the line: "if a fly climbs back down or falls, record
+    # that fly as -1 and count the next fly to cross as the same number". The
+    # ratchet is a different question and is always at least as large. These labels
+    # previously had it the other way round -- the ratchet was offered first, and
+    # captioned as the published protocol, so it was what the page scored by
+    # default while `analyze_climbing_video` defaulted to the protocol's rule.
+    mode = st.radio("Scoring rule",
+                    ["Flies STANDING above the line - up minus down (the published protocol)",
+         "The MOST that were ever above the line at one moment (a ratchet)"], key="dv_mode")
+    scoring = "net" if "STANDING" in mode else "max_reached"
+
+    blocked = bool(unconfirmed)
+    if blocked:
+        st.error(f"Scoring is disabled until the line is confirmed in: "
+                 f"{', '.join(unconfirmed)} (section 3b).")
+    if st.button("Score these cylinders", type="primary", key="dv_go",
+                 disabled=blocked):
+        with st.spinner("Building the background model..."):
+            bg = CVm.build_background(path)
+        st.session_state["dv_bg_path"] = path
+        out, diags = [], []
+        bar = st.progress(0.0)
+        for i, dv in enumerate(layout.vials, 1):
+            bar.progress(i / len(layout.vials), text=f"Vial {i} of {len(layout.vials)}")
+            spec = dv.to_spec(layout.line_y)
+            probe = CD.probe_footage(path, spec, background=bg, n_samples=8)
+            scored = CD.score_crossings(path, spec, bg, t0, times, backend=backend,
+                                        probe=probe, mode=scoring)
+            diag = CD.timepoint_diagnostics(path, spec, bg, t0, times,
+                                            n_flies_loaded=dv.n_flies,
+                                            backend=backend, probe=probe)
+            diag.insert(0, "vial", dv.label)
+            diags.append(diag)
+            for row in scored:
+                n = row["n_above"]
+                out.append({"Genotype": dv.genotype, "Treatment": dv.treatment,
+                            "Sex": dv.sex, "Vial_ID": dv.label, "Replicate": i,
+                            "Time_sec": row["time_s"],
+                            "Count_climbed": int(round(n)) if np.isfinite(n) else None,
+                            "n_total_flies": dv.n_flies,
+                            "PI": (round(n / max(dv.n_flies, 1), 4)
+                                   if np.isfinite(n) else None),
+                            "scoring_mode": scoring, "backend": backend,
+                            "Video_file": Path(path).name})
+        bar.empty()
+        st.session_state["dv_results"] = pd.DataFrame(out)
+        st.session_state["dv_diag"] = pd.concat(diags, ignore_index=True)
+        st.session_state["dv_layout_json"] = layout.to_json()
+
+    res = st.session_state.get("dv_results")
+    diag = st.session_state.get("dv_diag")
+    if res is None or res.empty:
+        return
+
+    st.subheader("6 - Results")
+    st.dataframe(res, width="stretch")
+    st.download_button("Download DroPhenix CSV", res.to_csv(index=False).encode(),
+                       file_name=f"climbing_{Path(path).stem}.csv",
+                       mime="text/csv", key="dv_dl")
+
+    st.subheader("7 - What limits the count at each timepoint")
+    st.markdown(
+        "A single number per timepoint hides whether it should be believed. Every "
+        "quantity below was measured at the moment of the count and needs no ground "
+        "truth. **uncertain_flies** adds up the animals whose side of the line is "
+        "genuinely in doubt - compare it with the **3-fly** spread you get from "
+        "tapping the same vial five times, which is the floor a perfect counter hits.")
+    cols = [c for c in ["vial", "time_s", "n_above", "n_total_detected",
+                        "flies_loaded", "not_visible", "near_line", "frame_spread",
+                        "merged_blobs", "on_static_mark", "uncertain_flies",
+                        "confidence", "limiting_factor"] if c in diag.columns]
+    st.dataframe(diag[cols], width="stretch")
+    with st.expander("What each column means"):
+        st.markdown("""
+- **near_line** - detections within about two fly body-lengths of the line. These are
+  the animals whose classification is decided by where the line sits to within a few
+  pixels, so this is the count's sensitivity to the geometry.
+- **frame_spread** - how much the count moved across the consecutive frames averaged
+  at that instant. Flies barely move in 0.17 s, so this is the detector disagreeing
+  with itself.
+- **merged_blobs** - touching animals counted as one. Worst early, when the cohort is
+  still piled at the base - which is exactly when the 10-second score is taken.
+- **on_static_mark** - detections rejected for sitting on a printed graduation. A high
+  number means the mask is doing its job, not that the count is fragile; it is
+  reported but deliberately excluded from the limiting factor.
+- **not_visible** - flies loaded minus objects found. Positive means animals the
+  camera cannot see; negative means something that is not a fly is being counted.
+""")
+
+    st.subheader("8 - Zoom in and check the counting")
+    st.caption("The counts are worth exactly what the pictures show. Pick a cylinder "
+               "and a timepoint and look at it.")
+    z1, z2, z3 = st.columns(3)
+    zv = z1.selectbox("Cylinder", [v.label for v in layout.vials], key="dv_zv")
+    zt = z2.selectbox("Timepoint (s)", times, key="dv_zt")
+    zoom = z3.slider("Magnification", 1, 6, 3, 1, key="dv_zoom")
+    above_only = st.checkbox("Show only the part above the line", key="dv_half")
+    dv = next(v for v in layout.vials if v.label == zv)
+    with st.spinner("Rendering..."):
+        img = _zoom_panel(path, dv.to_spec(layout.line_y), t0, float(zt),
+                          backend, int(zoom), bool(above_only), CVm, CD)
+    if img is None:
+        st.error("That frame could not be read.")
+    else:
+        st.image(img, width="stretch",
+                 caption=f"{zv} at {zt:.0f} s after the tap - red = counted above the "
+                         f"line, blue = below, green = the line")
+
+
+def _suggest_tap(path, CVm) -> float:
+    """The tap is the moment the flies are physically lowest, which is measurable."""
+    import cv2
+    info = CVm.probe_video(path)
+    bg = CVm.build_background(path)
+    det = CVm.detect_vials(path, n_vials=None, background=bg)
+    vials = det.get("vials") or []
+    if not vials:
+        return 0.0
+    p = CVm.DetectorParams(register=False)
+    cap = cv2.VideoCapture(str(path))
+    best_t, best_h = 0.0, float("inf")
+    for t in np.arange(0, min(info.duration_s - 0.5, 40.0), 1.0):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * info.fps))
+        ok, im = cap.read()
+        if not ok:
+            continue
+        g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+        g, _, _ = CVm.align_to_background(g, bg)
+        hs = []
+        for v in vials:
+            r = CVm.count_in_vial(g, bg, v, p)
+            hs += [(v.y_bottom - b["cy"]) / max(v.height, 1) for b in r["blobs"]]
+        if hs and float(np.mean(hs)) < best_h:
+            best_h, best_t = float(np.mean(hs)), float(t)
+    cap.release()
+    return best_t
+
+
+def _zoom_panel(path, spec, t0, t, backend, zoom, above_only, CVm, CD):
+    """One vial at one instant, magnified, with every detection marked."""
+    import cv2
+
+    from modules import climbing_video_analyzer as CVA
+    info = CVm.probe_video(path)
+    fr = CVm._read_frames(path, [int((t0 + t) * info.fps)])
+    if not fr:
+        return None
+    bgr = cv2.cvtColor(fr[0], cv2.COLOR_GRAY2BGR)
+    bg = CVm.build_background(path)
+    cfg = CD._vialconfig_for(spec)
+    cfg.line_y_frac = float(np.clip((spec.line_y - spec.y_top)
+                                    / max(spec.height, 1), 0.0, 1.0))
+    cents, _ = CVA.detect_flies_in_roi(bgr, cfg, CVA.DEFAULT_DETECTION_PARAMS)
+    if backend == "threshold_masked":
+        m = CD.static_mask(bg, spec)
+        cents = [(x, y) for (x, y) in cents
+                 if not m[int(np.clip(y, 0, m.shape[0] - 1)),
+                          int(np.clip(x, 0, m.shape[1] - 1))]]
+    bot = spec.line_y if above_only else spec.y_bottom
+    crop = bgr[spec.y_top:bot, spec.x0:spec.x1].copy()
+    if crop.size == 0:
+        return None
+    ly = spec.line_y - spec.y_top
+    if 0 <= ly < crop.shape[0]:
+        cv2.line(crop, (0, ly), (crop.shape[1] - 1, ly), (0, 200, 0), 1)
+    for (x, y) in cents:
+        if 0 <= int(y) < crop.shape[0]:
+            colour = (0, 0, 255) if int(y) < ly else (255, 0, 0)
+            cv2.circle(crop, (int(x), int(y)), 6, colour, 2)
+    z = max(1, int(zoom))
+    crop = cv2.resize(crop, (crop.shape[1] * z, crop.shape[0] * z),
+                      interpolation=cv2.INTER_NEAREST)
+    return cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+
+
+def page_climbing_video():
+    """
+    Climbing-assay video analysis with user-defined regions.
+
+    Flow: upload -> experiment details -> mark T=0 -> define ROI and reference
+    line per vial -> calibration preview -> full run -> results and export.
+
+    This page states the geometry rather than inferring it, which is the point:
+    it is the path for footage the automatic detector in "Video Scoring" cannot
+    handle. Nothing is guessed on the user's behalf, and the preview in step 5
+    exists so that no analysis is run before the detections have been looked at.
+    """
+    import tempfile
+
+    import cv2
+
+    from modules.climbing_video import VialSpec
+    from modules.climbing_video_analyzer import (
+        VideoAnalysisSession, VialConfig, load_video_metadata,
+        get_frame_at_number, detect_flies_in_roi, results_to_drophenix_csv,
+        try_detect_reference_line, run_full_analysis, DISCREPANCY_LIMIT,
+    )
+
+    def _spec(cfg):
+        """The same region, expressed the way the detector registry wants it."""
+        return VialSpec(x0=int(cfg.roi_x), x1=int(cfg.roi_x + cfg.roi_w),
+                        y_top=int(cfg.roi_y), y_bottom=int(cfg.roi_y + cfg.roi_h),
+                        line_y=int(cfg.roi_y + cfg.line_y_frac * cfg.roi_h),
+                        label=f"R{cfg.vial_id}", source="manual")
+
+    render_header("Climbing Video Analyser",
+                  "Count flies above a reference line from a recorded assay video")
+
+    with st.expander("Known limitations — read before trusting a number"):
+        st.markdown(f"""
+- **Clustered flies.** Immediately after the tap the flies are piled at the base and
+  touching animals appear as one blob. Detection improves as they disperse, typically
+  after 5–10 s.
+- **Printed graduations.** On a graduated cylinder the printed ticks and numerals are
+  dark and roughly fly-sized. Adaptive thresholding removes a lighting gradient but not
+  a locally dark mark, so this method can **over**-count on graduated glassware. Any
+  frame where detected and expected differ by more than {DISCREPANCY_LIMIT:.0%} is
+  flagged in both directions — check the preview before trusting the run.
+- **Dark background with dark flies.** Switch the fly-appearance setting.
+- **Reflective glass.** If glare produces false positives, raise the minimum fly size.
+- **Low frame rate (< 15 fps).** Fast animals can be missed; the confidence score
+  flags those timepoints.
+- **ROI coverage.** The rectangle must include the full vial height, including the
+  region above the reference line — flies outside it are simply not counted.
+""")
+
+    # ── STEP 1: video ────────────────────────────────────────────────────────
+    st.subheader("Step 1 — Upload video")
+    video_file = st.file_uploader(
+        "Climbing assay video", type=["mp4", "avi", "mov", "mkv", "wmv"],
+        help="Any common format. Phone, webcam or DSLR footage all work.")
+    local_path = st.text_input(
+        "…or the path to a video already on this machine",
+        value="", placeholder=r"D:\DroPhenix\Testing data\...\video.mp4",
+        help="Avoids re-uploading gigabytes when the file is already local.")
+
+    video_path = None
+    if video_file is not None:
+        key = f"cva_tmp_{video_file.name}_{video_file.size}"
+        if key not in st.session_state:
+            tmp = tempfile.NamedTemporaryFile(delete=False,
+                                              suffix=Path(video_file.name).suffix)
+            tmp.write(video_file.read())
+            tmp.flush()
+            tmp.close()
+            st.session_state[key] = tmp.name
+        video_path = st.session_state[key]
+    elif local_path.strip():
+        if Path(local_path.strip()).is_file():
+            video_path = local_path.strip()
+        else:
+            st.error(f"No file at {local_path}")
+
+    if not video_path:
+        st.info("Upload a video, or give the path to one already on this machine.")
+        return
+
+    try:
+        meta = load_video_metadata(video_path)
+    except RuntimeError as exc:
+        st.error(str(exc))
+        return
+    fps = meta["fps"]
+    if not fps or fps <= 0:
+        st.error("This file reports no frame rate, so timepoints cannot be located. "
+                 "Re-encode it (for example with ffmpeg) and try again.")
+        return
+
+    st.success(f"{Path(video_path).name} — {meta['total_frames']} frames, "
+               f"{meta['duration_sec']:.1f} s, {fps:.2f} fps, "
+               f"{meta['width']}x{meta['height']} px")
+
+    # ── STEP 2: experiment details ───────────────────────────────────────────
+    st.subheader("Step 2 — Experiment details")
+    c1, c2 = st.columns(2)
+    with c1:
+        n_vials = st.number_input("Vials/cylinders visible in this video",
+                                  1, 12, 1, 1, key="cva_nv")
+        n_flies = st.number_input("Flies per vial (expected total)",
+                                  1, 200, 20, 1, key="cva_nf")
+        n_taps = int(st.number_input(
+            "Taps in this recording", 1, 20, 1, 1, key="cva_ntaps",
+            help="Most negative-geotaxis protocols tap the same vial three to "
+                 "five times with a minute's recovery between them and score "
+                 "after each. Each tap is a technical replicate of the SAME "
+                 "flies and has its own T=0."))
+        fly_col = st.selectbox("Fly appearance",
+                               ["Dark flies, light background (typical)",
+                                "Light flies, dark background"], key="cva_col")
+        fly_color_key = "dark" if "Dark" in fly_col else "light"
+    with c2:
+        geno_txt = st.text_area(
+            "Genotype per vial (one per line)",
+            value="\n".join(f"Genotype_{i+1}" for i in range(int(n_vials))),
+            height=120, key="cva_geno")
+        rep_start = st.number_input("Starting replicate number", 1, 100, 1, 1,
+                                    key="cva_rep")
+        treatment = st.text_input("Treatment", value="vehicle", key="cva_treat")
+        sex = st.selectbox("Sex", ["Mixed", "Male", "Female"], key="cva_sex")
+
+    genos = [g.strip() for g in geno_txt.strip().split("\n") if g.strip()]
+    if len(genos) != int(n_vials):
+        st.warning(f"{len(genos)} genotype(s) given for {int(n_vials)} vial(s); "
+                   "the list is padded so the run can proceed — fix it before "
+                   "exporting.")
+        genos = (genos + [f"Genotype_{i+1}" for i in range(int(n_vials))])[:int(n_vials)]
+
+    tp_txt = st.text_input("Timepoints, seconds after tap-down (comma-separated)",
+                           value="10, 20, 30, 60", key="cva_tp")
+    try:
+        timepoints = [float(t.strip()) for t in tp_txt.split(",") if t.strip()]
+    except ValueError:
+        st.error("Timepoints must be numbers separated by commas.")
+        return
+    if not timepoints:
+        st.error("Give at least one timepoint.")
+        return
+
+    # ── STEP 3: T=0 ──────────────────────────────────────────────────────────
+    st.subheader("Step 3 — Mark the tap-down moment (T=0) for each tap")
+    # THIS USED TO BE A SINGLE SLIDER DEFAULTING TO 0.0, AND THAT WAS TWO FAULTS.
+    # First, `climbing_video.detect_taps` already finds EVERY tap in a recording
+    # and returns the moment each disturbance ENDS -- which is when the flies are
+    # down and free to climb, and therefore that trial's zero -- but this page
+    # never called it, so the operator was left to eyeball a 0.5 s slider for a
+    # quantity the software could measure. Second, only ONE T=0 existed, so a
+    # five-tap recording was scored as a single trial and the other four taps were
+    # read as part of one long observation after tap 1.
+    if st.button("Find the taps in this recording", key="cva_findtaps"):
+        with st.spinner("Looking for whole-frame motion bursts…"):
+            import modules.climbing_video as _CVt
+            st.session_state["cva_taps_" + Path(video_path).name] = (
+                _CVt.detect_taps(video_path))
+    tapinfo = st.session_state.get("cva_taps_" + Path(video_path).name)
+
+    found: list = []
+    if tapinfo:
+        found = [float(t["t0_s"]) for t in (tapinfo.get("taps") or [])]
+        if found:
+            st.success(f"Found {len(found)} tap(s) at "
+                       + ", ".join(f"{v:.1f} s" for v in found) + ".")
+        else:
+            st.warning("No tap was detected. That is not proof there is none — a "
+                       "gentle tap, or one made before recording started, leaves "
+                       "no motion burst. Enter the times yourself below.")
+        for w in ([] if tapinfo.get("framing_stable", True) else
+                  ["The camera appears to have MOVED during this recording. The "
+                   "background model assumes fixed framing, so counts either side "
+                   "of the move are not comparable — trim the file first."]):
+            st.error(w)
+        if found and len(found) != n_taps:
+            st.warning(
+                f"You declared **{n_taps}** tap(s); the detector found "
+                f"**{len(found)}**. Neither is automatically right — a rack "
+                f"knocked in passing looks like a tap, and a gentle one does not. "
+                f"Reconcile them below before scoring; the values you leave in the "
+                f"boxes are what gets used.")
+    else:
+        st.caption("Press the button to measure the taps, or enter the times "
+                   "yourself below.")
+
+    tap_zeros_sec: list = []
+    tcols = st.columns(min(n_taps, 4))
+    for ti in range(n_taps):
+        # detected value as the default where there is one, otherwise spaced by a
+        # nominal minute -- never silently 0.0 for every tap, which would score the
+        # same instant n times and look like perfect agreement between replicates
+        default = (found[ti] if ti < len(found)
+                   else min(float(ti) * 60.0, float(meta["duration_sec"])))
+        with tcols[ti % len(tcols)]:
+            tap_zeros_sec.append(float(st.number_input(
+                f"Tap {ti+1} — T=0 (s)", 0.0, float(max(meta["duration_sec"], 0.1)),
+                float(default), 0.1, format="%.2f", key=f"cva_t0_{ti}")))
+    if any(b <= a for a, b in zip(tap_zeros_sec, tap_zeros_sec[1:])):
+        st.error("Tap times must increase. Two taps at the same instant would score "
+                 "the same frames twice and report them as agreeing replicates.")
+        return
+
+    tap_zero_frames = [int(v * fps) for v in tap_zeros_sec]
+    t_zero_sec, t_zero_frame = tap_zeros_sec[0], tap_zero_frames[0]
+    preview = get_frame_at_number(video_path, t_zero_frame)
+    if preview is None:
+        st.error("That frame could not be read — adjust the tap times.")
+        return
+    st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB),
+             caption=f"Tap 1, T=0 (frame {t_zero_frame})", width="stretch")
+    st.caption("Scoring times are measured from each tap's own T=0. A one-second "
+               "error moves an early score substantially, so check each one. The "
+               "frame above is tap 1, and it is also the frame the regions and the "
+               "reference line below are set against.")
+    last_end = tap_zeros_sec[-1] + (max(timepoints) if timepoints else 0.0)
+    if last_end > meta["duration_sec"]:
+        st.warning(
+            f"The last tap plus your longest timepoint reaches "
+            f"{last_end:.0f} s, but the recording is only "
+            f"{meta['duration_sec']:.0f} s long. Those readings will be reported "
+            f"as not scoreable rather than guessed.")
+
+    # ── STEP 4: ROI and reference line ───────────────────────────────────────
+    st.subheader("Step 4 — Vial regions and reference line")
+    st.markdown(
+        "Give each vial's rectangle in **pixels of the full frame** (X and Y of the "
+        "top-left corner, then width and height). The reference line is set as a "
+        "fraction of the vial's height, 0.0 at the top and 1.0 at the bottom.")
+
+    vials: list = []
+    for i in range(int(n_vials)):
+        with st.expander(f"Vial {i+1} — {genos[i]}", expanded=(i == 0)):
+            a, b, c, d = st.columns(4)
+            rx = a.number_input("X start", 0, int(meta["width"]),
+                                int(i * meta["width"] / int(n_vials)), key=f"cva_x{i}")
+            ry = b.number_input("Y start", 0, int(meta["height"]), 0, key=f"cva_y{i}")
+            rw = c.number_input("Width", 10, int(meta["width"]),
+                                int(meta["width"] / int(n_vials)), key=f"cva_w{i}")
+            rh = d.number_input("Height", 10, int(meta["height"]),
+                                int(meta["height"]), key=f"cva_h{i}")
+            auto = try_detect_reference_line(preview, int(rx), int(ry), int(rw), int(rh))
+            line_frac = st.slider("Reference line (0 = top, 1 = bottom)", 0.0, 1.0,
+                                  float(auto) if auto else 0.5, 0.01,
+                                  format="%.2f", key=f"cva_line{i}")
+            if auto:
+                st.caption(f"A strong horizontal edge was found at {auto:.2f} — "
+                           "check it is the drawn line and not a graduation or a "
+                           "shelf edge.")
+            else:
+                st.caption("No single strong horizontal edge stood out, so nothing was "
+                           "guessed. Set the line yourself.")
+            vials.append(VialConfig(
+                vial_id=i + 1, genotype=genos[i], replicate=int(rep_start) + i,
+                n_flies_expected=int(n_flies), roi_x=int(rx), roi_y=int(ry),
+                roi_w=int(rw), roi_h=int(rh), line_y_frac=float(line_frac),
+                fly_color=fly_color_key, sex=sex, treatment=treatment))
+
+    # ── STEP 5: calibration ──────────────────────────────────────────────────
+    st.subheader("Step 5 — Calibration preview")
+    from modules import fly_blob as _FB
+    with st.expander("Detection parameters"):
+        pa, pb = st.columns(2)
+        blur_k = pa.slider("Blur strength (odd)", 1, 15, 5, 2, key="cva_blur")
+        adapt_c = pb.slider("Threshold sensitivity", 1, 15, 4, 1, key="cva_c")
+        # THESE TWO SLIDERS WERE DEAD UNTIL 2026-08-26, AND THE BUG WAS THE UNITS.
+        # They were labelled "% of ROI" and written into `min_area_frac` /
+        # `max_area_frac`, which `detect_flies_in_roi` reads ONLY when
+        # `size_basis == "roi_area"`. The shipped default is "width", so both
+        # values were silently discarded. Measured on synthetic footage with 20
+        # flies drawn: an impossible window (min = max = 0.5%) returned 19
+        # detections -- identical to a wide-open window -- while the same window
+        # with `size_basis="roi_area"` correctly returned 0. Meanwhile the app
+        # told users whose count was off by >30% to "adjust the size limits",
+        # advice that could not work.
+        #
+        # The units are now the ones the detector actually uses: blob area as a
+        # fraction of the VIAL WIDTH squared, which does not change when the user
+        # draws a taller box. The "% of ROI area" basis is deliberately NOT
+        # restored -- `climbing_video_analyzer` line 372 records why it was
+        # abandoned (extending a box upward moved the area floor from 34 to
+        # 44 px^2 and the count from 29 detections to 22, against a hand count
+        # of 19).
+        #
+        # The defaults below reproduce the module constants EXACTLY: 0.16% and
+        # 8.1% of w^2 are min_area_w2 = 0.0016 and max_area_w2 = 0.081, so making
+        # the controls live does not move any existing result.
+        min_area_pct = pa.slider("Min fly area (% of vial width squared)",
+                                 0.02, 2.0, 0.16, 0.02, key="cva_min_w2")
+        max_area_pct = pb.slider("Max fly area (% of vial width squared)",
+                                 2.0, 25.0, 8.1, 0.1, key="cva_max_w2")
+        _d_lo = 100.0 * (4.0 * (min_area_pct / 100.0) / np.pi) ** 0.5
+        _d_hi = 100.0 * (4.0 * (max_area_pct / 100.0) / np.pi) ** 0.5
+        st.caption(
+            f"A fly spans roughly a tenth of a cylinder's width, so its area is "
+            f"about 1% of the width squared; the window brackets that. As a "
+            f"diameter, this window accepts a blob between {_d_lo:.1f}% and "
+            f"{_d_hi:.1f}% of the vial's width across. "
+            f"These limits govern the threshold-based methods below. The default "
+            f"`blob` method is size-matched and uses a FITTED fly width of "
+            f"{_FB.PARAMS['fly_d_frac']:.2f} of the vial width, which is not "
+            f"adjustable here: that value is sharply peaked (0.05 -> MAE 9.11, "
+            f"0.07 -> 2.93, 0.10 -> 9.82 flies), so a slider on it would be a "
+            f"slider on the error.")
+    params = {"blur_kernel": int(blur_k), "adaptive_block": 21,
+              "adaptive_c": int(adapt_c),
+              # name the basis explicitly rather than leaning on the default, so
+              # that a later change of default cannot silently orphan these again
+              "size_basis": "width",
+              "min_area_w2": min_area_pct / 100.0,
+              "max_area_w2": max_area_pct / 100.0,
+              "morph_open": 2, "morph_close": 2,
+              "confidence_threshold": 0.70}
+
+    # ── detection method: every option exposed, with the evidence for each ───
+    from modules import climbing_detectors as CD
+
+    st.markdown("**Detection method**")
+    choice = st.radio(
+        "How should flies be found inside each region?",
+        ["Automatic — measure the footage and choose"] +
+        [CD.BACKEND_LABELS[b] for b in CD.BACKENDS],
+        key="cva_backend", label_visibility="collapsed")
+    manual_backend = next((b for b in CD.BACKENDS
+                           if CD.BACKEND_LABELS[b] == choice), None)
+
+    probe_vial = None
+    if vials:
+        v0 = vials[0]
+        probe_vial = _spec(vials[0])
+
+    backend = manual_backend
+    if manual_backend is None and probe_vial is not None:
+        if st.button("Measure this recording and choose", key="cva_probe"):
+            with st.spinner("Measuring static clutter and motion…"):
+                import modules.climbing_video as _CV
+                bgm = _CV.build_background(video_path)
+                pr = CD.probe_footage(video_path, probe_vial, background=bgm)
+                st.session_state["cva_probe"] = (pr, CD.recommend_backend(
+                    pr, n_expected=int(n_flies)))
+        got = st.session_state.get("cva_probe")
+        if got:
+            pr, rec = got
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Static marks in the empty scene", pr.static_clutter,
+                      help="Fly-sized dark features present with no flies in shot — "
+                           "graduations, numerals, label edges. An intensity "
+                           "threshold counts these as flies, roughly one for one.")
+            m2.metric("Objects that move", f"{pr.moving_fraction:.0%}",
+                      help="Background subtraction can only see what moves. Near "
+                           "zero means it has nothing to subtract.")
+            m3.metric("Camera held still", "yes" if pr.framing_stable else "NO")
+            if rec["backend"] is None:
+                st.error(f"**Refused.** {rec['reason']}")
+            else:
+                backend = rec["backend"]
+                (st.success if rec["confident"] else st.info)(
+                    f"**Using `{backend}`.** {rec['reason']}")
+            for w in rec["warnings"]:
+                st.warning(w)
+        else:
+            st.caption("Press the button to measure the recording, or pick a method "
+                       "above yourself.")
+    if backend is None:
+        backend = CD.DEFAULT_BACKEND
+    st.caption(
+        f"Measured against laboratory hand counts on 24 paired measurements: "
+        f"adaptive threshold MAE {CD.MEASURED_MAE['threshold']:.1f} flies, median "
+        f"background {CD.MEASURED_MAE['background']:.1f}, declutter "
+        f"{CD.MEASURED_MAE['threshold_declutter']:.1f}. For scale, five repeat taps "
+        f"of the SAME vial by a human differ by about "
+        f"{CD.BIOLOGICAL_FLOOR_FLIES} flies — so none of these methods is yet at the "
+        f"accuracy of the assay itself, on that laboratory's glassware.")
+
+    # ── scoring rule: what "flies above the line at t" is taken to mean ──────
+    st.markdown("**Scoring rule**")
+    score_mode = st.radio(
+        "How is the count at each timepoint defined?",
+        ["Flies STANDING above the line - up minus down (the published protocol)",
+         "The MOST that were ever above the line at one moment (a ratchet)"],
+        key="cva_scoremode", label_visibility="collapsed")
+    scoring_mode = "net" if "STANDING" in score_mode else "max_reached"
+    st.caption(
+        "The standard negative-geotaxis protocols say: *if a fly climbs back down "
+        "or falls, record that fly as -1 and count the next fly to cross the line "
+        "as the same number.* The tally therefore steps back when a fly falls, so "
+        "the net of up- and down-crossings is simply **how many are standing above "
+        "the line** — the first option, and the default."
+        "\n\nThe second option is a ratchet: the most that were ever above at one "
+        "moment. It never decreases, so it is always at least as large. That is a "
+        "legitimate question but it is **not** what the protocol scores, and it was "
+        "previously offered here first and captioned as though it were.")
+
+    prev_t = st.slider("Preview at this many seconds after T=0", 0.0,
+                       float(max(meta["duration_sec"] - t_zero_sec, 0.1)),
+                       float(min(10.0, max(meta["duration_sec"] - t_zero_sec, 0.1))),
+                       0.5, key="cva_prevt")
+    prev_frame = get_frame_at_number(video_path, t_zero_frame + int(prev_t * fps))
+    if prev_frame is None:
+        prev_frame = preview
+
+    _bg_cache = None
+    if backend != "threshold":
+        import modules.climbing_video as _CV
+        _bg_cache = st.session_state.get("cva_bg_" + Path(video_path).name)
+        if _bg_cache is None:
+            with st.spinner("Building the background model…"):
+                _bg_cache = _CV.build_background(video_path)
+            st.session_state["cva_bg_" + Path(video_path).name] = _bg_cache
+
+    cols = st.columns(min(int(n_vials), 4))
+    for i, vc in enumerate(vials):
+        cents, dbg = detect_flies_in_roi(prev_frame, vc, params)
+        ly = vc.line_y_for_height(dbg.shape[0])
+        if backend == "threshold":
+            above = sum(1 for (_, cy) in cents if cy < ly)
+            total = len(cents)
+        else:
+            pr_obj = (st.session_state.get("cva_probe") or (None, None))[0]
+            r = CD.count_with_backend(backend, prev_frame, _bg_cache, _spec(vc),
+                                      probe=pr_obj, params=params)
+            above, total = r["n_above"], r["n_total"]
+        conf = min(total / max(vc.n_flies_expected, 1), 1.0)
+        disc = (total - vc.n_flies_expected) / max(vc.n_flies_expected, 1)
+        with cols[i % len(cols)]:
+            st.image(cv2.cvtColor(dbg, cv2.COLOR_BGR2RGB),
+                     caption=f"Vial {vc.vial_id}: {total} detected "
+                             f"(expected {vc.n_flies_expected}) · above {above}",
+                     width="stretch")
+            if abs(disc) > DISCREPANCY_LIMIT:
+                st.error(f"{disc:+.0%} vs expected — "
+                         f"{'over' if disc > 0 else 'under'}-detecting. "
+                         "Adjust the size limits or the ROI.")
+            elif conf < 0.80:
+                st.info(f"Detection {conf:.0%} of expected.")
+            else:
+                st.success(f"Detection {conf:.0%} of expected.")
+
+    # ── STEP 6: run ──────────────────────────────────────────────────────────
+    st.subheader("Step 6 — Run")
+    if st.button("Run climbing assay analysis", type="primary", key="cva_run"):
+        session = VideoAnalysisSession(
+            video_path=video_path, fps=fps, total_frames=meta["total_frames"],
+            duration_sec=meta["duration_sec"], t_zero_frame=t_zero_frame,
+            tap_zero_frames=tap_zero_frames,
+            timepoints_sec=timepoints, vials=vials, detection_params=params)
+        bar = st.progress(0.0, text="Analysing…")
+        collected = []
+        from modules.climbing_video_analyzer import FrameResult
+        import modules.climbing_video as _CVm
+        if _bg_cache is None:
+            with st.spinner("Building the background model…"):
+                _bg_cache = _CVm.build_background(video_path)
+        pr_obj = (st.session_state.get("cva_probe") or (None, None))[0]
+        # EVERY TAP IS SCORED, EACH FROM ITS OWN T=0.
+        # Previously this loop ran once, from a single T=0, so a five-tap
+        # recording yielded one trial and the remaining four taps were treated as
+        # part of one long observation after tap 1 -- which also means the flies
+        # were rising, falling, being re-tapped and rising again inside what was
+        # reported as a single climbing curve.
+        jobs_total = max(len(tap_zeros_sec) * len(vials), 1)
+        job_i = 0
+        for tap_i, tz_sec in enumerate(tap_zeros_sec, 1):
+          for vi, vc in enumerate(vials, 1):
+            job_i += 1
+            bar.progress(job_i / jobs_total,
+                         text=f"Tap {tap_i} of {len(tap_zeros_sec)}, "
+                              f"vial {vi} of {len(vials)}…")
+            spec = _spec(vc)
+            try:
+                scored = CD.score_crossings(
+                    video_path, spec, _bg_cache, float(tz_sec),
+                    timepoints, backend=backend, probe=pr_obj,
+                    mode=scoring_mode, params=params)
+            except Exception as exc:
+                st.error(f"Vial {vc.vial_id}, tap {tap_i} could not be scored: "
+                         f"{exc}")
+                continue
+            n_exp = max(vc.n_flies_expected, 1)
+            for row in scored:
+                above = row["n_above"]
+                # this tap's own zero, not tap 1's
+                fno = int(tz_sec * fps) + int(row["time_s"] * fps)
+                if not np.isfinite(above):
+                    collected.append(FrameResult(
+                        vial_id=vc.vial_id, time_sec=float(row["time_s"]),
+                        frame_number=fno, flies_above=0, flies_below=0,
+                        flies_detected=0, n_flies_expected=vc.n_flies_expected,
+                        pi=0.0, confidence=0.0, low_confidence=True,
+                        count_discrepancy=-1.0, flagged=True, tap=tap_i,
+                        reason=row.get("note") or "not scoreable"))
+                    continue
+                above = int(round(above))
+                # THE DETECTED TOTAL IS A DIFFERENT QUANTITY FROM THE COUNT ABOVE
+                # THE LINE, AND THIS BLOCK USED TO CONFLATE THEM.
+                # `flies_detected` was set to `above`, which had three consequences,
+                # all of them scientific rather than cosmetic:
+                #   1. the exported `Detected_total` equalled `Count_climbed`, so
+                #      coverage could not be audited after the fact at all;
+                #   2. `Confidence` became PI capped at 1, so a TDP-43 vial with a
+                #      genuine PI of 0.5 exported as `Low_confidence = True` -- a
+                #      real biological effect reported as a data-quality fault, and
+                #      the direction that matters most, since a sick cohort is
+                #      exactly the one whose low PI is the result;
+                #   3. flagging reduced to `above > n_expected`, so a vial finding
+                #      59 objects with 15 above the line and N = 20 passed silently.
+                #      Over-detection on graduated glassware is THE failure mode of
+                #      the threshold backends (measured: 2.9x on real footage), and
+                #      it was the one direction the flag could not see.
+                # `score_crossings` now returns `n_total`, so all three are honest.
+                total_raw = row.get("n_total", float("nan"))
+                if not np.isfinite(total_raw):
+                    # never silently substitute `above` here -- that is precisely
+                    # the defect above. PI is still valid; coverage is not known.
+                    collected.append(FrameResult(
+                        vial_id=vc.vial_id, time_sec=float(row["time_s"]),
+                        frame_number=fno, flies_above=above, flies_below=0,
+                        flies_detected=0, n_flies_expected=vc.n_flies_expected,
+                        pi=round(above / n_exp, 4), confidence=0.0,
+                        low_confidence=True, count_discrepancy=-1.0, flagged=True,
+                        tap=tap_i,
+                        reason=(f"backend={backend}, scoring={scoring_mode}; "
+                                "detected total unavailable, so coverage was not "
+                                "checked")))
+                    continue
+                total = int(round(total_raw))
+                disc = (total - vc.n_flies_expected) / n_exp
+                note = f"backend={backend}, scoring={scoring_mode}"
+                if above > total:
+                    # only reachable under the ratchet -- see `score_crossings`
+                    note += ("; count above the line exceeds the concurrent total "
+                             "because the ratchet retains flies that crossed and "
+                             "then fell back")
+                collected.append(FrameResult(
+                    vial_id=vc.vial_id, time_sec=float(row["time_s"]),
+                    frame_number=fno, flies_above=above,
+                    # what was SEEN below the line, not N minus what was seen above:
+                    # the old form asserted that every fly not counted above was
+                    # below, which assumes the detection is complete
+                    flies_below=max(0, total - above),
+                    flies_detected=total,
+                    n_flies_expected=vc.n_flies_expected,
+                    pi=round(above / n_exp, 4),
+                    # coverage: how much of the loaded cohort the detector accounts
+                    # for. Independent of how many of them climbed.
+                    confidence=round(min(total / n_exp, 1.0), 3),
+                    low_confidence=bool(total / n_exp < 0.70),
+                    count_discrepancy=round(disc, 3),
+                    flagged=bool(abs(disc) > DISCREPANCY_LIMIT),
+                    tap=tap_i,
+                    reason=note))
+        bar.empty()
+        session.results = collected
+        bar.empty()
+        st.session_state["cva_results"] = results_to_drophenix_csv(session)
+        st.success(f"{len(collected)} measurements: {len(tap_zeros_sec)} tap(s) x "
+                   f"{len(vials)} vial(s) x {len(timepoints)} timepoint(s).")
+
+    # ── STEP 7: results ──────────────────────────────────────────────────────
+    df = st.session_state.get("cva_results")
+    if df is None or df.empty:
+        return
+    st.subheader("Step 7 — Results")
+
+    # TAP IS PART OF THE INDEX, NOT SOMETHING TO AVERAGE OVER SILENTLY.
+    # With `index=["Genotype", "Replicate"]` alone, a five-tap recording collapsed
+    # into one row per vial and `aggfunc="mean"` quietly averaged the taps -- which
+    # is a defensible summary but not one anybody asked for, and it hid the
+    # tap-to-tap spread that IS the assay's own noise floor (about 3 flies).
+    _idx = ["Genotype", "Replicate"] + (["Tap"] if df["Tap"].nunique() > 1 else [])
+    st.dataframe(df.pivot_table(index=_idx, columns="Time_sec",
+                                values="PI", aggfunc="mean").reset_index(),
+                 width="stretch")
+    if df["Tap"].nunique() > 1:
+        st.caption(
+            "One row per tap: repeat taps of the same vial are technical "
+            "replicates of the SAME flies, so they are not independent samples "
+            "and must not be pooled as though they were. Their spread is the "
+            "assay's own noise floor — about three flies per vial on this "
+            "protocol — and it is the yardstick any detector error should be "
+            "judged against.")
+
+    flagged = df[df["Flagged"] == True]        # noqa: E712
+    if not flagged.empty:
+        st.warning(
+            f"{len(flagged)} of {len(df)} measurements differ from the expected fly "
+            f"count by more than {DISCREPANCY_LIMIT:.0%}. They are exported and "
+            "labelled, not dropped — but they should not be analysed without "
+            "looking at them.")
+        with st.expander("Show flagged measurements"):
+            st.dataframe(flagged[["Genotype", "Replicate", "Time_sec",
+                                  "Detected_total", "n_total_flies",
+                                  "Count_discrepancy", "Confidence",
+                                  "Analysis_notes"]], width="stretch")
+
+    clean = df[df["Flagged"] == False]         # noqa: E712
+    if not clean.empty:
+        try:
+            import plotly.express as px
+            fig = px.line(clean, x="Time_sec", y="PI", color="Genotype",
+                          line_dash=clean["Replicate"].astype(str), markers=True,
+                          title="Performance index over time (unflagged only)",
+                          labels={"Time_sec": "Time (s)", "PI": "PI = climbed / total"})
+            st.plotly_chart(fig, width="stretch")
+        except Exception:
+            st.line_chart(clean.pivot_table(index="Time_sec", columns="Genotype",
+                                            values="PI", aggfunc="mean"))
+    else:
+        st.info("Every measurement was flagged, so no curve is drawn.")
+
+    st.download_button("Download DroPhenix CSV",
+                       df.to_csv(index=False).encode(),
+                       file_name=f"climbing_video_{Path(video_path).stem}.csv",
+                       mime="text/csv", key="cva_dl")
+    st.caption("Column names are aliases DroPhenix already recognises "
+               "(`Time_sec`→Time, `Count_climbed`→Count, `n_total_flies`→n), so this "
+               "file loads through **CSV Upload** without editing.")
+
+
+def page_video_scoring():
+    render_header("Video Scoring",
+                  "Score a climbing assay directly from a phone recording")
+    try:
+        from modules import climbing_video as cvid
+    except Exception as _e:
+        st.error(f"Climbing-video module import failed: {_e}")
+        return
+
+    st.markdown(
+        "Turns a recording of graduated cylinders into the canonical DroPhenix "
+        "table — flies **above the line** and flies **present**, per cylinder, at "
+        "each scoring time. The scale markings on a cylinder are static and the "
+        "flies move, so a temporal-median background reconstructs each tube "
+        "complete with its printed scale and *without* its animals; subtracting "
+        "that leaves only the flies. Counting flies above the line is the easy "
+        "half, so the **denominator is taken from you** and the detector's own "
+        "total is reported beside it as a cross-check rather than a replacement.")
+
+    t_in, t_reg, t_score, t_batch, t_exp = st.tabs(
+        ["Video", "Regions and Lines", "Scoring", "Batch", "Export"])
+
+    # ── 1. input ──────────────────────────────────────────────────────────────
+    with t_in:
+        st.markdown("#### Source recording")
+        c_up, c_path = st.columns(2)
+        with c_up:
+            up = st.file_uploader("Upload a recording",
+                                  type=["mp4", "mov", "avi", "m4v"], key="vs_upload")
+        with c_path:
+            path_in = st.text_input(
+                "...or the path to the file on this machine", key="vs_path",
+                help="Laboratory clips run to 100-150 MB each. Pointing at the "
+                     "file on disk avoids copying it through the browser.")
+
+        resolved, src_note = "", ""
+        p_txt = (path_in or "").strip().strip('"').strip("'")
+        if p_txt:
+            if Path(p_txt).is_file():
+                resolved, src_note = str(Path(p_txt)), "path on disk"
+            else:
+                st.error(f"No file at '{p_txt}'.")
+        elif up is not None:
+            key = (up.name, int(up.size))
+            if st.session_state.get("_vs_upload_key") != key:
+                with st.spinner(f"Copying {up.name} "
+                                f"({up.size / 1e6:.0f} MB) to a temporary file..."):
+                    with tempfile.NamedTemporaryFile(
+                        suffix=Path(up.name).suffix, delete=False
+                    ) as tmp:
+                        tmp.write(up.getbuffer())
+                        st.session_state["_vs_upload_path"] = tmp.name
+                st.session_state["_vs_upload_key"] = key
+            resolved = st.session_state.get("_vs_upload_path", "")
+            src_note = f"uploaded file {up.name}"
+
+        if resolved and resolved != st.session_state.get("_vs_video"):
+            _vs_reset_downstream()
+            st.session_state["_vs_video"] = resolved
+        elif not resolved and p_txt == "" and up is None:
+            st.session_state.pop("_vs_video", None)
+
+        video = st.session_state.get("_vs_video") or ""
+        if not video:
+            st.info(
+                "Load a recording to begin — upload one above, or give the path "
+                "to a file on this machine.\n\n"
+                "The pipeline expects a clip that looks like this:\n\n"
+                "- the graduated cylinders standing side by side against a pale, "
+                "plain background\n"
+                "- a visible line drawn on each cylinder at the scoring height\n"
+                "- the flies tapped to the bottom at the start, with the "
+                "operator's hands then out of shot\n"
+                "- the camera held still for the whole observation (a phone "
+                "propped against something solid is enough — the analysis "
+                "corrects a pixel or two of settling, not a moving camera)\n"
+                "- the full height of every cylinder in frame, filmed square-on "
+                "rather than from above")
+        else:
+            try:
+                info = _vs_probe(video, _vs_stamp(video))
+            except Exception as _e:
+                st.error(f"Could not read this file: {_e}")
+                st.session_state.pop("_vs_video", None)
+                video = ""
+            else:
+                st.success(f"Loaded from {src_note}: {Path(video).name}")
+                m = st.columns(5)
+                m[0].metric("Resolution", f"{info['width']} x {info['height']}")
+                m[1].metric("Frame rate", f"{info['fps']:.2f} fps")
+                m[2].metric("Duration", f"{info['duration_s']:.1f} s")
+                m[3].metric("Frames", str(info["n_frames"]))
+                m[4].metric("Codec", info["codec"] or "unknown")
+                st.caption(
+                    "If the duration or the frame count reads as zero, OpenCV "
+                    "decoded the container but not the stream — iPhone HEVC "
+                    "(H.265) is the usual cause. Re-export as H.264 MP4.")
+
+    video = st.session_state.get("_vs_video") or ""
+    stamp = _vs_stamp(video) if video else 0.0
+    info = {}
+    if video:
+        try:
+            info = _vs_probe(video, stamp)
+        except Exception:
+            video, info = "", {}
+
+    def _vs_needs_video():
+        st.info("Load a recording on the **Video** tab first.")
+
+    W = int(info.get("width", 1920) or 1920)
+    H = int(info.get("height", 1080) or 1080)
+    DUR = float(info.get("duration_s", 0.0) or 0.0)
+
+    # ── 2. regions and lines ──────────────────────────────────────────────────
+    with t_reg:
+        if not video:
+            _vs_needs_video()
+        else:
+            st.markdown("#### Automatic detection")
+            st.caption(
+                "The cylinders are located from where flies have been seen to "
+                "move, and the scoring line from the darkest sustained row "
+                "inside each tube. On a set of 15 laboratory recordings this "
+                "found all three cylinders in 11. Correcting the other 4 by hand "
+                "below is the documented fallback, not an edge case.")
+
+            cd1, cd2 = st.columns([1, 3])
+            n_vials = cd1.number_input("Cylinders in frame", 1, 12, 3, 1,
+                                       key="vs_nvials")
+            run_det = cd2.button("Detect cylinders and scoring lines",
+                                 type="primary", key="vs_det_run")
+
+            if run_det:
+                with st.spinner("Building the temporal-median background and "
+                                "locating the cylinders. This reads the whole "
+                                "clip and takes a minute or so the first time; "
+                                "it is cached afterwards."):
+                    try:
+                        det = _vs_detect(video, stamp, int(n_vials))
+                        tap = _vs_tap(video, stamp)
+                    except Exception as _e:
+                        det, tap = None, None
+                        st.error(f"Detection failed: {_e}")
+                if det is not None:
+                    st.session_state["_vs_det"] = det
+                    auto = [v.to_dict() for v in det.get("vials", [])]
+                    st.session_state["_vs_auto"] = auto
+                    for i, a in enumerate(auto):
+                        st.session_state[f"vs_spec_label_{i}"] = str(a["label"])
+                        for f in _VS_SPEC_FIELDS:
+                            st.session_state[f"vs_spec_{f}_{i}"] = int(a[f])
+                    if tap and tap.get("available"):
+                        st.session_state["vs_t0"] = float(
+                            np.clip(tap.get("suggested_t0_s", 0.0), 0.0,
+                                    max(DUR - 1.0, 0.0)))
+                    st.session_state.pop("_vs_result", None)
+
+            det = st.session_state.get("_vs_det")
+            if det is not None:
+                conf = float(det.get("confidence", 0.0))
+                dm = st.columns(4)
+                dm[0].metric("Detection confidence", f"{conf:.2f}")
+                _wcv = det.get("width_cv", np.nan)
+                _gcv = det.get("gap_cv", np.nan)
+                dm[1].metric("Width consistency (CV)",
+                             f"{_wcv:.3f}" if pd.notna(_wcv) else "N/A")
+                dm[2].metric("Spacing regularity (CV)",
+                             f"{_gcv:.3f}" if pd.notna(_gcv) else "N/A")
+                dm[3].metric("Line strength", f"{float(det.get('line_score', 0.0)):.2f}")
+                if det.get("needs_review"):
+                    st.warning(
+                        "This detection needs review before the counts can be "
+                        "used. " + (det.get("reason") or "Confidence is below "
+                        "the 0.70 threshold.") + " A wrong region produces a "
+                        "confidently wrong count, which is worse than no count — "
+                        "check the annotated frame and correct the numbers below.")
+                else:
+                    st.success("All cylinders and scoring lines located with "
+                               "high confidence. Still confirm on the annotated "
+                               "frame before scoring.")
+                if not det.get("vials"):
+                    st.info("No regions were returned, so the fields below start "
+                            "from an evenly spaced guess. Set them by hand.")
+
+            st.divider()
+            st.markdown("#### Regions and scoring lines")
+            st.caption(
+                "`line_y` is an absolute image row and image y increases "
+                "downwards, so rows **above** it (a smaller number) count as "
+                "climbed. Editing any field marks that cylinder as manually "
+                "specified and redraws the frame below.")
+
+            auto = st.session_state.get("_vs_auto", [])
+            if st.button("Reset all regions to the auto-detected values",
+                         key="vs_reset_auto", disabled=not auto):
+                for i, a in enumerate(auto):
+                    st.session_state[f"vs_spec_label_{i}"] = str(a["label"])
+                    for f in _VS_SPEC_FIELDS:
+                        st.session_state[f"vs_spec_{f}_{i}"] = int(a[f])
+                st.session_state.pop("_vs_result", None)
+
+            specs = []
+            for i in range(int(n_vials)):
+                base = dict(auto[i]) if i < len(auto) else _vs_default_spec(
+                    i, int(n_vials), W, H)
+                st.session_state.setdefault(f"vs_spec_label_{i}", str(base["label"]))
+                for f in _VS_SPEC_FIELDS:
+                    st.session_state.setdefault(f"vs_spec_{f}_{i}",
+                                                int(np.clip(base[f], 0, max(W, H))))
+
+                st.markdown(f"**Cylinder {i + 1}**")
+                cc = st.columns([1.2, 1, 1, 1, 1, 1])
+                lab = cc[0].text_input("Label", key=f"vs_spec_label_{i}")
+                x0v = cc[1].number_input("x0", 0, W, step=1, key=f"vs_spec_x0_{i}")
+                x1v = cc[2].number_input("x1", 0, W, step=1, key=f"vs_spec_x1_{i}")
+                ytv = cc[3].number_input("y_top", 0, H, step=1,
+                                         key=f"vs_spec_y_top_{i}")
+                ybv = cc[4].number_input("y_bottom", 0, H, step=1,
+                                         key=f"vs_spec_y_bottom_{i}")
+                lyv = cc[5].number_input("line_y", 0, H, step=1,
+                                         key=f"vs_spec_line_y_{i}")
+
+                cur = {"label": lab or f"R{i + 1}", "x0": int(x0v), "x1": int(x1v),
+                       "y_top": int(ytv), "y_bottom": int(ybv), "line_y": int(lyv)}
+                same_as_auto = (
+                    i < len(auto) and
+                    all(int(auto[i][f]) == cur[f] for f in _VS_SPEC_FIELDS) and
+                    str(auto[i]["label"]) == cur["label"])
+                cur["source"] = "auto" if same_as_auto else "manual"
+                specs.append(cur)
+
+                if cur["x1"] <= cur["x0"] or cur["y_bottom"] <= cur["y_top"]:
+                    st.error(f"Cylinder {i + 1}: the region is empty "
+                             "(x1 must exceed x0 and y_bottom must exceed y_top).")
+                elif not (cur["y_top"] < cur["line_y"] < cur["y_bottom"]):
+                    st.warning(f"Cylinder {i + 1}: the scoring line at row "
+                               f"{cur['line_y']} lies outside the tube "
+                               f"[{cur['y_top']}, {cur['y_bottom']}]. Every fly "
+                               "would fall on one side of it.")
+
+            st.session_state["_vs_specs"] = specs
+            if any(s["source"] == "manual" for s in specs):
+                st.caption("Cylinders marked manually: " + ", ".join(
+                    s["label"] for s in specs if s["source"] == "manual"))
+
+            st.divider()
+            st.markdown("#### Annotated frame")
+            st.caption(
+                "Blue rectangle = the region, orange line = the scoring line, "
+                "green circle = a detection above the line, red = below. This "
+                "one picture confirms or rejects the whole analysis in a way no "
+                "summary statistic can.")
+            valid = [s for s in specs
+                     if s["x1"] > s["x0"] and s["y_bottom"] > s["y_top"]]
+            t0_prev = float(st.session_state.get("vs_t0", 0.0) or 0.0)
+            prev_max = max(float(DUR - t0_prev - 1.0), 1.0)
+            prev_t = st.slider("Preview at t (seconds after the tap)",
+                               0.0, float(round(prev_max, 1)),
+                               float(min(10.0, round(prev_max, 1))), 1.0,
+                               key="vs_prev_t")
+            # The first frame drawn has to build the temporal-median background,
+            # which reads the whole clip. That is not something to trigger merely
+            # because a video was loaded, so it is asked for explicitly and every
+            # later redraw comes from the cache.
+            if st.session_state.get("_vs_det") is not None:
+                st.session_state["_vs_preview_ok"] = True
+            if st.button("Draw the annotated frame", key="vs_draw"):
+                st.session_state["_vs_preview_ok"] = True
+            if not valid:
+                st.info("Define at least one valid region to draw the frame.")
+            elif not st.session_state.get("_vs_preview_ok"):
+                st.info("Press **Draw the annotated frame** to render the "
+                        "regions on the video. The first render builds the "
+                        "temporal-median background by reading the whole clip "
+                        "(about a minute on a two-minute 1080p recording) and is "
+                        "cached from then on, so moving a region afterwards "
+                        "redraws immediately.")
+            else:
+                with st.spinner("Rendering the annotated frame..."):
+                    try:
+                        rgb = _vs_annotate(video, stamp,
+                                           tuple(_vs_spec_tuple(s) for s in valid),
+                                           float(prev_t), t0_prev)
+                    except Exception as _e:
+                        rgb = None
+                        st.error(f"Could not draw the frame: {_e}")
+                if rgb is not None:
+                    st.image(rgb, width="stretch",
+                             caption=f"{Path(video).name} at t0 + {prev_t:g} s")
+
+    # ── 3. scoring ────────────────────────────────────────────────────────────
+    with t_score:
+        if not video:
+            _vs_needs_video()
+        else:
+            specs = st.session_state.get("_vs_specs", [])
+            valid = [s for s in specs
+                     if s["x1"] > s["x0"] and s["y_bottom"] > s["y_top"]]
+            if not valid:
+                st.info("Set the cylinder regions on the **Regions and Lines** "
+                        "tab first.")
+            else:
+                st.markdown("#### Flies loaded per cylinder")
+                st.markdown(
+                    "The performance index needs a numerator and a denominator, "
+                    "and they are not equally hard to measure. Flies above the "
+                    "line are few and spread out in the clean upper tube; **all** "
+                    "the flies include a pile at the base, overlapping, against a "
+                    "bright reflective foot. You loaded the vial and you know how "
+                    "many went in, so that number is used as the denominator and "
+                    "the detector's own total is reported beside it as a check.")
+                tc = st.columns(max(len(valid), 1))
+                totals_pairs = []
+                blank_labels = []
+                for i, s in enumerate(valid):
+                    n_in = tc[i].number_input(
+                        f"{s['label']} — flies loaded", min_value=1, max_value=500,
+                        value=None, step=1, key=f"vs_ntot_{i}",
+                        placeholder="leave blank")
+                    if n_in is None:
+                        blank_labels.append(s["label"])
+                    else:
+                        totals_pairs.append((s["label"], int(n_in)))
+                if blank_labels:
+                    st.caption(
+                        "Left blank for " + ", ".join(blank_labels) +
+                        ". The detected total will be used as the denominator "
+                        "for those cylinders, so the proportion climbed inherits "
+                        "every counting error in the denominator as well as the "
+                        "numerator — read the stability check below before "
+                        "trusting it.")
+
+                st.divider()
+                st.markdown("#### Physical calibration")
+                calib = _vs_calibration_controls("vs")
+
+                st.divider()
+                st.markdown("#### Scoring rule")
+                rule = _vs_rule_controls("vs", calibrated=bool(calib))
+                st.caption("Scoring will use: **"
+                           + _vs_rule(rule).describe() + "**.")
+
+                st.divider()
+                st.markdown("#### Scoring times")
+                extra_txt = st.text_input(
+                    "Additional scoring times (seconds after the tap, comma "
+                    "separated)", key="vs_extra_t",
+                    help="Entered times join the list below; select them there "
+                         "to include them.")
+                extra = []
+                for tok in (extra_txt or "").replace(";", ",").split(","):
+                    tok = tok.strip()
+                    if not tok:
+                        continue
+                    try:
+                        extra.append(float(tok))
+                    except ValueError:
+                        st.warning(f"Ignoring '{tok}': not a number of seconds.")
+                opts = sorted(set(_VS_DEFAULT_TIMES) | set(extra))
+                times = st.multiselect(
+                    "Score at", opts,
+                    default=[t for t in _VS_DEFAULT_TIMES if t in opts],
+                    format_func=lambda t: f"{t:g} s", key="vs_times")
+                st.caption("A single video yields the whole climbing time-course, "
+                           "so there is no reason to keep only one endpoint.")
+
+                st.session_state.setdefault("vs_t0", 0.0)
+                ct1, ct2 = st.columns([1, 2])
+                with ct1:
+                    t0 = st.number_input(
+                        "Tap time t0 (seconds from the start of the clip)",
+                        min_value=0.0, max_value=float(max(DUR - 1.0, 0.1)),
+                        step=0.5, key="vs_t0",
+                        help="Scoring times are measured from the END of the tap, "
+                             "when the flies are at the bottom and free to climb.")
+                with ct2:
+                    if st.button("Estimate the tap time from the clip",
+                                 key="vs_tap_run"):
+                        with st.spinner("Looking for the burst of whole-frame "
+                                        "motion that marks the tap..."):
+                            try:
+                                tap = _vs_tap(video, stamp)
+                            except Exception as _e:
+                                tap = None
+                                st.error(f"Tap detection failed: {_e}")
+                        if tap and tap.get("available"):
+                            st.session_state["vs_t0"] = float(np.clip(
+                                tap["suggested_t0_s"], 0.0, max(DUR - 1.0, 0.1)))
+                            st.success(
+                                f"Motion burst from {tap['burst_start_s']:.1f} s "
+                                f"to {tap['burst_end_s']:.1f} s; t0 set to "
+                                f"{st.session_state['vs_t0']:.1f} s.")
+                        elif tap is not None:
+                            st.warning(
+                                "No tap could be located ("
+                                f"{tap.get('reason', 'no motion burst')}). Set t0 "
+                                "by hand from the annotated frame.")
+
+                st.divider()
+                run_score = st.button("Score the recording", type="primary",
+                                      key="vs_score_run", disabled=not times)
+                if not times:
+                    st.info("Choose at least one scoring time.")
+                if run_score:
+                    with st.spinner(
+                        "Scoring. Every scoring time is counted over several "
+                        "consecutive frames, and the detected total is then "
+                        "re-measured across the whole clip for the stability "
+                        "check. Typically 60-90 seconds for a two-minute 1080p "
+                        "recording; the result is cached, so changing anything "
+                        "on the Export tab will not repeat it."
+                    ):
+                        try:
+                            res = _vs_analyze(
+                                video, stamp,
+                                tuple(_vs_spec_tuple(s) for s in valid),
+                                tuple(float(t) for t in times),
+                                tuple(totals_pairs), float(t0),
+                                tuple(calib), tuple(rule))
+                        except Exception as _e:
+                            res = None
+                            st.error(f"Scoring failed: {_e}")
+                    if res is not None:
+                        st.session_state["_vs_result"] = res
+                        st.session_state.pop("_vs_table", None)
+
+                res = st.session_state.get("_vs_result")
+                if res is None:
+                    st.info("No scoring run yet for this recording.")
+                elif not res.get("ok"):
+                    st.error(res.get("reason", "The recording could not be scored."))
+                else:
+                    for w in res.get("warnings", []) or []:
+                        st.warning(w)
+
+                    counts = res.get("counts", pd.DataFrame())
+                    qc = res.get("qc", pd.DataFrame())
+
+                    _rule = res.get("scoring_rule")
+                    _cal = res.get("calibration")
+                    _ppm = []
+                    if _cal is not None:
+                        _ppm = [p for p in (_cal.resolve(v)
+                                            for v in res.get("vials", []))
+                                if p]
+                    rc = st.columns(3)
+                    rc[0].metric("Scoring rule",
+                                 _rule.describe() if _rule else
+                                 "above the marked line")
+                    rc[1].metric("Calibration",
+                                 f"{float(np.mean(_ppm)):.2f} px/mm" if _ppm
+                                 else "none")
+                    rc[2].metric("Height reported in",
+                                 "mm and fraction" if _ppm else "fraction only")
+
+                    st.markdown("#### Counts")
+                    if counts.empty:
+                        st.warning("No countable scoring times fell inside the clip.")
+                    else:
+                        st.dataframe(counts, width="stretch")
+                        st.download_button(
+                            "Download counts CSV",
+                            counts.to_csv(index=False).encode(),
+                            "video_scoring_counts.csv", "text/csv",
+                            key="dl_vs_counts")
+                        st.caption(
+                            "`n_total_used` is the denominator actually applied: "
+                            "your supplied total where you gave one, the detected "
+                            "total otherwise. `n_merged_blobs` counts detections "
+                            "that were split by area because two or more flies "
+                            "were touching.")
+                        if _ppm:
+                            st.caption(
+                                "`mean_height_mm` is the mean climbing height "
+                                "of every detected fly, in millimetres above "
+                                "the base of the tube. It is the "
+                                "lab-independent number in this table: it does "
+                                "not depend on where anyone drew a line, and it "
+                                "uses every animal rather than collapsing the "
+                                "cohort to a proportion.")
+                        else:
+                            st.caption(
+                                "`mean_height_mm` is empty because no "
+                                "calibration was given. Supply the cylinder "
+                                "diameter above and climbing height is also "
+                                "reported in millimetres, which is comparable "
+                                "between laboratories and zoom levels in a way "
+                                "that a count above a hand-drawn line is not.")
+
+                        usable = counts[counts.get("usable", True) == True]  # noqa: E712
+                        if not usable.empty:
+                            st.markdown("#### Climbing curve")
+                            import plotly.graph_objects as go
+                            palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
+                                       "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+                            fig = go.Figure()
+                            for i, (lab, sub) in enumerate(
+                                    usable.groupby("vial", sort=True)):
+                                sub = sub.sort_values("time_s")
+                                fig.add_trace(go.Scatter(
+                                    x=sub["time_s"], y=sub["proportion_climbed"],
+                                    mode="lines+markers", name=str(lab),
+                                    line=dict(color=palette[i % len(palette)],
+                                              width=2),
+                                    marker=dict(size=8)))
+                            has_mm = bool(
+                                _ppm and "mean_height_mm" in usable.columns
+                                and usable["mean_height_mm"].notna().any())
+                            if has_mm:
+                                for i, (lab, sub) in enumerate(
+                                        usable.groupby("vial", sort=True)):
+                                    sub = sub.sort_values("time_s")
+                                    fig.add_trace(go.Scatter(
+                                        x=sub["time_s"],
+                                        y=sub["mean_height_mm"],
+                                        mode="lines+markers",
+                                        name=f"{lab} (mm)", yaxis="y2",
+                                        line=dict(
+                                            color=palette[i % len(palette)],
+                                            width=2, dash="dot"),
+                                        marker=dict(size=6, symbol="diamond")))
+                            fig.update_layout(
+                                xaxis_title="Seconds after the tap",
+                                yaxis_title=(
+                                    "Proportion "
+                                    + (_rule.describe() if _rule
+                                       else "above the marked line")),
+                                yaxis=dict(range=[0, 1.05]), height=420,
+                                legend=dict(orientation="h", yanchor="bottom",
+                                            y=1.02),
+                                margin=dict(l=50, r=(70 if has_mm else 20),
+                                            t=30, b=45))
+                            if has_mm:
+                                fig.update_layout(yaxis2=dict(
+                                    title="Mean climbing height (mm)",
+                                    overlaying="y", side="right",
+                                    showgrid=False, rangemode="tozero"))
+                            st.plotly_chart(fig, width="stretch")
+                            st.caption("Each cylinder is one experimental unit, so "
+                                       "these are replicates rather than repeats "
+                                       "of one measurement.")
+                            if has_mm:
+                                st.caption(
+                                    "Solid lines (left axis) are the proportion "
+                                    "that met the scoring rule; dotted lines "
+                                    "(right axis) are the mean climbing height "
+                                    "in millimetres. The proportion depends on "
+                                    "where the criterion was set and saturates "
+                                    "once every fly has crossed it; the height "
+                                    "in mm does neither, and is the quantity "
+                                    "another laboratory can compare against.")
+
+                    st.markdown("#### Stability check")
+                    if qc.empty:
+                        st.info("The clip was too short for the stability check.")
+                    else:
+                        def _vs_qc_row(row):
+                            bad = not bool(row.get("stable", True))
+                            return ["background-color: #FCE4E2" if bad else ""
+                                    for _ in row]
+                        st.dataframe(qc.style.apply(_vs_qc_row, axis=1),
+                                     width="stretch")
+                        n_bad = int((~qc["stable"].astype(bool)).sum())
+                        if n_bad:
+                            st.error(
+                                f"{n_bad} of {len(qc)} cylinders are flagged "
+                                "unstable (highlighted). The number of flies in a "
+                                "sealed cylinder is physically constant, so all "
+                                "variation in the detected total across the clip "
+                                "is detector error. Supply the true totals and "
+                                "check the regions before using these counts.")
+                        else:
+                            st.success("Every cylinder's detected total held "
+                                       "steady across the clip (CV at or below "
+                                       "15%), which is what a reliable detector "
+                                       "looks like on a sealed tube.")
+                        st.download_button("Download QC CSV",
+                                           qc.to_csv(index=False).encode(),
+                                           "video_scoring_qc.csv", "text/csv",
+                                           key="dl_vs_qc")
+
+                    if not counts.empty:
+                        st.markdown("#### Annotated frames at the scoring times")
+                        st.caption("Confirm by eye that the green detections are "
+                                   "the flies you would have counted yourself.")
+                        ok_times = sorted(
+                            float(t) for t in
+                            counts[counts.get("usable", True) == True]  # noqa: E712
+                            ["time_s"].unique())
+                        if ok_times:
+                            pick = [ok_times[0]]
+                            if len(ok_times) > 2:
+                                pick.append(ok_times[len(ok_times) // 2])
+                            if len(ok_times) > 1:
+                                pick.append(ok_times[-1])
+                            cols = st.columns(len(pick))
+                            for c, t in zip(cols, pick):
+                                try:
+                                    rgb = _vs_annotate(
+                                        video, stamp,
+                                        tuple(_vs_spec_tuple(s) for s in valid),
+                                        float(t), float(res.get("t0_s", 0.0)))
+                                except Exception as _e:
+                                    c.error(f"t = {t:g} s: {_e}")
+                                else:
+                                    c.image(rgb, width="stretch",
+                                            caption=f"t0 + {t:g} s")
+
+    # ── 4. batch ──────────────────────────────────────────────────────────────
+    with t_batch:
+        st.markdown("#### A folder of recordings, scored in one run")
+        st.markdown(
+            "Instead of opening fifteen videos one at a time, re-entering the "
+            "genotype and treatment for each and merging fifteen CSVs by hand, "
+            "you write the metadata **once** in a manifest and the pipeline "
+            "does the rest. That matters beyond convenience — hand-merging is "
+            "where mislabelling happens, and a mislabelled treatment column is "
+            "not recoverable from the data afterwards. Every video is scored "
+            "independently, because background, regions, tap time and zoom all "
+            "change between recordings; what is shared is the metadata and the "
+            "scoring rule.")
+
+        b_dir = st.text_input(
+            "Folder containing the recordings", key="vsb_dir",
+            help="Every video named in the manifest is looked up inside this "
+                 "folder unless the manifest gives an absolute path.")
+        b_folder = (b_dir or "").strip().strip('"').strip("'")
+        found = []
+        if b_folder:
+            p_dir = Path(b_folder)
+            if not p_dir.is_dir():
+                st.error(f"No folder at '{b_folder}'.")
+                b_folder = ""
+            else:
+                found = sorted(f.name for f in p_dir.iterdir()
+                               if f.is_file()
+                               and f.suffix.lower() in _VS_VIDEO_EXT)
+                if found:
+                    st.success(f"{len(found)} recording(s) in this folder.")
+                else:
+                    st.warning("No video files found in that folder.")
+
+        st.divider()
+        st.markdown("#### Manifest")
+        st.caption(
+            "Required columns: `video`, `Genotype`, `Treatment`, `Sex`. "
+            "Optional: `Age`, `TimeOfDay`, `ExperimentID`, `Batch`, "
+            "`Compound`, `Dose`, and either `n_per_vial` (the same number of "
+            "flies in every cylinder) or `n_R1`, `n_R2`, ... for a named "
+            "cylinder.")
+        mc1, mc2, mc3 = st.columns(3)
+        with mc1:
+            man_up = st.file_uploader("Upload a manifest CSV", type=["csv"],
+                                      key="vsb_manifest_up")
+        with mc2:
+            if st.button("Build a starter manifest from this folder",
+                         key="vsb_manifest_build", disabled=not found):
+                # Age and n_per_vial are float columns of NaN rather than
+                # empty strings: `analyze_batch` calls float() on whatever is
+                # not null, and an empty string would abort the whole run.
+                st.session_state["_vsb_manifest"] = pd.DataFrame({
+                    "video": found,
+                    "Genotype": "", "Treatment": "", "Sex": "",
+                    "Age": np.full(len(found), np.nan),
+                    "TimeOfDay": "", "ExperimentID": "",
+                    "n_per_vial": np.full(len(found), np.nan),
+                })
+                _vsb_new_manifest()
+            st.caption("One row per video, with Genotype, Treatment and Sex "
+                       "left blank for you to fill in.")
+        with mc3:
+            _template_button("video_manifest_template.csv",
+                             "Download the manifest template",
+                             key="vsb_tpl")
+
+        if man_up is not None:
+            key = (man_up.name, int(man_up.size))
+            if st.session_state.get("_vsb_manifest_key") != key:
+                try:
+                    st.session_state["_vsb_manifest"] = pd.read_csv(man_up)
+                except Exception as _e:
+                    st.error(f"Could not read that manifest: {_e}")
+                else:
+                    st.session_state["_vsb_manifest_key"] = key
+                    _vsb_new_manifest()
+
+        man = st.session_state.get("_vsb_manifest")
+        if man is None:
+            st.info("Upload a manifest, or build a starter one from the folder "
+                    "above and fill it in.")
+            man_run = pd.DataFrame()
+        else:
+            st.caption("Edit the manifest here before running. Rows can be "
+                       "added and removed.")
+            # The editor is re-keyed whenever a different manifest is loaded:
+            # a keyed data_editor stores the user's edits as a delta against
+            # the frame it was given, and replaying that delta onto a new
+            # manifest with different rows silently corrupts it.
+            man_run = st.data_editor(
+                man, width="stretch", num_rows="dynamic",
+                key=f"vsb_editor_{st.session_state.get('_vsb_manifest_n', 0)}")
+            st.download_button(
+                "Download this manifest as CSV",
+                man_run.to_csv(index=False).encode(),
+                "video_manifest.csv", "text/csv", key="vsb_dl_manifest")
+
+        st.divider()
+        st.markdown("#### Batch settings")
+        bs1, bs2 = st.columns(2)
+        with bs1:
+            b_auto = st.checkbox(
+                "Detect the number of cylinders automatically", value=True,
+                key="vsb_auto_n")
+            b_n = st.number_input("Cylinders in frame", 1, 12, 3, 1,
+                                  key="vsb_nvials", disabled=b_auto)
+        with bs2:
+            b_minconf = st.slider(
+                "Minimum region confidence to keep a recording", 0.0, 1.0,
+                0.70, 0.05, key="vsb_minconf",
+                help="A recording below this is reported in the excluded "
+                     "table with its reason rather than quietly contributing "
+                     "suspect counts.")
+        if b_auto:
+            st.warning(
+                "Automatic cylinder counting is on. It is the right default "
+                "when you do not know the rig, but it decides **per video**, "
+                "and a miscount is not a small error: an invented cylinder "
+                "contributes fabricated replicates to a clustered analysis, "
+                "where extra replicates directly inflate confidence, and a "
+                "missed one throws a real replicate away. If every recording "
+                "in this folder is of the same rig, set the number "
+                "explicitly. Either way the run reports a note whenever the "
+                "videos disagree with each other — read it before using the "
+                "merged table.")
+
+        b_times = st.multiselect(
+            "Score at", _VS_DEFAULT_TIMES,
+            default=list(_VS_DEFAULT_TIMES),
+            format_func=lambda t: f"{t:g} s", key="vsb_times")
+
+        st.markdown("**Physical calibration**")
+        b_calib = _vs_calibration_controls("vsb")
+        st.markdown("**Scoring rule**")
+        b_rule = _vs_rule_controls("vsb", calibrated=bool(b_calib))
+        st.caption("Scoring will use: **" + _vs_rule(b_rule).describe() + "**.")
+
+        st.divider()
+        n_req = int(len(man_run)) if man_run is not None else 0
+        # Roughly 80-110 seconds per two-minute 1080p recording, depending on
+        # how many scoring times are asked for and what else the machine is
+        # doing: a batch of 15 clips takes something like 20-27 minutes. The
+        # figure is deliberately quoted before the run rather than discovered
+        # during it, because a user who does not know it will assume the page
+        # has hung and reload, losing the work.
+        est_min = max(1, int(round(n_req * 90.0 / 60.0)))
+        if n_req:
+            st.warning(
+                f"This will read every frame of {n_req} recording(s) and takes "
+                f"about **{est_min} minute(s)**. Nothing on this page can be "
+                "changed while it runs. The result is cached against the "
+                "folder, the manifest and these settings, so browsing the "
+                "tables afterwards never repeats it — but editing any of them "
+                "means running it again.")
+
+        ready = bool(b_folder) and n_req > 0 and bool(b_times)
+        sig = (b_folder, (man_run.to_csv(index=False) if n_req else ""),
+               tuple(float(t) for t in b_times), tuple(b_calib), tuple(b_rule),
+               (None if b_auto else int(b_n)), float(b_minconf))
+        run_batch = st.button("Score the whole folder", type="primary",
+                              key="vsb_run", disabled=not ready)
+        if not b_folder:
+            st.info("Give the folder holding the recordings.")
+        elif not n_req:
+            st.info("Load a manifest with at least one row.")
+        elif not b_times:
+            st.info("Choose at least one scoring time.")
+
+        if run_batch:
+            prog = st.progress(0.0, text="Starting the batch...")
+
+            def _vsb_progress(frac, label):
+                try:
+                    prog.progress(float(np.clip(frac, 0.0, 1.0)),
+                                  text=f"Scoring {label}")
+                except Exception:
+                    pass
+
+            with st.spinner(f"Scoring {n_req} recording(s). About "
+                            f"{est_min} minute(s)."):
+                try:
+                    bres = cvid.analyze_batch(
+                        man_run, video_dir=b_folder,
+                        scoring_times_s=[float(t) for t in b_times],
+                        calibration=_vs_calibration(b_calib),
+                        scoring_rule=_vs_rule(b_rule),
+                        n_vials=(None if b_auto else int(b_n)),
+                        min_confidence=float(b_minconf),
+                        progress=_vsb_progress)
+                except Exception as _e:
+                    bres = None
+                    st.error(f"Batch scoring failed: {_e}")
+            prog.empty()
+            if bres is not None:
+                st.session_state["_vsb_result"] = bres
+                st.session_state["_vsb_sig"] = sig
+
+        bres = st.session_state.get("_vsb_result")
+        if bres is None:
+            st.info("No batch has been run yet.")
+        else:
+            if st.session_state.get("_vsb_sig") != sig:
+                st.warning(
+                    "The folder, the manifest or the settings have changed "
+                    "since this result was produced. The tables below are the "
+                    "previous run; press **Score the whole folder** to redo it "
+                    "with the current settings.")
+
+            for note in bres.get("notes", []) or []:
+                low = note.lower()
+                if ("excluded" in low or "could not be processed" in low
+                        or "not consistent" in low):
+                    st.warning(note)
+                else:
+                    st.info(note)
+
+            bm = st.columns(4)
+            bm[0].metric("Recordings requested", str(bres.get("n_requested", 0)))
+            bm[1].metric("Scored", str(bres.get("n_scored", 0)))
+            bm[2].metric("Excluded", str(len(bres.get("excluded",
+                                                      pd.DataFrame()))))
+            bm[3].metric("Failed", str(len(bres.get("failed", pd.DataFrame()))))
+
+            merged = bres.get("table", pd.DataFrame())
+            bqc = bres.get("qc", pd.DataFrame())
+            bexc = bres.get("excluded", pd.DataFrame())
+            bfail = bres.get("failed", pd.DataFrame())
+
+            st.markdown("#### Merged table")
+            if merged is None or merged.empty:
+                st.warning("No recording produced usable rows.")
+            else:
+                st.dataframe(merged, width="stretch")
+                st.caption(
+                    "Each cylinder of each video is its own `VialID`, so a "
+                    "folder of five three-cylinder videos gives fifteen "
+                    "independent replicates for the clustered statistics — not "
+                    "five.")
+                st.download_button(
+                    "Download merged CSV",
+                    merged.to_csv(index=False).encode(),
+                    "video_batch_climbing.csv", "text/csv",
+                    key="dl_vsb_merged")
+
+            st.markdown("#### Per-video quality control")
+            if bqc is None or bqc.empty:
+                st.info("No quality-control rows were produced.")
+            else:
+                st.dataframe(bqc, width="stretch")
+                st.caption(
+                    "The number of flies in a sealed cylinder is physically "
+                    "constant, so all variation in `detected_total_cv_pct` is "
+                    "detector error. This table is per cylinder per video and "
+                    "includes recordings that were excluded, so nothing is "
+                    "hidden.")
+                st.download_button("Download batch QC CSV",
+                                   bqc.to_csv(index=False).encode(),
+                                   "video_batch_qc.csv", "text/csv",
+                                   key="dl_vsb_qc")
+
+            st.markdown("#### Excluded on quality grounds")
+            if bexc is None or bexc.empty:
+                st.success("No recording was excluded.")
+            else:
+                st.dataframe(bexc, width="stretch")
+                st.caption("These are reported rather than silently dropped. "
+                           "Scoring one by hand on the other tabs, after "
+                           "correcting its regions, is a deliberate act.")
+
+            st.markdown("#### Could not be processed")
+            if bfail is None or bfail.empty:
+                st.success("Every recording named in the manifest was read.")
+            else:
+                st.dataframe(bfail, width="stretch")
+
+            if merged is not None and not merged.empty:
+                st.divider()
+                if st.button("Load merged table into DroPhenix", type="primary",
+                             key="vsb_load_run"):
+                    df_raw, warns, errs = load_data(
+                        io.StringIO(merged.to_csv(index=False)))
+                    if errs:
+                        for e in errs:
+                            st.error(e)
+                    else:
+                        for w in warns:
+                            st.warning(w)
+                        st.session_state.update({
+                            "df": df_raw, "data_source": "video_batch",
+                            "data_warnings": warns, "data_errors": errs,
+                            "run_complete": False, "base_metrics": {},
+                        })
+                        _run_pipeline(df_raw, None, None)
+                st.caption(
+                    "Loading replaces whatever dataset is currently open and "
+                    "runs the full pipeline. A batch is what the hierarchical "
+                    "and ranking pages need: one video is three vials, which "
+                    "is not enough to separate a genotype effect from a vial "
+                    "effect.")
+
+    # ── 5. export ─────────────────────────────────────────────────────────────
+    with t_exp:
+        res = st.session_state.get("_vs_result")
+        if not video:
+            _vs_needs_video()
+        elif res is None or not res.get("ok"):
+            st.info("Score the recording on the **Scoring** tab first.")
+        else:
+            st.markdown("#### Experimental metadata")
+            st.caption(
+                "Each cylinder becomes its own `VialID`, because the vial is the "
+                "experimental unit: a video of three cylinders is three "
+                "replicates, not one. Every scoring time becomes a row, giving "
+                "the full climbing curve.")
+            e1, e2, e3 = st.columns(3)
+            geno = e1.text_input("Genotype", value="Oregon-R", key="vs_geno")
+            trt  = e2.text_input("Treatment", value="Vehicle", key="vs_trt")
+            sex  = e3.selectbox("Sex", ["Male", "Female", "Mixed"], key="vs_sex")
+            e4, e5, e6 = st.columns(3)
+            exp_id = e4.text_input("ExperimentID", value="", key="vs_expid")
+            age    = e5.number_input("Age (days)", min_value=0.0, max_value=200.0,
+                                     value=None, step=1.0, key="vs_age",
+                                     placeholder="optional")
+            tod    = e6.text_input("TimeOfDay (HH:MM)", value="", key="vs_tod")
+
+            try:
+                tab = cvid.to_drophenix_table(
+                    res, genotype=geno or "Unknown",
+                    treatment=trt or "Unknown", sex=sex,
+                    experiment_id=exp_id or None,
+                    age_days=(None if age is None else float(age)),
+                    time_of_day=tod or None)
+            except Exception as _e:
+                tab = pd.DataFrame()
+                st.error(f"Export failed: {_e}")
+
+            if tab.empty:
+                st.warning("No usable rows to export. Every scoring time fell "
+                           "outside the clip.")
+            else:
+                st.session_state["_vs_table"] = tab
+                st.dataframe(tab, width="stretch")
+                st.download_button(
+                    "Download DroPhenix CSV", tab.to_csv(index=False).encode(),
+                    f"{Path(video).stem}_climbing.csv", "text/csv",
+                    key="dl_vs_table")
+
+                st.divider()
+                if st.button("Load into DroPhenix", type="primary",
+                             key="vs_load_run"):
+                    df_raw, warns, errs = load_data(
+                        io.StringIO(tab.to_csv(index=False)))
+                    if errs:
+                        for e in errs:
+                            st.error(e)
+                    else:
+                        for w in warns:
+                            st.warning(w)
+                        st.session_state.update({
+                            "df": df_raw, "data_source": "video_scoring",
+                            "data_warnings": warns, "data_errors": errs,
+                            "run_complete": False, "base_metrics": {},
+                        })
+                        _run_pipeline(df_raw, None, None)
+                st.caption(
+                    "Loading replaces whatever dataset is currently open and runs "
+                    "the full pipeline. One video gives three vials at a handful "
+                    "of times — enough for the climbing curves, but the "
+                    "hierarchical and ranking pages need several videos combined.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3378,9 +5334,1932 @@ def page_drug_ranking():
                                "drug_sample_sizes.csv", "text/csv", key="dl_un")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Shared helpers — design-aware pages
+# ══════════════════════════════════════════════════════════════════════════════
+def _needs_columns(df: pd.DataFrame, needed: dict, why: str) -> bool:
+    """
+    True when every column in `needed` is present.
+
+    Otherwise renders a single st.info naming exactly which columns are missing
+    and what each one is for, so a page degrades into an instruction rather than
+    a traceback.
+    """
+    absent = [c for c in needed if c not in df.columns]
+    if not absent:
+        return True
+    lines = "\n".join(f"- `{c}` — {needed[c]}" for c in absent)
+    st.info(f"{why}\n\nMissing column(s):\n{lines}")
+    return False
+
+
+def _factor_columns(df: pd.DataFrame, max_levels: int = 12) -> list:
+    """Categorical columns with >= 2 levels, canonical design factors first."""
+    pref = ["Treatment", "Genotype", "Sex", "Compound", "Batch", "ExperimentID"]
+    out = [c for c in pref
+           if c in df.columns and 2 <= int(df[c].nunique(dropna=True)) <= 200]
+    for c in df.columns:
+        if c in out or c in ("Count", "n"):
+            continue
+        try:
+            nu = int(df[c].nunique(dropna=True))
+        except Exception:
+            continue
+        if not pd.api.types.is_numeric_dtype(df[c]) and 2 <= nu <= max_levels:
+            out.append(c)
+    return out
+
+
+def _cluster_columns(df: pd.DataFrame) -> list:
+    """Candidate replication units, most specific first (VialID, then Replicate)."""
+    return [c for c in ("VialID", "FlyID", "Replicate", "Batch", "ExperimentID")
+            if c in df.columns and df[c].notna().any()]
+
+
+def _climb_proportion(df: pd.DataFrame) -> Optional[pd.Series]:
+    """Count/n as a 0-1 proportion, or None when the counts are absent."""
+    if "Count" not in df.columns or "n" not in df.columns:
+        return None
+    c = pd.to_numeric(df["Count"], errors="coerce")
+    n = pd.to_numeric(df["n"], errors="coerce").replace(0, np.nan)
+    return (c / n).clip(0.0, 1.0)
+
+
+_PROP_OPTION = "Climbing proportion (Count / n)"
+
+def _value_options(df: pd.DataFrame) -> list:
+    """Selectable response columns, with the derived climbing proportion first."""
+    opts = []
+    if "Count" in df.columns and "n" in df.columns:
+        opts.append(_PROP_OPTION)
+    skip = {"Count", "n", "Replicate", "SessionIndex", "TrialIndex"}
+    for c in df.columns:
+        if c in skip:
+            continue
+        if pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().any():
+            opts.append(c)
+    return opts
+
+
+def _value_series(df: pd.DataFrame, option: str) -> pd.Series:
+    if option == _PROP_OPTION:
+        return _climb_proportion(df)
+    return pd.to_numeric(df[option], errors="coerce")
+
+
+def _parse_day_list(text: str) -> list:
+    """Parse a comma/space separated list of ages into floats, silently dropping junk."""
+    out = []
+    for tok in str(text).replace(";", ",").replace(" ", ",").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            out.append(float(tok))
+        except ValueError:
+            continue
+    return sorted(set(out))
+
+
+def _spec_frame(spec_dict: dict) -> pd.DataFrame:
+    rows = []
+    for k, v in spec_dict.items():
+        if isinstance(v, (list, tuple)):
+            v = f"{len(v)} item(s)" if v else "none"
+        rows.append({"property": k, "value": str(v)})
+    return pd.DataFrame(rows)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — Design Check
+# ══════════════════════════════════════════════════════════════════════════════
+def page_plan_run():
+    render_header("Plan a Run",
+                  "Allocate flies to activity-monitor channels BEFORE loading "
+                  "them — the only moment a confound is still fixable")
+    try:
+        from modules import dam_planner as DPL
+    except Exception as _e:
+        st.error(f"Run-planner module import failed: {_e}")
+        return
+
+    st.markdown(
+        "Every other page in this tool tells you what your data can answer. "
+        "This one decides it. If an entire age group sits in one monitor, then "
+        "monitor and age are the same column of numbers, and no model can "
+        "separate a beam-sensitivity difference from an ageing effect — that is "
+        "arithmetic, not a modelling choice. The layout below splits every "
+        "factor across every monitor, interleaves the groups across channel "
+        "positions rather than blocking them, and rotates the arrangement so a "
+        "position effect cannot repeat identically in the next experiment.")
+
+    tab_plan, tab_check, tab_proto = st.tabs(
+        ["Plan a new run", "Check a layout I already have", "Protocol"])
+
+    with tab_plan:
+        c1, c2 = st.columns(2)
+        with c1:
+            genos = st.text_input("Genotypes (comma-separated)",
+                                  "Oregon-R, TDP43", key="pl_g")
+            sexes = st.text_input("Sexes", "Female, Male", key="pl_s")
+            ages = st.text_input("Ages", "young, old", key="pl_a")
+            treats = st.text_input("Treatments", "Untreated", key="pl_t")
+        with c2:
+            n_per = st.number_input("Flies per group", 1, 64, 8, key="pl_n",
+                                    help="Eight tubes per group is the practical "
+                                         "minimum; fewer and a single dead fly "
+                                         "moves the group mean.")
+            n_mon = st.number_input("Monitors available", 1, 16, 2, key="pl_m")
+            n_ch = st.number_input("Channels per monitor", 4, 64, 32, key="pl_c")
+            goal = st.selectbox("What is being measured", ["sleep", "period"],
+                                key="pl_goal",
+                                help="Free-running period requires constant "
+                                     "darkness; sleep and activity do not.")
+            seed = st.number_input("Randomisation seed", 0, 10_000, 0, key="pl_seed",
+                                   help="Change it between experiments so the "
+                                        "same tube never sits in the same "
+                                        "position twice.")
+
+        def _split(s):
+            return [x.strip() for x in str(s).split(",") if x.strip()] or [""]
+
+        groups = [{"Genotype": g, "Sex": sx, "Age": ag, "Treatment": tr}
+                  for g in _split(genos) for sx in _split(sexes)
+                  for ag in _split(ages) for tr in _split(treats)]
+        st.caption(f"{len(groups)} groups x {int(n_per)} flies = "
+                   f"{len(groups) * int(n_per)} tubes; capacity is "
+                   f"{int(n_mon) * int(n_ch)}.")
+
+        if st.button("Plan the layout", type="primary", key="pl_go"):
+            plan = DPL.plan_run(groups, n_per_group=int(n_per),
+                                n_monitors=int(n_mon), n_channels=int(n_ch),
+                                goal=goal, seed=int(seed))
+            if not plan.get("ok"):
+                st.error(plan.get("reason", "The run could not be planned."))
+            else:
+                st.session_state["dam_plan"] = plan
+
+        plan = st.session_state.get("dam_plan")
+        if plan:
+            v = plan["verification"]
+            for f, status in v["per_factor"].items():
+                (st.success if status == "crossed" else st.error)(
+                    f"**{f}** is {status} with Monitor"
+                    + ("" if status == "crossed" else
+                       " — this layout cannot answer that question"))
+            for w in plan.get("warnings", []):
+                st.warning(w)
+            st.markdown("**Run advice**")
+            for a in plan.get("advice", []):
+                st.markdown(f"- {a}")
+
+            cmap = plan["channel_map"]
+            st.dataframe(cmap, width="stretch", height=320)
+            st.download_button(
+                "Download channel map (CSV)", cmap.to_csv(index=False),
+                "dam_channel_map.csv", "text/csv", key="pl_dl",
+                help="Load the tubes to match this file, then upload the same "
+                     "file with the monitor data so nothing has to be remembered.")
+
+    with tab_check:
+        st.markdown(
+            "Already loaded the monitors? Upload the channel map and this will "
+            "say which questions the run can answer — before you spend days "
+            "recording.")
+        up = st.file_uploader("Channel map CSV", type=["csv"], key="pl_up")
+        if up is not None:
+            try:
+                cm = pd.read_csv(up)
+                v = DPL.check_plan(cm)
+            except Exception as _e:
+                st.error(f"Could not check that layout: {_e}")
+            else:
+                for f, status in v["per_factor"].items():
+                    (st.success if status == "crossed" else st.error)(
+                        f"**{f}** is {status} with Monitor")
+                for b in v.get("blocking", []):
+                    st.error(b)
+                for w in v.get("warnings", []):
+                    st.warning(w)
+                if v["ok"]:
+                    st.success("This layout is usable.")
+
+    with tab_proto:
+        st.code(DPL.protocol_text(), language=None)
+
+
+def page_design_check():
+    render_header("Design Check",
+                  "Pre-analysis design audit — replication unit, confounding, "
+                  "blocking defects")
+    try:
+        from modules import design_schema as dsch
+    except Exception as _e:
+        st.error(f"Design-schema module import failed: {_e}")
+        return
+    if not _require_data():
+        return
+    df = st.session_state["df"]
+
+    st.markdown(
+        "Reads the design the data actually encode — which physical **vial** or "
+        "**fly** each row came from, which time axes exist, which compound and "
+        "dose — and names the **unit of independent replication** that every "
+        "downstream model must cluster on. Factor pairs that cannot be "
+        "separated are reported as **blocking**: no model can estimate them, so "
+        "the analysis stops rather than returning a number that looks fine.")
+    _template_button("climbing_longitudinal_template.csv",
+                     "Extended-design template", "tpl_dc")
+
+    lights_on = st.number_input(
+        "Lights-on hour (ZT0) on the local clock", min_value=0.0, max_value=23.5,
+        value=8.0, step=0.5, key="dc_lights",
+        help="Used only to convert clock times, or morning/afternoon/evening "
+             "labels, into Zeitgeber hours.")
+
+    try:
+        rep = dsch.design_report(df, lights_on_hour=float(lights_on))
+    except Exception as _e:
+        st.error(f"Design report failed: {_e}")
+        return
+    spec = rep["spec"]
+
+    blocking = rep.get("blocking", [])
+    if blocking:
+        st.error("BLOCKING DESIGN DEFECT. The effects below are mathematically "
+                 "inseparable — no amount of data or modelling can estimate "
+                 "them separately. The design must change; the analysis must "
+                 "not proceed as if it could.")
+        for b in blocking:
+            st.error(b)
+
+    st.markdown(f"**Design:** {rep.get('design_summary', 'n/a')}")
+
+    m = st.columns(4)
+    m[0].metric("Replication unit", str(rep.get("cluster_unit") or "not identified"))
+    _mfc = spec.mean_flies_per_cluster
+    m[1].metric("Mean flies per cluster",
+                f"{_mfc:.1f}" if pd.notna(_mfc) else "N/A")
+    m[2].metric("Ages", str(spec.n_ages))
+    m[3].metric("Experiments", str(spec.n_experiments))
+
+    if rep.get("cluster_unit") is None:
+        st.warning(
+            "No replication unit could be identified. Add a `VialID` column "
+            "(one label per physical vial) — without it, flies in the same vial "
+            "are indistinguishable from independent replicates and every "
+            "standard error on this dataset is too small.")
+
+    t_warn, t_conf, t_spec = st.tabs(
+        ["Warnings and Notes", "Confounding", "Design Spec"])
+
+    with t_warn:
+        warns = rep.get("warnings", [])
+        notes = rep.get("notes", [])
+        if warns:
+            st.markdown("**Warnings**")
+            for w in warns:
+                st.warning(w)
+        else:
+            st.success("No design warnings.")
+        if notes:
+            st.markdown("**Notes**")
+            for nt in notes:
+                st.info(nt)
+
+    with t_conf:
+        confounds = rep.get("confounds", [])
+        if not confounds:
+            st.success("No design factor is confounded with a nuisance "
+                       "variable (time of day, batch, experiment, date, "
+                       "session index, rack position).")
+        else:
+            for c in confounds:
+                sev = float(c.get("severity", 0.0) or 0.0)
+                txt = f"{c.get('factor')} x {c.get('nuisance')}: {c.get('verdict', '')}"
+                if sev >= 1.0:
+                    st.error(txt)
+                else:
+                    st.warning(txt)
+            ctab = pd.DataFrame([
+                {"factor": c.get("factor"), "nuisance": c.get("nuisance"),
+                 "severity": c.get("severity"), "cramers_v": c.get("cramers_v")}
+                for c in confounds
+            ])
+            st.dataframe(ctab, width="stretch")
+            st.download_button("Download confounding CSV",
+                               ctab.to_csv(index=False).encode(),
+                               "design_confounds.csv", "text/csv", key="dl_dc_conf")
+            st.caption("severity = fraction of factor levels occurring at only "
+                       "one level of the nuisance variable; 1.0 is complete "
+                       "confounding and is blocking.")
+
+    with t_spec:
+        sf = _spec_frame(spec.to_dict())
+        st.dataframe(sf, width="stretch")
+        st.download_button("Download design spec CSV", sf.to_csv(index=False).encode(),
+                           "design_spec.csv", "text/csv", key="dl_dc_spec")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — Hierarchical Statistics
+# ══════════════════════════════════════════════════════════════════════════════
+def page_hierarchical():
+    render_header("Hierarchical Statistics",
+                  "Clustered counts — ICC, design effect, beta-binomial and GEE")
+    try:
+        from modules import hierarchical as hier
+    except Exception as _e:
+        st.error(f"Hierarchical module import failed: {_e}")
+        return
+    if not _require_data():
+        return
+    df = st.session_state["df"]
+
+    st.markdown(
+        "Flies in a vial share food, the tap that startles them, temperature and "
+        "handling history, so the **vial** is the experimental unit. Treating "
+        "*m* flies per vial as *m* independent observations inflates the "
+        "effective sample size by the design effect `1 + (m - 1) * ICC`; with "
+        "*m* = 20 and ICC = 0.05 the standard errors are about 40% too small. "
+        "This page runs the naive fly-as-independent analysis and the "
+        "cluster-correct analysis side by side on your own data.")
+    _template_button("climbing_longitudinal_template.csv",
+                     "Extended-design template", "tpl_hier")
+
+    if not _needs_columns(df, {
+        "Count": "flies that crossed the line — the binomial successes",
+        "n": "flies tested in that vial — the binomial trials",
+    }, "This page models climbing as clustered binomial counts, so it needs "
+       "the raw counts rather than a pre-computed performance index."):
+        return
+
+    cats = _factor_columns(df)
+    clus = _cluster_columns(df)
+    if not cats:
+        st.info("No categorical column with at least two levels was found. Add "
+                "`Treatment`, `Genotype` or `Sex` so there is something to compare.")
+        return
+    if not clus:
+        st.info(
+            "No cluster identifier was found. Add a `VialID` column (one label "
+            "per physical vial) so the analysis can cluster on the experimental "
+            "unit. `Replicate` is accepted as a fallback when it identifies vials.")
+        return
+
+    c1, c2 = st.columns(2)
+    group_col = c1.selectbox(
+        "Grouping column (the diagnostic compares exactly two levels)",
+        cats, key="hier_grp")
+    cluster_col = c2.selectbox("Cluster (replication) unit", clus, index=0,
+                               key="hier_clu")
+
+    try:
+        rep = hier.pseudoreplication_report(df, group_col=group_col,
+                                            cluster_col=cluster_col)
+    except Exception as _e:
+        st.error(f"Pseudoreplication diagnostic failed: {_e}")
+        return
+
+    if not rep.get("usable"):
+        st.warning(rep.get("reason", "The diagnostic could not be run."))
+    else:
+        if rep.get("conclusion_changes"):
+            st.error(
+                "THE CONCLUSION CHANGES WHEN THE DESIGN IS RESPECTED. "
+                f"Treating flies as independent gives p = {rep['p_naive']:.3g}; "
+                f"clustering on {cluster_col} gives p = {rep['p_clustered']:.3g}. "
+                "These fall on opposite sides of 0.05. The clustered result is "
+                "the valid one — the naive p-value is an artefact of counting "
+                "flies as replicates of a treatment that was applied to vials.")
+
+        m = st.columns(4)
+        _icc = rep.get("icc", np.nan)
+        _deff = rep.get("design_effect", np.nan)
+        m[0].metric("ICC (intra-vial)", f"{_icc:.3f}" if pd.notna(_icc) else "N/A")
+        m[1].metric("Design effect", f"{_deff:.2f}" if pd.notna(_deff) else "N/A")
+        m[2].metric("Flies", f"{rep.get('n_flies', float('nan')):.0f}")
+        _neff = rep.get("n_effective", np.nan)
+        m[3].metric("Effective sample size",
+                    f"{_neff:.0f}" if pd.notna(_neff) else "N/A")
+
+        p1, p2 = st.columns(2)
+        _pn, _pc = rep.get("p_naive", np.nan), rep.get("p_clustered", np.nan)
+        p1.metric("p — flies treated as independent (naive)",
+                  f"{_pn:.4g}" if pd.notna(_pn) else "N/A")
+        p2.metric(f"p — clustered on {cluster_col}",
+                  f"{_pc:.4g}" if pd.notna(_pc) else "N/A")
+
+        st.markdown(f"**Verdict:** {rep.get('verdict', '')}")
+
+        detail = pd.DataFrame([{
+            "levels_compared": " vs ".join(rep.get("levels", [])),
+            "n_clusters": rep.get("n_clusters"),
+            "mean_flies_per_cluster": rep.get("mean_flies_per_cluster"),
+            "icc_anova": rep.get("icc"),
+            "icc_betabinomial": rep.get("icc_betabinomial"),
+            "se_inflation": rep.get("se_inflation"),
+            "p_naive": rep.get("p_naive"),
+            "p_clustered": rep.get("p_clustered"),
+            "p_ratio": rep.get("p_ratio"),
+        }])
+        with st.expander("Full diagnostic table", expanded=False):
+            st.dataframe(detail, width="stretch")
+            st.caption(rep.get("gee_note", ""))
+            st.download_button("Download diagnostic CSV",
+                               detail.to_csv(index=False).encode(),
+                               "pseudoreplication.csv", "text/csv", key="dl_hier_diag")
+
+    st.divider()
+    st.markdown("#### Model fits")
+    rhs_default = group_col if group_col not in ("Genotype",) else "Genotype"
+    rhs = st.text_input(
+        "Model right-hand side (patsy syntax)", value=rhs_default, key="hier_rhs",
+        help="For example `Treatment`, `Genotype + Treatment`, or "
+             "`Genotype * Treatment + Age`.")
+
+    t_bb, t_gee = st.tabs(["Beta-binomial", "GEE (cluster-robust)"])
+
+    with t_bb:
+        st.caption("Maximum-likelihood beta-binomial regression with a logit "
+                   "link. The binomial mean structure plus one extra parameter "
+                   "rho, which is exactly the intraclass correlation — "
+                   "overdispersion is estimated rather than assumed away.")
+        if st.button("Fit beta-binomial", key="hier_bb_run"):
+            try:
+                bb = hier.fit_betabinomial(df, formula_rhs=rhs)
+            except Exception as _e:
+                st.error(f"Beta-binomial fit failed: {_e}")
+            else:
+                b1, b2, b3 = st.columns(3)
+                b1.metric("rho (intra-cluster)", f"{bb.rho:.4f}")
+                b2.metric("AIC", f"{bb.aic:.1f}")
+                b3.metric("Converged", "yes" if bb.converged else "no")
+                if not bb.converged:
+                    st.warning(f"Optimiser did not converge: {bb.message}")
+                sf = bb.summary_frame()
+                st.dataframe(sf, width="stretch")
+                st.download_button("Download beta-binomial CSV",
+                                   sf.to_csv().encode(),
+                                   "betabinomial_coefficients.csv", "text/csv",
+                                   key="dl_hier_bb")
+                st.caption("Coefficients are on the logit scale; odds ratios and "
+                           "their Wald intervals are exponentiated alongside.")
+
+    with t_gee:
+        st.caption("Population-averaged logistic GEE with cluster-robust "
+                   "(sandwich) standard errors. No distributional assumption "
+                   "beyond the mean model, so it is an independent cross-check "
+                   "on the beta-binomial fit.")
+        if st.button("Fit GEE", key="hier_gee_run"):
+            try:
+                gee = hier.fit_gee(df, formula_rhs=rhs, cluster_col=cluster_col)
+            except Exception as _e:
+                st.error(f"GEE fit failed: {_e}")
+            else:
+                g1, g2, g3 = st.columns(3)
+                g1.metric("Clusters", str(gee.get("n_clusters", "N/A")))
+                g2.metric("Bernoulli rows", str(gee.get("n_obs", "N/A")))
+                _wc = gee.get("working_correlation", np.nan)
+                g3.metric("Working correlation",
+                          f"{_wc:.4f}" if pd.notna(_wc) else "N/A")
+                tab = gee["table"]
+                st.dataframe(tab, width="stretch")
+                st.download_button("Download GEE CSV", tab.to_csv().encode(),
+                                   "gee_coefficients.csv", "text/csv",
+                                   key="dl_hier_gee")
+                st.caption(gee.get("method", ""))
+
+    st.caption(
+        "Clustering does not always widen the interval. For a BETWEEN-cluster "
+        "predictor (a treatment applied to whole vials) the naive standard "
+        "error is too small and the corrected interval is wider. For a "
+        "WITHIN-cluster predictor (age, when every vial is measured at every "
+        "age) the vial random intercept absorbs between-vial variation and the "
+        "corrected interval is narrower — respecting the design buys precision.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — Survivor Bias
+# ══════════════════════════════════════════════════════════════════════════════
+def page_survivor_bias():
+    render_header("Survivor Bias",
+                  "Trajectory estimands — survivor mean, balanced panel, "
+                  "pattern mixture")
+    try:
+        from modules import survivor_bias as sb
+    except Exception as _e:
+        st.error(f"Survivor-bias module import failed: {_e}")
+        return
+
+    st.markdown(
+        "In an ageing cohort the weakest animals die first, so a phenotype "
+        "measured at age *t* is measured in a progressively fitter "
+        "subpopulation. The cohort-mean curve — what almost every published "
+        "climbing figure plots — is the trajectory of a **survivor**, not of a "
+        "fly, and its decline is biased toward zero. The bias is larger in the "
+        "sicker genotype, so a manipulation that kills frail flies early can "
+        "look protective. This page computes three estimands on the same data "
+        "and shows how far apart they are.")
+    _template_button("climbing_longitudinal_template.csv",
+                     "Longitudinal template (has DeathAge)", "tpl_sb")
+
+    src = st.radio("Data source",
+                   ["Loaded data", "Frailty simulation demo"],
+                   horizontal=True, key="sb_src")
+
+    id_col, age_col, val_col, death_col = "FlyID", "Age", "Value", "DeathAge"
+
+    if src == "Frailty simulation demo":
+        st.caption(
+            "Each simulated fly has its own decline slope; steeper decliners "
+            "die earlier, with the strength of that coupling set below. At "
+            "coupling 0 there is no survivor bias and the three estimands "
+            "agree. Raise it and watch the cohort mean flatten while the "
+            "individual-level slope does not.")
+        d1, d2, d3 = st.columns(3)
+        coupling = d1.slider("Frailty coupling", 0.0, 2.0, 1.0, 0.1, key="sb_coupling",
+                             help="0 = decline rate and death age are "
+                                  "independent; 1 = strong coupling.")
+        n_flies = d2.slider("Flies", 60, 600, 300, 20, key="sb_nflies")
+        seed = d3.number_input("Seed", 0, 9999, 0, 1, key="sb_seed")
+        try:
+            work = sb.simulate_frailty_cohort(
+                n_flies=int(n_flies), frailty_coupling=float(coupling),
+                seed=int(seed))
+        except Exception as _e:
+            st.error(f"Simulation failed: {_e}")
+            return
+        st.caption(f"Simulated {work['FlyID'].nunique()} flies, "
+                   f"{len(work)} observations, true mean slope "
+                   f"{work['TrueSlope'].mean():+.5f}/day.")
+    else:
+        if not _require_data():
+            return
+        df = st.session_state["df"]
+        if not _needs_columns(df, {
+            "Age": "age in days, the time axis of the trajectory",
+        }, "This page compares trajectory estimands across ages within animals."):
+            return
+        id_opts = [c for c in ("FlyID", "VialID") if c in df.columns
+                   and df[c].notna().any()]
+        if not id_opts:
+            st.info(
+                "This page follows the same animal across ages, so it needs an "
+                "identifier.\n\nMissing column(s):\n"
+                "- `FlyID` — the individual animal; without it there is no "
+                "individual trajectory, only a cohort mean\n"
+                "- `VialID` — accepted as a coarser unit when flies are not "
+                "tracked individually, in which case the 'individual' slope is "
+                "a per-vial slope and terminal decline within a vial is averaged "
+                "away")
+            return
+        vopts = _value_options(df)
+        if not vopts:
+            st.info("No numeric response column was found. Add `Count` and `n` "
+                    "(climbing counts), or any numeric phenotype column.")
+            return
+        v1, v2 = st.columns(2)
+        val_opt = v1.selectbox("Value column (the phenotype)", vopts, key="sb_val")
+        id_col = v2.selectbox("Animal identifier", id_opts, key="sb_id")
+        if id_col != "FlyID":
+            st.warning(
+                f"Using `{id_col}` as the unit. Trajectories are then per-vial "
+                "means, so the individual-level slope is a vial-level slope and "
+                "within-vial terminal decline is averaged away. Record `FlyID` "
+                "to recover the individual estimand.")
+        work = df.copy()
+        work["Value"] = _value_series(df, val_opt)
+        if "DeathAge" not in work.columns:
+            st.warning(
+                "No `DeathAge` column. Informative-dropout testing, "
+                "pattern-mixture reweighting and time-to-death alignment are "
+                "unavailable. Recording the age at death of every animal is the "
+                "single most valuable extra column for trajectory work.")
+
+    try:
+        rep = sb.survivor_bias_report(work, id_col=id_col, age_col=age_col,
+                                      value_col=val_col, death_col=death_col)
+    except Exception as _e:
+        st.error(f"Survivor-bias report failed: {_e}")
+        return
+
+    ratio = rep.get("slope_bias_ratio", np.nan)
+    if pd.notna(ratio) and ratio < 0.85:
+        st.error(rep.get("verdict", ""))
+    elif pd.notna(ratio):
+        st.info(rep.get("verdict", ""))
+    else:
+        st.warning(rep.get("verdict", ""))
+
+    m = st.columns(4)
+    m[0].metric("Slope bias ratio", f"{ratio:.2f}" if pd.notna(ratio) else "N/A",
+                help="Cohort-mean slope divided by the individual-level "
+                     "(mixed-model) slope. 0.60 means the conventional analysis "
+                     "reports a decline only 60% as steep as the flies experienced.")
+    for lbl, key, col in (("Survivor mean", "slope_survivor_mean", m[1]),
+                          ("Balanced panel", "slope_balanced_panel", m[2]),
+                          ("Mixed model", "slope_mixed_model", m[3])):
+        v = rep.get(key, np.nan)
+        col.metric(f"{lbl} slope /day", f"{v:+.5f}" if pd.notna(v) else "N/A")
+
+    for w in rep.get("warnings", []):
+        st.warning(w)
+
+    t_traj, t_slopes, t_frail, t_axis = st.tabs(
+        ["Trajectories", "Slope Table", "Informative Dropout", "Time Axis"])
+
+    with t_traj:
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        series = [
+            ("Survivor mean (conventional)", rep.get("survivor_mean"), "#C0392B"),
+            ("Balanced panel", rep.get("balanced_panel"), "#0D2137"),
+            ("Pattern mixture", rep.get("pattern_mixture"), "#F0A500"),
+        ]
+        plotted = 0
+        for name, tab, colour in series:
+            if tab is None or not isinstance(tab, pd.DataFrame) or tab.empty:
+                continue
+            if age_col not in tab.columns or "mean" not in tab.columns:
+                continue
+            fig.add_trace(go.Scatter(
+                x=tab[age_col], y=tab["mean"], mode="lines+markers", name=name,
+                line=dict(color=colour, width=2)))
+            plotted += 1
+        if plotted == 0:
+            st.info("No estimand could be computed from these data.")
+        else:
+            fig.update_layout(xaxis_title="Age (days)", yaxis_title="Phenotype",
+                              height=440,
+                              legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                              margin=dict(l=40, r=20, t=40, b=40))
+            st.plotly_chart(fig, width="stretch")
+            st.caption(
+                "Survivor mean = E[Y(t) | alive at t], the conventional curve. "
+                "Balanced panel = a fixed cohort surviving to a common age, so "
+                "selection is constant across ages. Pattern mixture = the "
+                "full-cohort mean, reweighting death-time strata back to the "
+                "original composition (Little 1993). Where they diverge, the "
+                "cohort-mean decline constant does not describe an individual.")
+        pm_meta = rep.get("pattern_mixture_meta", {})
+        if pm_meta.get("available"):
+            st.warning("Pattern-mixture identifying assumption: "
+                       + pm_meta.get("identifying_assumption", ""))
+        bp_meta = rep.get("balanced_panel_meta", {})
+        if bp_meta.get("available"):
+            st.caption(
+                f"Balanced panel restricted to age {bp_meta.get('to_age'):g}: "
+                f"{bp_meta.get('n_survivors')} of {bp_meta.get('n_total_animals')} "
+                f"animals retained ({bp_meta.get('retention', 0):.0%}).")
+        elif bp_meta:
+            st.caption(f"Balanced panel unavailable: {bp_meta.get('reason', '')}")
+
+    with t_slopes:
+        rows = [
+            {"estimand": "E[Y(t) | alive at t] (survivor-conditional)",
+             "slope_per_day": rep.get("slope_survivor_mean")},
+            {"estimand": "E[Y(t) | alive at common age] (balanced panel)",
+             "slope_per_day": rep.get("slope_balanced_panel")},
+            {"estimand": "E[Y(t)] over the full starting cohort (pattern mixture)",
+             "slope_per_day": rep.get("slope_pattern_mixture")},
+            {"estimand": "individual-level mean slope (mixed model)",
+             "slope_per_day": rep.get("slope_mixed_model")},
+        ]
+        stab = pd.DataFrame(rows)
+        st.dataframe(stab, width="stretch")
+        st.download_button("Download slope CSV", stab.to_csv(index=False).encode(),
+                           "survivor_bias_slopes.csv", "text/csv", key="dl_sb_slopes")
+        mm = rep.get("mixed_model", {})
+        if mm.get("available"):
+            st.caption(
+                f"Mixed model: slope {mm['slope']:+.5f} "
+                f"[{mm['ci_lower']:+.5f}, {mm['ci_upper']:+.5f}], "
+                f"p = {mm['p_value']:.3g}, {mm['n_animals']} animals, "
+                f"{mm['n_obs']} observations.")
+        elif mm:
+            st.caption(f"Mixed model unavailable: {mm.get('reason', '')}")
+
+    with t_frail:
+        ft = rep.get("frailty_test")
+        if not ft:
+            st.info("Requires a `DeathAge` column: the test asks whether an "
+                    "animal's own trajectory predicts when it dies.")
+        elif not ft.get("available"):
+            st.warning(ft.get("reason", "Unavailable."))
+        else:
+            if ft.get("informative_dropout"):
+                st.error(ft.get("verdict", ""))
+            else:
+                st.success(ft.get("verdict", ""))
+            fr = pd.DataFrame([{
+                "rho_slope_vs_death": ft.get("rho_slope_vs_death"),
+                "p_slope_vs_death": ft.get("p_slope_vs_death"),
+                "rho_level_vs_death": ft.get("rho_level_vs_death"),
+                "p_level_vs_death": ft.get("p_level_vs_death"),
+                "n_animals": ft.get("n_animals"),
+            }])
+            st.dataframe(fr, width="stretch")
+            st.caption(ft.get("rawmean_note", ""))
+
+    with t_axis:
+        ax = rep.get("axis_comparison")
+        if not ax:
+            st.info("Requires a `DeathAge` column: the comparison asks whether "
+                    "chronological age or time-to-death explains the phenotype "
+                    "better.")
+        elif not ax.get("available"):
+            st.warning(ax.get("reason", "Unavailable."))
+        else:
+            if ax.get("better_axis") == "time_to_death":
+                st.error(ax.get("verdict", ""))
+            else:
+                st.info(ax.get("verdict", ""))
+            atab = pd.DataFrame(ax.get("axes", {})).T
+            st.dataframe(atab, width="stretch")
+            st.caption(
+                "Motor collapse in flies is largely a terminal event "
+                "phase-locked to death (Gaitanidis et al. 2019, Aging "
+                "11:1850-1873). When time-to-death wins, genotypes with "
+                "different lifespans must not be compared at matched "
+                "chronological ages.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — Trajectory Forecast
+# ══════════════════════════════════════════════════════════════════════════════
+def _traj_cohorts(df: pd.DataFrame, group_cols: list, value: pd.Series,
+                  age_col: str = "Age") -> dict:
+    """Collapse a frame into {cohort label: (ages, mean values)}."""
+    work = df.copy()
+    work["_val"] = value
+    work = work.dropna(subset=[age_col, "_val"])
+    if work.empty:
+        return {}
+    cohorts = {}
+    if group_cols:
+        grouped = work.groupby(group_cols, dropna=False)
+    else:
+        work["_all"] = "all"
+        grouped = work.groupby("_all", dropna=False)
+    for key, g in grouped:
+        label = " | ".join(str(k) for k in (key if isinstance(key, tuple) else (key,)))
+        agg = g.groupby(age_col)["_val"].mean().sort_index()
+        if len(agg) >= 2:
+            cohorts[label] = (agg.index.to_numpy(float), agg.to_numpy(float))
+    return cohorts
+
+
+def page_trajectory_forecast():
+    render_header("Trajectory Forecast",
+                  "Hierarchical disease-trajectory prediction with honest intervals")
+    try:
+        from modules import trajectory as traj
+    except Exception as _e:
+        st.error(f"Trajectory module import failed: {_e}")
+        return
+    if not _require_data():
+        return
+    df = st.session_state["df"]
+
+    st.markdown(
+        "Fitting a curve to three points and extrapolating to day 40 is an "
+        "exercise in guessing the curve's **shape**. The fix is to borrow that "
+        "shape from cohorts that have been followed to late ages: completed "
+        "cohorts define a population prior over the curve parameters, and a "
+        "sparse new cohort's posterior is a precision-weighted compromise "
+        "between its own data and that prior. Predictions beyond a configurable "
+        "horizon are **refused**, not merely flagged.")
+    _template_button("climbing_aging_template.csv", "Ageing-series template", "tpl_tf")
+
+    if not _needs_columns(df, {
+        "Age": "age in days — the axis the trajectory is predicted along",
+    }, "This page forecasts a phenotype forward in age, so it needs an age axis "
+       "with at least two ages per cohort."):
+        return
+
+    vopts = _value_options(df)
+    if not vopts:
+        st.info("No numeric response column was found. Add `Count` and `n` "
+                "(climbing counts), or any numeric phenotype column.")
+        return
+
+    gopts = [c for c in ("Genotype", "Treatment", "Sex", "Compound")
+             if c in df.columns]
+    c1, c2 = st.columns([2, 3])
+    val_opt = c1.selectbox("Response column", vopts, key="tf_val")
+    group_cols = c2.multiselect(
+        "Cohorts are defined by", gopts,
+        default=[c for c in ("Genotype", "Treatment") if c in gopts],
+        key="tf_grp")
+
+    value = _value_series(df, val_opt)
+    if value is None or not value.notna().any():
+        st.info("The selected response column has no usable values.")
+        return
+    lo_v, hi_v = float(np.nanmin(value)), float(np.nanmax(value))
+    if not (0.0 <= lo_v and hi_v <= 1.0):
+        st.warning(
+            f"The response ranges {lo_v:.3g} to {hi_v:.3g}. The curve families "
+            "are defined on a 0-1 scale; values outside it will be clipped. "
+            "Use the climbing proportion, or rescale the column, for a "
+            "meaningful fit.")
+
+    cohorts = _traj_cohorts(df, group_cols, value)
+    if len(cohorts) < 1:
+        st.info("No cohort has at least two distinct ages. A trajectory cannot "
+                "be fitted to a single timepoint.")
+        return
+
+    st.caption(f"{len(cohorts)} cohort(s) found: "
+               + ", ".join(f"{k} ({len(v[0])} ages)" for k, v in list(cohorts.items())[:8])
+               + (" ..." if len(cohorts) > 8 else ""))
+
+    f1, f2, f3 = st.columns(3)
+    family = f1.selectbox("Curve family for the population prior",
+                          list(traj.FAMILIES.keys()), key="tf_fam")
+    min_points = f2.slider("Minimum ages for a cohort to enter the prior",
+                           2, 8, 4, 1, key="tf_minpts")
+    max_horizon = f3.slider("Refuse beyond this multiple of the observed span",
+                            0.5, 4.0, 2.0, 0.5, key="tf_hor")
+
+    use_conformal = st.checkbox(
+        "Calibrate intervals conformally on held-out cohorts", value=False,
+        key="tf_conf",
+        help="Splits the cohorts: half build the prior, half supply the "
+             "out-of-sample residuals used to correct the interval width. "
+             "Needs at least four cohorts.")
+
+    labels = sorted(cohorts.keys())
+    target = st.selectbox("Cohort to forecast", labels, key="tf_target")
+
+    obs_t, obs_y = cohorts[target]
+    prior_pool = {k: v for k, v in cohorts.items() if k != target}
+
+    calib_pool = {}
+    if use_conformal and len(prior_pool) >= 4:
+        pk = sorted(prior_pool.keys())
+        calib_pool = {k: prior_pool[k] for k in pk[1::2]}
+        prior_pool = {k: prior_pool[k] for k in pk[0::2]}
+    elif use_conformal:
+        st.warning(
+            f"Conformal calibration needs at least four cohorts other than the "
+            f"target; {len(prior_pool)} available. Intervals will be reported "
+            "uncalibrated.")
+
+    prior = None
+    if prior_pool:
+        try:
+            prior = traj.build_population_prior(prior_pool, family=family,
+                                                min_points=int(min_points))
+        except Exception as _e:
+            st.warning(f"Population prior could not be built: {_e}")
+    if prior is None:
+        st.warning(
+            "No population prior. Fewer than two completed cohorts qualified "
+            f"(each needs at least {int(min_points)} ages and a stable "
+            f"{family} fit). The forecast falls back to AICc-weighted model "
+            "averaging across curve families — the spread across families is "
+            "the model-form uncertainty, and it is wide, as it should be."
+            + (f" Conformal calibration held {len(calib_pool)} cohort(s) out of "
+               f"the prior, leaving only {len(prior_pool)}; turn it off, or add "
+               "more completed cohorts." if calib_pool else ""))
+    else:
+        if calib_pool:
+            st.caption(
+                f"Split-conformal: {len(prior_pool)} cohort(s) build the prior, "
+                f"{len(calib_pool)} supply out-of-sample residuals. The two sets "
+                "must be disjoint — overlapping ones give in-sample residuals "
+                "and an under-correction.")
+        pm = st.columns(3)
+        pm[0].metric("Prior cohorts", str(prior.n_cohorts))
+        pm[1].metric("Prior family", prior.family)
+        pm[2].metric("Residual SD", f"{prior.residual_sd:.4f}")
+        for nt in prior.notes:
+            st.caption(nt)
+
+    calibrator = None
+    if calib_pool and prior is not None:
+        tmax_cal = float(np.median([np.median(v[0]) for v in calib_pool.values()]))
+        try:
+            calibrator = traj.build_conformal_calibrator(
+                prior, calib_pool, train_max_day=tmax_cal)
+        except Exception as _e:
+            st.warning(f"Conformal calibration failed: {_e}")
+        if calibrator is None:
+            st.warning("Conformal calibration produced no usable residuals; "
+                       "intervals are uncalibrated.")
+
+    default_targets = ", ".join(
+        str(int(round(d))) for d in np.unique(np.concatenate([
+            obs_t, obs_t.max() + np.array([5.0, 10.0, 20.0])])))
+    tgt_text = st.text_input("Target ages (days)", value=default_targets,
+                             key="tf_targets")
+    targets = _parse_day_list(tgt_text)
+    if not targets:
+        st.info("Enter at least one target age, for example `10, 20, 30, 40`.")
+        return
+
+    try:
+        pred = traj.predict_trajectory(
+            obs_t, obs_y, targets, prior=prior, max_horizon=float(max_horizon),
+            calibrator=calibrator)
+    except Exception as _e:
+        st.error(f"Prediction failed: {_e}")
+        return
+
+    ptab = pd.DataFrame(pred["predictions"])
+    refused = ptab[ptab["refused"]]
+    if not refused.empty:
+        st.error(
+            f"{len(refused)} target age(s) REFUSED: "
+            + "; ".join(f"day {int(r['day'])}" for _, r in refused.iterrows())
+            + ". " + str(refused.iloc[0]["refusal_reason"]))
+
+    ok = ptab[~ptab["refused"]]
+    n_cal = int(ok["calibrated"].sum()) if not ok.empty else 0
+    if calibrator is not None and n_cal:
+        st.success(f"{n_cal} of {len(ok)} issued intervals are conformally "
+                   "calibrated against held-out cohorts.")
+    else:
+        st.info(
+            "Intervals are NOT conformally calibrated. Empirical-Bayes "
+            "intervals treat the estimated prior as if it were known and are "
+            "systematically too narrow at long horizons; read them as "
+            "optimistic.")
+
+    st.markdown(f"**Method:** {pred.get('method', '')}")
+
+    t_plot, t_pred, t_model, t_end, t_val = st.tabs(
+        ["Forecast", "Predictions", "Models", "Endpoints", "Forward Validation"])
+
+    with t_plot:
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        if not ok.empty:
+            xs = ok["day"].tolist()
+            fig.add_trace(go.Scatter(
+                x=xs + xs[::-1],
+                y=ok["ci_upper"].tolist() + ok["ci_lower"].tolist()[::-1],
+                fill="toself", fillcolor="rgba(240,165,0,0.18)",
+                line=dict(width=0), hoverinfo="skip", showlegend=False))
+            fig.add_trace(go.Scatter(
+                x=xs, y=ok["predicted"], mode="lines+markers", name="Predicted",
+                line=dict(color="#F0A500", width=2)))
+        fig.add_trace(go.Scatter(
+            x=obs_t, y=obs_y, mode="markers", name="Observed",
+            marker=dict(color="#0D2137", size=9)))
+        fig.update_layout(
+            xaxis_title="Age (days)", yaxis_title="Phenotype", height=440,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(l=40, r=20, t=40, b=40))
+        st.plotly_chart(fig, width="stretch")
+        st.caption(f"Cohort `{target}`; observed range "
+                   f"{pred['observed_range_days'][0]:g}-"
+                   f"{pred['observed_range_days'][1]:g} days from "
+                   f"{pred['n_observed']} points. Band = 95% predictive interval.")
+
+    with t_pred:
+        st.dataframe(ptab, width="stretch")
+        st.download_button("Download predictions CSV",
+                           ptab.to_csv(index=False).encode(),
+                           "trajectory_predictions.csv", "text/csv", key="dl_tf_pred")
+        st.caption("`regime` says whether a target is interpolated, just beyond "
+                   "the data, or extrapolated; `horizon_x_span` is how far "
+                   "beyond the last observation it sits, in multiples of the "
+                   "observed span.")
+
+    with t_model:
+        mtab = pd.DataFrame(pred.get("models", []))
+        if mtab.empty:
+            st.info("No model table available.")
+        else:
+            st.dataframe(mtab, width="stretch")
+            st.download_button("Download model CSV", mtab.to_csv(index=False).encode(),
+                               "trajectory_models.csv", "text/csv", key="dl_tf_mod")
+            st.caption("Without a prior, `weight` is the AICc model-averaging "
+                       "weight; the spread across families is the model-form "
+                       "uncertainty and it is not hidden.")
+
+    with t_end:
+        thr = st.slider("Impairment threshold", 0.0, 1.0, 0.5, 0.05, key="tf_thr")
+        try:
+            ep = traj.derive_endpoints(pred, threshold=float(thr))
+        except Exception as _e:
+            st.error(f"Endpoint derivation failed: {_e}")
+            ep = {"available": False}
+        if not ep.get("available"):
+            st.info(ep.get("reason", "Endpoints unavailable."))
+        else:
+            e1, e2 = st.columns(2)
+            _oa = ep.get("onset_age_days", np.nan)
+            _hs = ep.get("healthspan_days", np.nan)
+            e1.metric("Onset age (days)",
+                      f"{_oa:.1f}" if pd.notna(_oa) else "not reached",
+                      help="First predicted age at which the phenotype falls "
+                           "below the threshold.")
+            e2.metric("Healthspan (days)",
+                      f"{_hs:.1f}" if pd.notna(_hs) else "N/A",
+                      help="Predicted days at or above the threshold within the "
+                           "prediction window.")
+            etab = pd.DataFrame([{k: v for k, v in ep.items()
+                                  if not isinstance(v, (list, dict))}])
+            st.dataframe(etab, width="stretch")
+            for k in ("onset_age_days_note", "healthspan_days_note"):
+                if ep.get(k):
+                    st.warning(ep[k])
+            st.caption("Every quantity is computed within each posterior draw "
+                       "and then summarised, so the interval propagates "
+                       "trajectory uncertainty rather than being read off the "
+                       "median curve.")
+
+    with t_val:
+        st.caption(
+            "Validation is FORWARD IN TIME only. A random hold-out across a "
+            "cohort's own timepoints leaks the future into training and "
+            "flatters the model several fold.")
+        if len(obs_t) < 3:
+            st.info("Forward validation needs at least three observed ages "
+                    "(two to train on and one later one to score).")
+        else:
+            tmax = st.select_slider(
+                "Train on ages up to", options=[float(v) for v in obs_t[:-1]],
+                value=float(obs_t[len(obs_t) // 2]), key="tf_tmax")
+            if st.button("Run forward validation", key="tf_fv"):
+                try:
+                    fv = traj.forward_validate(obs_t, obs_y, train_max_day=float(tmax),
+                                               prior=prior, calibrator=calibrator)
+                except Exception as _e:
+                    st.error(f"Forward validation failed: {_e}")
+                else:
+                    ftab = pd.DataFrame([{k: v for k, v in fv.items()
+                                          if isinstance(v, (int, float, str, bool))}])
+                    st.dataframe(ftab, width="stretch")
+                    for k, v in fv.items():
+                        if isinstance(v, pd.DataFrame) and not v.empty:
+                            st.markdown(f"**{k}**")
+                            st.dataframe(v, width="stretch")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — Historical Controls
+# ══════════════════════════════════════════════════════════════════════════════
+def page_historical_controls():
+    render_header("Historical Controls",
+                  "Robust meta-analytic-predictive priors — borrow control "
+                  "information, safely")
+    try:
+        from modules import control_prior as cp
+    except Exception as _e:
+        st.error(f"Control-prior module import failed: {_e}")
+        return
+
+    st.markdown(
+        "A laboratory that has run the same wild-type control twenty times "
+        "already knows how that control behaves. Borrowing it lets the same "
+        "flies test more compounds, or the same experiment run with fewer "
+        "flies. The danger is that historical controls are **not** exchangeable "
+        "by fiat — stocks drift, food batches change, incubators are replaced — "
+        "and naive pooling is among the fastest ways to manufacture a false "
+        "discovery. The robust MAP prior switches its own borrowing off when "
+        "the concurrent control disagrees with history.")
+    _template_button("historical_controls_template.csv",
+                     "Historical-controls template", "tpl_hc")
+
+    df = st.session_state.get("df")
+    has_expt = (df is not None and not df.empty
+                and "ExperimentID" in df.columns
+                and int(df["ExperimentID"].nunique(dropna=True)) >= 3)
+
+    modes = ["Manual entry"]
+    if has_expt:
+        modes.insert(0, "From loaded data (ExperimentID)")
+    else:
+        st.info(
+            "To build the prior from your own data, load a dataset with an "
+            "`ExperimentID` column carrying at least three experiments "
+            "(two or more historical control arms plus the current one), a "
+            "`Treatment` column naming the control, and `Count` / `n` climbing "
+            "counts. Manual entry is available below in the meantime.")
+    mode = st.radio("Historical arms from", modes, horizontal=True, key="hc_mode")
+
+    arms = None
+    if mode.startswith("From loaded"):
+        a1, a2, a3 = st.columns(3)
+        ctrl = a1.selectbox("Control treatment",
+                            sorted(df["Treatment"].dropna().astype(str).unique()),
+                            key="hc_ctrl")
+        geno_opts = ["(all)"] + (sorted(df["Genotype"].dropna().astype(str).unique())
+                                 if "Genotype" in df.columns else [])
+        geno = a2.selectbox("Genotype", geno_opts, key="hc_geno")
+        sex_opts = ["(all)"] + (sorted(df["Sex"].dropna().astype(str).unique())
+                                if "Sex" in df.columns else [])
+        sex = a3.selectbox("Sex", sex_opts, key="hc_sex")
+        try:
+            arms = cp.historical_arms_from_df(
+                df, control_treatment=ctrl,
+                genotype=None if geno == "(all)" else geno,
+                sex=None if sex == "(all)" else sex)
+        except Exception as _e:
+            st.warning(f"Could not extract control arms: {_e}")
+            arms = None
+        if arms is not None and len(arms) < 3:
+            st.warning(
+                f"Only {len(arms)} control arm(s) matched. At least three are "
+                "needed: two or more historical arms to estimate the "
+                "between-experiment variance, plus the current one.")
+            arms = None
+
+    if arms is None:
+        st.markdown("**Historical control arms** — one row per past experiment.")
+        seed_tab = pd.DataFrame({
+            "label": [f"EXP{i}" for i in range(1, 6)],
+            "successes": [17, 18, 16, 19, 17],
+            "totals": [20, 20, 20, 20, 20],
+        })
+        edited = st.data_editor(seed_tab, num_rows="dynamic", width="stretch",
+                                key="hc_editor")
+        arms = edited.rename(columns={"label": "ExperimentID"}).copy()
+        arms = arms.dropna(subset=["successes", "totals"])
+        arms["successes"] = pd.to_numeric(arms["successes"], errors="coerce")
+        arms["totals"] = pd.to_numeric(arms["totals"], errors="coerce")
+        arms = arms.dropna(subset=["successes", "totals"])
+        arms = arms[arms["totals"] > 0]
+        arms["proportion"] = arms["successes"] / arms["totals"]
+        cur1, cur2 = st.columns(2)
+        cur_s = cur1.number_input("Concurrent control — flies that climbed",
+                                  min_value=0, value=15, step=1, key="hc_cur_s")
+        cur_n = cur2.number_input("Concurrent control — flies tested",
+                                  min_value=1, value=20, step=1, key="hc_cur_n")
+        hist = arms
+        cur_label = "concurrent"
+    else:
+        id_col = arms.columns[0]
+        st.dataframe(arms, width="stretch")
+        cur_label = st.selectbox(
+            "Which experiment is the CURRENT (concurrent) control?",
+            [str(v) for v in arms[id_col]], index=len(arms) - 1, key="hc_cur")
+        cur_row = arms[arms[id_col].astype(str) == cur_label].iloc[0]
+        cur_s, cur_n = float(cur_row["successes"]), float(cur_row["totals"])
+        hist = arms[arms[id_col].astype(str) != cur_label]
+
+    if hist is None or len(hist) < 2:
+        st.info("At least two historical control arms are required. A "
+                "between-experiment variance cannot be estimated from fewer, "
+                "and a prior built from one arm is that arm asserted as truth.")
+        return
+
+    w = st.slider("Robustification weight on the MAP component", 0.1, 1.0, 0.8, 0.05,
+                  key="hc_w",
+                  help="The analyst's pre-specified statement of how much the "
+                       "historical arms are believed exchangeable with the new "
+                       "one. The remainder goes on a deliberately vague "
+                       "component that absorbs a conflicting control.")
+
+    try:
+        built = cp.build_map_prior(hist["successes"].to_numpy(float),
+                                   hist["totals"].to_numpy(float),
+                                   labels=[str(v) for v in hist.iloc[:, 0]])
+    except Exception as _e:
+        st.error(f"MAP prior could not be built: {_e}")
+        return
+
+    prior = built["prior"]
+    robust = cp.robustify(prior, weight=float(w))
+    ess = cp.prior_effective_sample_size(robust)
+    summ = built["prior_summary"]
+
+    conflict = cp.prior_data_conflict(robust, float(cur_s), float(cur_n))
+    if conflict.get("conflict"):
+        st.error("PRIOR-DATA CONFLICT — DO NOT BORROW. " + conflict.get("verdict", ""))
+    else:
+        st.success(conflict.get("verdict", ""))
+
+    m = st.columns(4)
+    m[0].metric("Historical arms", str(built["n_historical_arms"]))
+    m[1].metric("Prior control rate", f"{summ['mean_proportion']:.1%}")
+    m[2].metric("Prior worth (flies)", f"{ess['ess_flies']:.0f}",
+                help="Effective sample size of the informative component, in "
+                     "control flies. This is the number to show a reviewer or "
+                     "an ethics committee.")
+    m[3].metric("Concurrent control", f"{cur_s / max(cur_n, 1):.1%}")
+
+    for nt in built.get("notes", []):
+        st.warning(nt)
+
+    t_prior, t_post, t_design, t_oc = st.tabs(
+        ["Prior", "Posterior", "Recommended Design", "Operating Characteristics"])
+
+    with t_prior:
+        ptab = pd.DataFrame([{
+            "n_historical_arms": built["n_historical_arms"],
+            "prior_mean_proportion": summ["mean_proportion"],
+            "prior_ci_lower": summ["ci_lower"],
+            "prior_ci_upper": summ["ci_upper"],
+            "tau_mean_logit": built["tau_mean"],
+            "heterogeneity_fraction": built["heterogeneity_fraction"],
+            "tau_prior": built["tau_prior"],
+            "ess_flies_map_component": ess["ess_flies_map_component"],
+            "ess_flies_full_mixture": ess["ess_flies_full_mixture"],
+        }])
+        st.dataframe(ptab, width="stretch")
+        st.download_button("Download prior summary CSV",
+                           ptab.to_csv(index=False).encode(),
+                           "map_prior_summary.csv", "text/csv", key="dl_hc_prior")
+        atab = hist.copy()
+        st.markdown("**Contributing historical arms**")
+        st.dataframe(atab, width="stretch")
+        st.caption(built.get("method", ""))
+        st.caption(ess.get("caveat", ""))
+
+    with t_post:
+        post = cp.update_posterior(robust, float(cur_s), float(cur_n))
+        psum = post.on_probability_scale()
+        q = st.columns(3)
+        q[0].metric("Posterior control rate", f"{psum['mean_proportion']:.1%}")
+        q[1].metric("95% lower", f"{psum['ci_lower']:.1%}")
+        q[2].metric("95% upper", f"{psum['ci_upper']:.1%}")
+        ctab = pd.DataFrame([{
+            "conflict": conflict.get("conflict"),
+            "conflict_p_value": conflict.get("p_value"),
+            "observed_proportion": conflict.get("observed_proportion"),
+            "prior_predicted_proportion": conflict.get("prior_predicted_proportion"),
+            "predictive_lower": conflict.get("predictive_interval", (np.nan, np.nan))[0],
+            "predictive_upper": conflict.get("predictive_interval", (np.nan, np.nan))[1],
+        }])
+        st.dataframe(ctab, width="stretch")
+        st.caption(conflict.get("method", "") +
+                   ". The weakly-informative component is stripped before the "
+                   "test — it is designed to accommodate any observation, so "
+                   "leaving it in would make the diagnostic unable to detect a "
+                   "conflict.")
+
+    with t_design:
+        st.caption(
+            "Finds the smallest concurrent control arm whose borrowed analysis "
+            "keeps type I error inside the limit across the stated drift. A "
+            "concurrent control is never eliminated: without one, drift is "
+            "undetectable and the conflict check cannot run.")
+        d1, d2, d3 = st.columns(3)
+        n_std = d1.number_input("Standard control arm (flies)", 10, 500, 60, 5,
+                                key="hc_nstd")
+        n_trt = d2.number_input("Treatment arm (flies)", 10, 500, 60, 5, key="hc_ntrt")
+        drift = d3.slider("Tolerable drift in control rate", 0.01, 0.20, 0.05, 0.01,
+                          key="hc_drift")
+        max_t1 = st.slider("Maximum acceptable type I error", 0.05, 0.20, 0.075, 0.005,
+                           key="hc_t1")
+        if st.button("Search for a reduced control arm", key="hc_design_run"):
+            with st.spinner("Simulating the borrowed analysis across drift..."):
+                try:
+                    rd = cp.recommended_design(
+                        hist["successes"].to_numpy(float),
+                        hist["totals"].to_numpy(float),
+                        n_control_standard=int(n_std), n_treat=int(n_trt),
+                        max_type_I=float(max_t1), tolerable_drift=float(drift),
+                        robust_weight=float(w), n_sim=800)
+                except Exception as _e:
+                    st.error(f"Design search failed: {_e}")
+                else:
+                    if rd.get("recommended_n_control"):
+                        st.success(rd.get("verdict", ""))
+                    else:
+                        st.error(rd.get("verdict", ""))
+                    r1, r2 = st.columns(2)
+                    r1.metric("Recommended control arm",
+                              str(rd.get("recommended_n_control") or "none"))
+                    r2.metric("Flies saved per experiment",
+                              str(rd.get("flies_saved_per_experiment", 0)))
+                    stab = rd.get("search_table", pd.DataFrame())
+                    if not stab.empty:
+                        st.dataframe(stab, width="stretch")
+                        st.download_button("Download search CSV",
+                                           stab.to_csv(index=False).encode(),
+                                           "control_design_search.csv", "text/csv",
+                                           key="dl_hc_design")
+
+    with t_oc:
+        st.caption(
+            "Whether borrowing is acceptable is not a matter of opinion; it is "
+            "the false-positive rate it produces at the drift a laboratory "
+            "actually experiences. Concurrent-only, robust MAP and full MAP are "
+            "compared at every drift level.")
+        o1, o2 = st.columns(2)
+        n_c = o1.number_input("Concurrent control arm (flies)", 10, 500, 30, 5,
+                              key="hc_oc_nc")
+        n_t = o2.number_input("Treatment arm (flies)", 10, 500, 60, 5, key="hc_oc_nt")
+        if st.button("Simulate operating characteristics", key="hc_oc_run"):
+            p_hist = float(summ["mean_proportion"])
+            grid = [float(np.clip(p_hist + d, 0.02, 0.98))
+                    for d in (-0.10, -0.05, 0.0, 0.05, 0.10)]
+            with st.spinner("Simulating..."):
+                try:
+                    oc = cp.operating_characteristics(
+                        hist["successes"].to_numpy(float),
+                        hist["totals"].to_numpy(float),
+                        n_control=int(n_c), n_treat=int(n_t),
+                        p_control_true_grid=grid, true_effect_logit=0.0,
+                        robust_weight=float(w), n_sim=800)
+                except Exception as _e:
+                    st.error(f"Simulation failed: {_e}")
+                else:
+                    st.dataframe(oc, width="stretch")
+                    st.download_button("Download operating-characteristics CSV",
+                                       oc.to_csv(index=False).encode(),
+                                       "control_operating_characteristics.csv",
+                                       "text/csv", key="dl_hc_oc")
+                    st.caption("With no true effect, `rejection_rate` IS the "
+                               "type I error at that amount of drift.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — Dose-Response
+# ══════════════════════════════════════════════════════════════════════════════
+def page_dose_response():
+    render_header("Dose-Response",
+                  "Log-logistic potency, profile-likelihood EC50, and lethality "
+                  "separation")
+    try:
+        from modules import dose_response as dr
+    except Exception as _e:
+        st.error(f"Dose-response module import failed: {_e}")
+        return
+    if not _require_data():
+        return
+    df = st.session_state["df"]
+
+    st.markdown(
+        "A one-way ANOVA across dose groups answers \"significant at 5 mM, not "
+        "at 1 mM\", which depends entirely on where the doses happened to be "
+        "placed. A curve fit estimates **potency** (EC50) and **shape** (the "
+        "Hill slope) with intervals that are comparable across experiments. "
+        "EC50 intervals are computed by **profile likelihood**, because the "
+        "delta method assumes a symmetry the estimate does not have and can "
+        "return a negative lower bound — an impossible dose.")
+    _template_button("toxin_dose_response_template.csv", "Toxin template", "tpl_dr2")
+
+    if not _needs_columns(df, {
+        "Dose": "numeric dose or concentration, including 0 for untreated "
+                "controls (they pin down the upper asymptote and are never dropped)",
+    }, "This page fits a dose-response curve, so it needs a numeric dose axis "
+       "with several distinct levels."):
+        return
+
+    if "Compound" in df.columns and df["Compound"].nunique(dropna=True) > 1:
+        comp = st.selectbox("Compound",
+                            sorted(df["Compound"].dropna().astype(str).unique()),
+                            key="dr2_comp")
+        work = df[df["Compound"].astype(str) == comp].copy()
+    else:
+        work = df.copy()
+
+    vopts = _value_options(work)
+    if not vopts:
+        st.info("No numeric response column was found. Add `Count` and `n` "
+                "(climbing counts), or any numeric response column.")
+        return
+
+    c1, c2 = st.columns(2)
+    val_opt = c1.selectbox("Response column", vopts, key="dr2_val")
+    model = c2.selectbox("Model", ["LL.4", "LL.3", "LL.2"], key="dr2_model",
+                         help="LL.4 = b, c, d, e free. LL.3 fixes the lower "
+                              "asymptote at 0. LL.2 also fixes the upper at 1 — "
+                              "the natural model for a survival curve, where e "
+                              "is exactly the LC50.")
+
+    dose = pd.to_numeric(work["Dose"], errors="coerce")
+    resp = _value_series(work, val_opt)
+    wt = pd.to_numeric(work["n"], errors="coerce") if (
+        val_opt == _PROP_OPTION and "n" in work.columns) else None
+
+    keep = dose.notna() & resp.notna()
+    if wt is not None:
+        keep &= wt.notna() & (wt > 0)
+    dose, resp = dose[keep].to_numpy(float), resp[keep].to_numpy(float)
+    wt = wt[keep].to_numpy(float) if wt is not None else None
+
+    if dose.size == 0:
+        st.info("No rows have both a dose and a response.")
+        return
+
+    try:
+        chk = dr.check_design(dose, resp, model=model)
+    except Exception as _e:
+        st.error(f"Design check failed: {_e}")
+        return
+
+    for r in chk.get("refusals", []):
+        st.error(r)
+    for wmsg in chk.get("warnings", []):
+        st.warning(wmsg)
+
+    force = False
+    if not chk.get("usable"):
+        st.info(
+            f"The design cannot identify {model}: a {chk['n_params']}-parameter "
+            f"curve needs at least that many distinct non-zero doses, and there "
+            f"are {chk['n_distinct_nonzero_doses']}. Choose a simpler model, or "
+            "add dose levels.")
+        force = st.checkbox(
+            "Fit anyway (standard errors will not be trustworthy)", value=False,
+            key="dr2_force")
+        if not force:
+            return
+
+    try:
+        fit = dr.fit_loglogistic(dose, resp, n=wt, model=model, force=bool(force))
+    except Exception as _e:
+        st.error(f"Curve fit failed: {_e}")
+        return
+
+    try:
+        ci = dr.ec50_profile_ci(fit)
+    except Exception as _e:
+        st.warning(f"Profile interval unavailable: {_e}")
+        ci = None
+
+    m = st.columns(4)
+    m[0].metric("EC50", f"{fit.ec50:.4g}")
+    if ci:
+        m[1].metric("Profile 95% lower", f"{ci['profile']['lower']:.4g}")
+        m[2].metric("Profile 95% upper", f"{ci['profile']['upper']:.4g}")
+    m[3].metric("Hill slope b", f"{float(fit.params['b']):.3f}")
+    if ci:
+        st.markdown(f"**Interval:** {ci.get('note', '')}")
+    if chk.get("ec50_extrapolated"):
+        st.warning("The doses do not straddle the curve's inflection, so EC50 is "
+                   "EXTRAPOLATED beyond the tested range rather than "
+                   "interpolated. It is a property of the assumed shape, not an "
+                   "observation.")
+
+    t_curve, t_par, t_ecx, t_horm, t_mort = st.tabs(
+        ["Curve", "Parameters", "Effective Doses", "Hormesis", "Lethality"])
+
+    with t_curve:
+        import plotly.graph_objects as go
+        nz = dose[dose > 0]
+        if nz.size:
+            grid = np.geomspace(max(nz.min() * 0.5, 1e-9), nz.max() * 1.5, 200)
+        else:
+            grid = np.linspace(0, max(dose.max(), 1.0), 200)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=dose, y=resp, mode="markers", name="Observed",
+                                 marker=dict(color="#0D2137", size=8)))
+        fig.add_trace(go.Scatter(x=grid, y=fit.predict(grid), mode="lines",
+                                 name=f"{model} fit",
+                                 line=dict(color="#F0A500", width=2)))
+        if np.isfinite(fit.ec50) and fit.ec50 > 0:
+            fig.add_vline(x=float(fit.ec50), line=dict(color="#C0392B", dash="dash"))
+        fig.update_layout(
+            xaxis_title="Dose", yaxis_title="Response", height=440,
+            xaxis_type="log" if nz.size else "linear",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(l=40, r=20, t=40, b=40))
+        st.plotly_chart(fig, width="stretch")
+        st.caption(
+            "Zero doses are evaluated by the model's limit, so untreated "
+            "controls enter the fit as direct observations of the asymptote "
+            "rather than being dropped. They are shown at the left edge of the "
+            "log axis only if non-zero doses exist. Dashed line = EC50.")
+
+    with t_par:
+        sf = fit.summary_frame()
+        st.dataframe(sf, width="stretch")
+        st.download_button("Download parameter CSV", sf.to_csv().encode(),
+                           "dose_response_parameters.csv", "text/csv", key="dl_dr2_par")
+        q = st.columns(3)
+        q[0].metric("Residual SE", f"{fit.resid_se:.4g}")
+        q[1].metric("Residual df", str(fit.df_resid))
+        q[2].metric("R-squared", f"{fit.r_squared():.3f}")
+        st.caption("R-squared is descriptive only: a high value does not "
+                   "validate a non-linear model and does not mean EC50 is well "
+                   "determined.")
+
+    with t_ecx:
+        try:
+            ed = dr.effective_dose(fit, levels=(10, 50, 90))
+        except Exception as _e:
+            st.warning(f"Effective doses unavailable: {_e}")
+        else:
+            st.dataframe(ed, width="stretch")
+            st.download_button("Download ECx CSV", ed.to_csv().encode(),
+                               "effective_doses.csv", "text/csv", key="dl_dr2_ecx")
+            st.caption(ed.attrs.get("note", ""))
+
+    with t_horm:
+        st.caption(
+            "Low-dose stimulation is common in toxicology and a monotone Hill "
+            "fit cannot represent it: it splits the difference, pulling the "
+            "upper asymptote up and the EC50 out. The Brain-Cousens model adds "
+            "one parameter and is tested against LL.4 by an extra-sum-of-squares "
+            "F test.")
+        if st.button("Test for hormesis", key="dr2_horm_run"):
+            try:
+                hm = dr.hormesis_test(dose, resp, n=wt)
+            except Exception as _e:
+                st.error(f"Hormesis test failed: {_e}")
+            else:
+                if not hm.get("usable"):
+                    st.info(hm.get("reason", "Not testable."))
+                else:
+                    if hm.get("hormesis_supported"):
+                        st.warning(hm.get("verdict", ""))
+                    else:
+                        st.success(hm.get("verdict", ""))
+                    htab = pd.DataFrame([{
+                        "F": hm.get("f_statistic"), "p_value": hm.get("p_value"),
+                        "f_param": hm.get("f_param"), "f_param_se": hm.get("f_param_se"),
+                        "max_stimulation_dose": hm.get("max_stimulation_dose"),
+                        "max_stimulation_percent": hm.get("max_stimulation_percent"),
+                        "monotone_ec50": hm.get("monotone_ec50"),
+                    }])
+                    st.dataframe(htab, width="stretch")
+                    st.caption(hm.get("caveat", ""))
+
+    with t_mort:
+        if "n_dead" not in work.columns:
+            st.info(
+                "Requires an `n_dead` column (flies dead at scoring) alongside "
+                "`n` (flies exposed). Climbing is scored among flies that are "
+                "alive to climb, so a toxin that kills flies removes them from "
+                "the denominator: \"the toxin impairs climbing\" and \"the "
+                "toxin was poisoning the flies and the survivors were "
+                "moribund\" produce identical data. Without mortality counts "
+                "the two cannot be told apart.")
+        elif "n" not in work.columns:
+            st.info("Requires an `n` column alongside `n_dead` so the exposed "
+                    "and the scored denominators can both be formed.")
+        else:
+            dead = pd.to_numeric(work["n_dead"], errors="coerce")[keep].to_numpy(float)
+            n_col = pd.to_numeric(work["n"], errors="coerce")[keep].to_numpy(float)
+            meaning = st.selectbox(
+                "The `n` column counts",
+                ["flies scored after mortality — exposed = n + n_dead",
+                 "flies originally exposed — scored = n - n_dead"],
+                key="dr2_nmeaning",
+                help="Which denominator `n` refers to changes the mortality "
+                     "curve and therefore the LC50. It cannot be inferred from "
+                     "the numbers, so it is asked rather than assumed.")
+            if meaning.startswith("flies scored"):
+                expo, scored = n_col + dead, n_col
+            else:
+                expo, scored = n_col, n_col - dead
+            if np.any(dead > expo) or np.any(scored < 0):
+                st.warning(
+                    "Under this reading the number dead exceeds the number "
+                    "exposed in at least one row, which is impossible. Switch "
+                    "the setting above, or check that `n` and `n_dead` mean "
+                    "what they are assumed to mean.")
+            else:
+                try:
+                    ma = dr.mortality_adjusted_response(dose, resp, dead, expo,
+                                                        n_scored=scored)
+                except Exception as _e:
+                    st.error(f"Mortality adjustment failed: {_e}")
+                else:
+                    sev = ma.get("severity", "")
+                    if sev == "confounded":
+                        st.error(ma.get("warning", ""))
+                    elif sev in ("overlapping", "indeterminate"):
+                        st.warning(ma.get("warning", ""))
+                    else:
+                        st.success(ma.get("warning", ""))
+                    cols = st.columns(4)
+                    for col, (lbl, key_) in zip(cols, (
+                            ("EC50 (behaviour)", "ec50"),
+                            ("LC50 (mortality)", "lc50"),
+                            ("EC50 / LC50", "ratio"),
+                            ("Max mortality", "max_mortality"))):
+                        v = ma.get(key_, np.nan)
+                        col.metric(lbl, f"{v:.4g}" if pd.notna(v) else "N/A")
+                    pdz = ma.get("per_dose", pd.DataFrame())
+                    if isinstance(pdz, pd.DataFrame) and not pdz.empty:
+                        st.dataframe(pdz, width="stretch")
+                        st.download_button("Download per-dose CSV",
+                                           pdz.to_csv().encode(),
+                                           "dose_mortality.csv", "text/csv",
+                                           key="dl_dr2_mort")
+                        st.caption("`survivor_conditional` marks doses at which "
+                                   "mortality exceeds the threshold; at those "
+                                   "doses the behavioural estimate is "
+                                   "conditional on survival and cannot be read "
+                                   "as a behavioural effect.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — Time-of-Day
+# ══════════════════════════════════════════════════════════════════════════════
+def page_time_of_day():
+    render_header("Time-of-Day",
+                  "Circadian modulation of climbing — cosinor, and the fatigue "
+                  "confound")
+    try:
+        from modules import circadian_climbing as cc
+    except Exception as _e:
+        st.error(f"Circadian module import failed: {_e}")
+        return
+    if not _require_data():
+        return
+    df = st.session_state["df"]
+
+    st.markdown(
+        "Time-of-day modulation of climbing is a **hypothesis**, not an "
+        "established fact: Gargano et al. (2005, Exp Gerontol 40:386-395) "
+        "report that RING performance is not influenced by the time of day or "
+        "by repeated testing, so a null here is the expected result. Cosinor "
+        "spends the same two degrees of freedom as a three-level ANOVA but "
+        "returns MESOR, amplitude and acrophase, which are comparable across "
+        "studies. The decisive check comes first: if every fly is tested "
+        "morning, then afternoon, then evening, time of day is perfectly "
+        "collinear with testing order and no method can separate them.")
+    _template_button("climbing_longitudinal_template.csv",
+                     "Extended-design template", "tpl_tod")
+
+    if not (("TimeOfDay" in df.columns and df["TimeOfDay"].notna().any())
+            or ("ZT" in df.columns and df["ZT"].notna().any())):
+        st.info(
+            "This page needs a time-of-day axis.\n\nMissing column(s):\n"
+            "- `TimeOfDay` — the clock time of the assay session (`09:10`, "
+            "`14:05`) or a label (`Morning`, `Afternoon`, `Evening`)\n"
+            "- `ZT` — Zeitgeber hours since lights-on, if you already have them\n\n"
+            "Either one is sufficient; ZT is used directly, TimeOfDay is "
+            "converted using the lights-on hour.")
+        return
+    if not _needs_columns(df, {
+        "Count": "flies that crossed the line",
+        "n": "flies tested in that vial",
+    }, "The cosinor is fitted on the empirical logit of the climbing counts, "
+       "which unbounds the ceiling and removes the mean-variance coupling of a "
+       "raw proportion."):
+        return
+
+    subj_opts = _cluster_columns(df)
+    if not subj_opts:
+        st.info(
+            "No unit of replication was found. Add a `VialID` column (or "
+            "`FlyID` if flies are individually tracked and independently "
+            "housed). A single subject measured at three times of day supports "
+            "no cosinor at all — three observations, three parameters, zero "
+            "residual degrees of freedom — so replication must come from the "
+            "number of subjects.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    subject_col = c1.selectbox("Subject (unit of replication)", subj_opts,
+                               key="tod_subj")
+    lights_on = c2.number_input("Lights-on hour (ZT0)", 0.0, 23.5, 8.0, 0.5,
+                                key="tod_lights")
+    gopts = ["(none)"] + [c for c in ("Genotype", "Treatment", "Sex")
+                          if c in df.columns and df[c].nunique(dropna=True) >= 2]
+    group_col = c3.selectbox("Group by", gopts, key="tod_group")
+
+    work = df.copy()
+    try:
+        zt, is_cat, zt_warn = cc.zt_from_frame(work, lights_on_hour=float(lights_on))
+    except Exception as _e:
+        st.error(f"Zeitgeber time could not be derived: {_e}")
+        return
+    work["_ZT"] = zt
+    for wmsg in zt_warn:
+        st.warning(wmsg)
+    if is_cat:
+        st.warning(
+            "Zeitgeber time was reconstructed from categorical labels using the "
+            "conventional midpoints of the morning/afternoon/evening testing "
+            "windows. The acrophase inherits the width of those windows and "
+            "cannot be more precise than that. Record clock times to fix this.")
+
+    try:
+        resp, wts, scale_note = cc.prepare_climbing_response(work)
+    except Exception as _e:
+        st.error(f"Response could not be built: {_e}")
+        return
+    work["_Y"] = resp
+    work["_W"] = wts
+    st.caption(scale_note)
+
+    n_zt = int(work["_ZT"].dropna().round(6).nunique())
+    if n_zt < 3:
+        st.info(
+            f"Only {n_zt} distinct Zeitgeber hour(s) are present. A cosinor has "
+            "three parameters, so at least three distinct times of day are "
+            "required before amplitude and acrophase mean anything.")
+        return
+
+    order_opts = [c for c in ("SessionIndex", "TrialIndex") if c in work.columns
+                  and work[c].notna().any()]
+
+    attribution_allowed = True
+    if order_opts:
+        order_col = st.selectbox("Cumulative testing-order covariate", order_opts,
+                                 key="tod_order")
+        try:
+            sep = cc.separate_fatigue_from_rhythm(
+                work, zt_col="_ZT", value_col="_Y", order_col=order_col,
+                subject_col=subject_col, weight_col="_W")
+        except Exception as _e:
+            st.warning(f"Fatigue/rhythm separation failed: {_e}")
+            sep = {"available": False, "attribution_allowed": True}
+        attribution_allowed = bool(sep.get("attribution_allowed", True))
+        if not attribution_allowed:
+            st.error(sep.get("verdict", "Time of day and testing order are not "
+                                        "separable in this design."))
+            if sep.get("recommendation"):
+                st.error(sep["recommendation"])
+        elif sep.get("available"):
+            st.success(sep.get("verdict", ""))
+        for wmsg in sep.get("warnings", []) or []:
+            st.warning(wmsg)
+    else:
+        st.info(
+            "No `SessionIndex` or `TrialIndex` column, so the fatigue/"
+            "habituation confound cannot be checked. If every subject visits "
+            "the times of day in the same order, a monotone drift caused by "
+            "handling is numerically indistinguishable from a circadian trend. "
+            "Record the cumulative testing order.")
+        order_col = None
+
+    t_pop, t_sub, t_amp, t_adv = st.tabs(
+        ["Population Cosinor", "Per-subject Vectors", "Amplitude Biomarker",
+         "Design Advisor"])
+
+    pop = None
+    with t_pop:
+        try:
+            pop = cc.population_cosinor(
+                work, zt_col="_ZT", value_col="_Y", subject_col=subject_col,
+                group_col=None if group_col == "(none)" else group_col,
+                weight_col="_W", n_boot=400)
+        except Exception as _e:
+            st.error(f"Population cosinor failed: {_e}")
+            pop = None
+        if pop is not None and not pop.get("overall"):
+            st.info("No subject had three or more distinct times of day, so no "
+                    "population cosinor could be fitted.")
+            for wmsg in pop.get("warnings", []):
+                st.warning(wmsg)
+        elif pop is not None:
+            ov = pop.get("overall") or {}
+            if ov.get("rhythm_detected") and attribution_allowed:
+                st.success(ov.get("verdict", ""))
+            elif ov.get("rhythm_detected"):
+                st.warning(
+                    "A rhythm-shaped effect was detected, but time of day is "
+                    "not separable from testing order in this design, so it "
+                    "must NOT be described as circadian. "
+                    + ov.get("verdict", ""))
+            else:
+                st.info(ov.get("verdict", ov.get("reason", "No verdict.")))
+            k = st.columns(4)
+            for lbl, key_, col in (("MESOR (logit)", "mesor", k[0]),
+                                   ("Amplitude (logit)", "amplitude", k[1]),
+                                   ("Acrophase (ZT h)", "acrophase_h", k[2])):
+                v = ov.get(key_, np.nan)
+                col.metric(lbl, f"{v:.4g}" if pd.notna(v) else "N/A")
+            k[3].metric("Subjects", str(ov.get("k_subjects", "N/A")))
+            for wmsg in pop.get("warnings", []):
+                st.warning(wmsg)
+            for nt in pop.get("notes", []):
+                st.caption(nt)
+            byg = pop.get("by_group", {})
+            if byg:
+                gtab = pd.DataFrame([
+                    {"group": g,
+                     "mesor": v.get("mesor"), "amplitude": v.get("amplitude"),
+                     "acrophase_h": v.get("acrophase_h"),
+                     "rhythm_detected": v.get("rhythm_detected"),
+                     "zero_amplitude_p": v.get("zero_amplitude_p")}
+                    for g, v in byg.items()])
+                st.dataframe(gtab, width="stretch")
+                st.download_button("Download group cosinor CSV",
+                                   gtab.to_csv(index=False).encode(),
+                                   "cosinor_by_group.csv", "text/csv",
+                                   key="dl_tod_grp")
+            comps = pop.get("comparisons", [])
+            if comps:
+                ctab = pd.DataFrame([
+                    {kk: vv for kk, vv in c.items()
+                     if isinstance(vv, (int, float, str, bool))} for c in comps])
+                with st.expander("Pairwise group comparisons", expanded=False):
+                    st.dataframe(ctab, width="stretch")
+
+    with t_sub:
+        if pop is None:
+            st.info("Run the population cosinor first.")
+        else:
+            ps = pop.get("per_subject", pd.DataFrame())
+            if ps.empty:
+                st.info("No subject had three or more distinct times of day, so "
+                        "no rhythm vectors exist.")
+            else:
+                st.dataframe(ps, width="stretch")
+                st.download_button("Download per-subject CSV",
+                                   ps.to_csv(index=False).encode(),
+                                   "cosinor_per_subject.csv", "text/csv",
+                                   key="dl_tod_sub")
+                st.caption(
+                    "Each subject contributes one bivariate observation "
+                    "(beta, gamma) — an exact summary of that subject's rhythm. "
+                    "Inference is then across subjects, so three timepoints per "
+                    "subject is sufficient. The population amplitude is the "
+                    "length of the MEAN VECTOR, not the mean of the individual "
+                    "amplitudes, which is biased upwards.")
+
+    with t_amp:
+        st.caption(
+            "HYPOTHESIS, not an established finding: in a disease genotype the "
+            "circadian amplitude degrades earlier, or proportionally more, than "
+            "the MESOR. A smaller population amplitude has two explanations — "
+            "every fly's rhythm is damped, or the flies' rhythms are intact but "
+            "desynchronised — and the population amplitude alone cannot tell "
+            "them apart.")
+        if group_col == "(none)":
+            st.info("Choose a grouping column above (Genotype, Treatment or "
+                    "Sex) to contrast a disease group against a control.")
+        else:
+            levels = sorted(work[group_col].dropna().astype(str).unique())
+            ctrl = st.selectbox("Control group", levels, key="tod_ctrl")
+            if st.button("Run amplitude-biomarker contrast", key="tod_amp_run"):
+                with st.spinner("Bootstrapping subject-level contrasts..."):
+                    try:
+                        ab = cc.amplitude_biomarker(
+                            work, zt_col="_ZT", value_col="_Y",
+                            subject_col=subject_col, group_col=group_col,
+                            control_group=ctrl, weight_col="_W", n_boot=400)
+                    except Exception as _e:
+                        st.error(f"Amplitude-biomarker analysis failed: {_e}")
+                        ab = None
+                if ab is not None:
+                    if not ab.get("available"):
+                        st.info(ab.get("reason", "Unavailable."))
+                    else:
+                        st.caption(ab.get("hypothesis", ""))
+                        if not attribution_allowed:
+                            st.error(ab.get("prerequisite", ""))
+                        for con in ab.get("contrasts", []):
+                            if not con.get("available"):
+                                st.warning(f"{con.get('group')}: "
+                                           f"{con.get('reason', 'unavailable')}")
+                                continue
+                            if con.get("supports_amplitude_first"):
+                                st.warning(f"{con['group']}: {con['evidence']}")
+                            else:
+                                st.info(f"{con['group']}: {con['evidence']}")
+                        atab = pd.DataFrame([
+                            {kk: vv for kk, vv in c.items()
+                             if isinstance(vv, (int, float, str, bool))}
+                            for c in ab.get("contrasts", [])])
+                        if not atab.empty:
+                            st.dataframe(atab, width="stretch")
+                            st.download_button(
+                                "Download contrast CSV",
+                                atab.to_csv(index=False).encode(),
+                                "amplitude_biomarker.csv", "text/csv",
+                                key="dl_tod_amp")
+
+    with t_adv:
+        st.caption("Evaluate a proposed sampling schedule BEFORE the flies are "
+                   "run. Precision figures assume no between-subject variation "
+                   "in the rhythm vector, so read them as a best case.")
+        a1, a2, a3 = st.columns(3)
+        zt_text = a1.text_input("Planned ZT hours", value="2, 8, 14",
+                                key="tod_adv_zt")
+        n_sub = a2.number_input("Subjects", 3, 2000, 24, 1, key="tod_adv_n")
+        ascending = a3.checkbox("Subjects visit times in ascending ZT order",
+                                value=True, key="tod_adv_order")
+        zts = _parse_day_list(zt_text)
+        if len(zts) < 3:
+            st.info("Enter at least three distinct Zeitgeber hours.")
+        elif st.button("Evaluate schedule", key="tod_adv_run"):
+            try:
+                adv = cc.design_advisor(zts, n_subjects=int(n_sub),
+                                        order_is_zt_order=bool(ascending))
+            except Exception as _e:
+                st.error(f"Design advisor failed: {_e}")
+            else:
+                if adv.get("testing_order_confounded_with_zt"):
+                    st.error("Testing order is confounded with time of day in "
+                             "this schedule.")
+                st.markdown(f"**Verdict:** {adv.get('verdict', '')}")
+                for wmsg in adv.get("warnings", []) or []:
+                    st.warning(wmsg)
+                for rec in adv.get("recommendations", []) or []:
+                    st.info(rec)
+                flat = pd.DataFrame([{k: v for k, v in adv.items()
+                                      if isinstance(v, (int, float, str, bool))}])
+                st.dataframe(flat, width="stretch")
+                sched = adv.get("counterbalancing_schedule", {})
+                if isinstance(sched, dict) and sched:
+                    with st.expander("Counterbalancing schedule", expanded=False):
+                        st.json({k: (v if not isinstance(v, np.ndarray)
+                                     else np.asarray(v).tolist())
+                                 for k, v in sched.items()})
+
+
 PAGE_MAP = {
     "Home":                   page_home,
+    "Plan a Run":             page_plan_run,
     "Data Input":             page_data_input,
+    "Design Check":           page_design_check,
     "Climbing Curves":        page_climbing_curves,
     "Core Metrics":           page_core_metrics,
     "Novel Metrics":          page_novel_metrics,
@@ -3390,12 +7269,21 @@ PAGE_MAP = {
     "Activity Monitoring (DAMS)": page_dams,
     "Larval Crawling":        page_larval,
     "Grooming":               page_grooming,
+    "Dose-Response":          page_dose_response,
+    "Time-of-Day":            page_time_of_day,
     "Drug Ranking":           page_drug_ranking,
     "Trajectory Clustering":  page_trajectory_clustering,
+    "Trajectory Forecast":    page_trajectory_forecast,
     "Translational Score":    page_tcs,
     "Statistical Analysis":   page_stats,
+    "Hierarchical Statistics": page_hierarchical,
+    "Survivor Bias":          page_survivor_bias,
+    "Historical Controls":    page_historical_controls,
     "Live Recording":         page_recording,
     "Video Analysis":         page_video_analysis,
+    "Climbing Video":         page_climbing_video,
+    "Draw Vials":             page_draw_vials,
+    "Video Scoring":          page_video_scoring,
     "CSV Upload":             page_csv_upload,
     "Export":                 page_export,
 }
