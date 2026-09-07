@@ -178,6 +178,7 @@ PAGES = [
     "Live Recording",
     "Video Analysis",
     "Climbing Video",
+    "Climbing (Simple)",
     "Draw Vials",
     "Video Scoring",
     "CSV Upload",
@@ -7255,6 +7256,294 @@ def page_time_of_day():
                                  for k, v in sched.items()})
 
 
+def _climbing_simple_score():
+    """Band-and-zone scoring: find the drawn band, count the strip above it.
+
+    Deliberately has no cylinder model, no glass detection and no background
+    subtraction for counting. The geometry the user states is two column numbers
+    per cylinder; everything else is one horizontal threshold and one window.
+    """
+    import tempfile as _tf
+    from modules import climbing_band as CB
+
+    up = st.file_uploader("Climbing video", type=["mp4", "mov", "avi", "mkv"],
+                          key="cbs_up")
+    if up is None:
+        st.info("Upload a recording to begin.")
+        return
+    path = st.session_state.get("cbs_path")
+    if st.session_state.get("cbs_name") != up.name:
+        tmp = Path(_tf.mkdtemp(prefix="cbs_")) / up.name
+        tmp.write_bytes(up.getbuffer())
+        path = str(tmp)
+        st.session_state["cbs_path"], st.session_state["cbs_name"] = path, up.name
+
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        cap.release()
+        st.error("That file could not be opened.")
+        return
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    n_fr = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    ok, first = cap.read()
+    cap.release()
+    if not ok or fps <= 0:
+        st.error("That file reports no frame rate or no readable frames.")
+        return
+    dur = n_fr / fps
+    fh, fw = first.shape[:2]
+    st.success(f"{up.name} — {fw}x{fh}, {fps:.2f} fps, {dur:.0f} s")
+
+    c1, c2, c3 = st.columns(3)
+    n_flies = c1.number_input("Flies per cylinder", 1, 200, 20, 1, key="cbs_n")
+    n_cyl = c2.number_input("Cylinders in frame", 1, 3, 3, 1, key="cbs_ncyl")
+    zone_h = c3.slider("Zone height above the band (px)", 100, 400, 250, 10,
+                       key="cbs_zone")
+
+    tp_txt = st.text_input("Timepoints, seconds after the start of the recording",
+                           "10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120",
+                           key="cbs_tp")
+    try:
+        times = [float(t) for t in tp_txt.split(",") if t.strip()]
+    except ValueError:
+        st.error("Timepoints must be numbers separated by commas.")
+        return
+
+    with st.expander("Detection"):
+        band_dark = st.slider("Band darkness (the drawn mark)", 20, 150,
+                              CB.BAND_DARK, 5, key="cbs_bd")
+        st.caption(
+            "This finds the BAND only. The flies are counted by a size-matched "
+            "blob detector — no threshold adjustment needed, and none is offered: "
+            "its fly diameter is a fitted value (0.07 of the cylinder width) and "
+            "is sharply peaked (0.05 → MAE 9.11, 0.07 → 2.93, 0.10 → 9.82 flies), "
+            "so a slider on it would be a slider on the error.")
+        st.caption(
+            "The Fly-darkness and Min/Max blob-area sliders that used to sit here "
+            "have been removed rather than left in place: once counting moved to "
+            "the blob detector they no longer affected any number, and a control "
+            "that does nothing is worse than no control — this page previously "
+            "shipped exactly that defect and told users to adjust it when a count "
+            "looked wrong.")
+        drop_static = st.checkbox(
+            "Discard detections that never move", value=False, key="cbs_static")
+        st.caption(
+            "Applies to the snapshot columns only. It removes printed label text "
+            "and also removes flies that cling motionless to the glass — measured "
+            "on the wild-type control it cut a correct count of 15-18 to 6-9, so "
+            "it is off by default. The crossing gate does not need it.")
+    fly_dark, min_a, max_a = CB.FLY_DARK, 20, 400
+
+    st.subheader("Cylinder columns")
+    st.caption("Give the left and right pixel column of each cylinder. "
+               "Everything outside these columns is ignored.")
+    cols_xy, step = [], fw // max(int(n_cyl), 1)
+    for i in range(int(n_cyl)):
+        d1, d2 = st.columns(2)
+        c0 = d1.number_input(f"Cylinder {i+1} — left column", 0, fw - 2,
+                             min(i * step + step // 4, fw - 2), 1, key=f"cbs_c0{i}")
+        c1_ = d2.number_input(f"Cylinder {i+1} — right column", 1, fw - 1,
+                              min(i * step + 3 * step // 4, fw - 1), 1,
+                              key=f"cbs_c1{i}")
+        if c1_ > c0:
+            cols_xy.append((int(c0), int(c1_)))
+
+    # ── the check that matters: the band it found and the strip it will read ──
+    st.subheader("What it found")
+    st.caption("Red line = the band. Orange box = the strip that will be counted. "
+               "If the red line is not on the drawn band, nothing below is valid.")
+    probe = []
+    cap = cv2.VideoCapture(path)
+    for idx in np.linspace(0, max(n_fr - 1, 0), 15).astype(int):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ok, fr = cap.read()
+        if ok:
+            probe.append(cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY))
+    cap.release()
+    if not probe:
+        st.error("No frames could be read from this file.")
+        return
+    median_img = np.median(np.stack(probe), axis=0).astype(np.uint8)
+    st.caption(
+        "The band is located on a 15-frame median, not on the first frame. At "
+        "the tap the flies are heaped in the bottom of the cylinder and a raft "
+        "of flies is dark right across the tube — measured, reading frame 0 put "
+        "the band 322 px too low on one recording.")
+
+    vis = first.copy()
+    bands = []
+    for i, (c0, c1_) in enumerate(cols_xy, 1):
+        by = CB.find_black_band(median_img, c0, c1_, band_dark)
+        bands.append(by)
+        cv2.rectangle(vis, (c0, 0), (c1_, fh - 1), (255, 190, 0), 1)
+        if by is None:
+            cv2.putText(vis, f"C{i} NO BAND", (max(c0 - 20, 2), 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            continue
+        top = max(0, by - int(zone_h))
+        cv2.rectangle(vis, (c0, top), (c1_, by), (0, 190, 255), 2)
+        cv2.line(vis, (max(c0 - 25, 0), by), (min(c1_ + 25, fw - 1), by),
+                 (0, 0, 255), 3)
+        cv2.putText(vis, f"C{i} band={by}", (max(c0 - 20, 2), max(top - 8, 14)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+    st.image(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB), width="stretch")
+
+    for i, by in enumerate(bands, 1):
+        if by is None:
+            st.error(
+                f"Cylinder {i}: no row reaches {100*0.60:.0f}% dark coverage, so "
+                "the band was not found and this cylinder will not be scored. "
+                "Lower the band-darkness threshold only if you can see on the "
+                "image above that the real band is being missed.")
+
+    if not st.button("Run", type="primary", key="cbs_run"):
+        return
+    if not any(b is not None for b in bands):
+        st.error("No band was found on any cylinder — nothing to score.")
+        return
+
+    frames = []
+    all_rows = []
+    bar = st.progress(0.0, text="Scoring…")
+    for i, (c0, c1_) in enumerate(cols_xy, 1):
+        bar.progress(i / max(len(cols_xy), 1), text=f"Cylinder {i}…")
+        df = CB.analyse_video(path, c0, c1_, int(n_flies), times,
+                              zone_height_px=int(zone_h), band_dark=int(band_dark),
+                              fly_dark=int(fly_dark), min_blob_area=int(min_a),
+                              max_blob_area=int(max_a), drop_static=drop_static)
+        df.insert(0, "cylinder", f"C{i}")
+        df.insert(1, "video", up.name)
+        all_rows.append(df)
+    bar.empty()
+    res = pd.concat(all_rows, ignore_index=True)
+    st.session_state["cbs_res"] = res
+
+    scored = res[res.status == "scored"]
+    if scored.empty:
+        st.error("Nothing was scored. Every cylinder refused — see the messages above.")
+        return
+
+    st.subheader("Flies above the band")
+    wide = scored.pivot_table(index="time_sec", columns="cylinder",
+                              values="reported_count", aggfunc="mean")
+    st.line_chart(wide)
+    st.caption(
+        "The reported count is the midpoint of a bracket. Its upper bound counts "
+        "every detection above the band and is necessarily too high (the printed "
+        "label is dark and fly-sized); its lower bound counts only detections "
+        "that move and is necessarily too low (a fly clinging still is discarded "
+        "with the print). Measured against 15 hand counts: upper MAE 3.47 "
+        "(bias +2.53), lower MAE 2.80 (bias −2.67), **midpoint MAE 2.20 "
+        "(bias −0.07)** — inside the assay's own 3-fly noise floor.")
+
+    low = scored[scored.confidence == "LOW"]
+    if not low.empty:
+        st.warning(
+            f"{len(low)} of {len(scored)} readings have a bracket wider than 7 "
+            "flies. The two bounds disagree, so the midpoint carries real "
+            "uncertainty — read `count_lower` and `count_upper` rather than the "
+            "single number.")
+
+    gap = scored[scored.accounted_gap.abs() > 5]
+    if not gap.empty:
+        st.error(
+            f"{len(gap)} of {len(scored)} readings do not account for the "
+            f"{int(n_flies)} flies loaded: the two zones together found "
+            f"{gap.accounted_for.min()}–{gap.accounted_for.max()}. A sealed "
+            "cylinder holds exactly what was put in it, so a shortfall means "
+            "flies are merging in the crowd below the band and a surplus means "
+            "the print is being counted above it. This is a diagnostic, not a "
+            "correction — forcing the sum to match was tested and made the "
+            "answer worse (MAE 4.66 against 2.20).")
+        st.dataframe(gap[["cylinder", "time_sec", "count_above", "count_below",
+                          "accounted_for", "accounted_gap"]], width="stretch")
+
+    st.dataframe(scored[["cylinder", "time_sec", "band_y", "reported_count",
+                         "reported_pi", "count_lower", "count_upper",
+                         "bracket_width", "confidence", "count_below",
+                         "accounted_for"]], width="stretch")
+    st.download_button("Download CSV", res.to_csv(index=False).encode(),
+                       file_name=f"climbing_simple_{Path(up.name).stem}.csv",
+                       mime="text/csv", key="cbs_dl")
+
+
+def _climbing_simple_validate():
+    """Hand counts in, MAE out. Same report the command-line script prints."""
+    from modules.climbing_band import validation_report, NOISE_FLOOR_FLIES
+
+    st.caption(
+        "Upload the bench sheet with your hand counts filled in, and the CSV the "
+        "Score tab exported. Nothing here changes the scoring — it only measures "
+        "it.")
+
+    tmpl = Path("data/validation/hand_count_template.csv")
+    if tmpl.exists():
+        st.download_button("Download the blank bench sheet",
+                           tmpl.read_bytes(),
+                           file_name="hand_count_template.csv",
+                           mime="text/csv", key="cbv_tmpl")
+        st.caption(
+            "Take this to the bench. Pause each recording at 10 s, 30 s and 60 s "
+            "and write the number of flies you can see above the black band. "
+            "Leave a row blank if you cannot count it confidently — a guessed "
+            "hand count is worse than a missing one, because it becomes the "
+            "yardstick everything else is judged against.")
+
+    c1, c2 = st.columns(2)
+    hf = c1.file_uploader("Hand counts (filled in)", type=["csv"], key="cbv_hand")
+    tf = c2.file_uploader("Tool output CSV", type=["csv"], key="cbv_tool")
+    if hf is None or tf is None:
+        st.info("Upload both files to compute the accuracy.")
+        return
+
+    try:
+        hand = pd.read_csv(hf)
+        tool = pd.read_csv(tf)
+    except Exception as exc:
+        st.error(f"One of those files could not be read: {exc}")
+        return
+
+    if not st.button("Compute MAE", type="primary", key="cbv_go"):
+        return
+
+    root = Path(r"C:/Users/gkp11/Videos/HD Climbing assay")
+    lookup = {}
+    if root.exists():
+        for f in root.glob("**/*.MOV"):
+            s_ = str(f)
+            if "3 rd day" in s_:
+                lookup[f.name] = "Day 3"
+            elif "7 th day" in s_:
+                lookup[f.name] = "Day 7"
+
+    report = validation_report(hand, tool, day_lookup=lookup)
+    st.code(report, language="text")
+    st.download_button("Download the report (.txt)", report.encode(),
+                       file_name="climbing_band_validation.txt",
+                       mime="text/plain", key="cbv_dl")
+    if "IS within" in report:
+        st.success(f"MAE is at or below the {NOISE_FLOOR_FLIES}-fly noise floor of "
+                   "the assay itself — the tool is as accurate as the measurement "
+                   "it replaces.")
+    elif "IS NOT within" in report:
+        st.warning(f"MAE exceeds the {NOISE_FLOOR_FLIES}-fly noise floor. The "
+                   "vials listed as differing by more than 5 flies are where to "
+                   "look first.")
+
+
+def page_climbing_simple():
+    """Score a recording, or measure the scoring against hand counts."""
+    st.header("Climbing (Simple)")
+    st.caption(
+        "Find the drawn band, count dark blobs in a strip above it, divide by "
+        "the flies you loaded. No cylinder fitting, no background subtraction.")
+    tab_score, tab_val = st.tabs(["Score", "Validate"])
+    with tab_score:
+        _climbing_simple_score()
+    with tab_val:
+        _climbing_simple_validate()
+
+
 PAGE_MAP = {
     "Home":                   page_home,
     "Plan a Run":             page_plan_run,
@@ -7282,6 +7571,7 @@ PAGE_MAP = {
     "Live Recording":         page_recording,
     "Video Analysis":         page_video_analysis,
     "Climbing Video":         page_climbing_video,
+    "Climbing (Simple)":      page_climbing_simple,
     "Draw Vials":             page_draw_vials,
     "Video Scoring":          page_video_scoring,
     "CSV Upload":             page_csv_upload,

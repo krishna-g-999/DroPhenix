@@ -1,0 +1,40 @@
+set,video_filename,cylinder_position,timepoint_sec,hand_count,notes
+A_day3,IMG_6054.MOV,left,10,14,more than 20 flies in the tube 
+A_day3,IMG_6054.MOV,left,30,17,
+A_day3,IMG_6054.MOV,left,60,18,
+A_day3,IMG_6041.MOV,left,10,19,
+A_day3,IMG_6041.MOV,left,30,19,
+A_day3,IMG_6041.MOV,left,60,17,
+B_wildtype,IMG_6179.MOV,middle,10,21,total 23 flies 
+B_wildtype,IMG_6179.MOV,middle,30,22,
+B_wildtype,IMG_6179.MOV,middle,60,19,
+B_wildtype,IMG_6179.MOV,right,10,18,total 21 flies
+B_wildtype,IMG_6179.MOV,right,30,17,
+B_wildtype,IMG_6179.MOV,right,60,16,
+B_wildtype,IMG_6175.MOV,left,10,20,total 22 flies
+B_wildtype,IMG_6175.MOV,left,30,17,
+B_wildtype,IMG_6175.MOV,left,60,18,
+B_wildtype,IMG_6175.MOV,middle,10,23,total 25 flies 
+B_wildtype,IMG_6175.MOV,middle,30,23,
+B_wildtype,IMG_6175.MOV,middle,60,22,
+C_htt,IMG_6182.MOV,left,10,8,total 14 flies
+C_htt,IMG_6182.MOV,left,30,10,
+C_htt,IMG_6182.MOV,left,60,10,
+C_htt,IMG_6182.MOV,right,10,12,total flies 22
+C_htt,IMG_6182.MOV,right,30,10,
+C_htt,IMG_6182.MOV,right,60,13,
+C_htt,IMG_6183.MOV,middle,10,13,total flies 18
+C_htt,IMG_6183.MOV,middle,30,17,
+C_htt,IMG_6183.MOV,middle,60,14,
+C_htt,IMG_6183.MOV,right,10,9,total flies 20
+C_htt,IMG_6183.MOV,right,30,17,
+C_htt,IMG_6183.MOV,right,60,18,
+D_day7,IMG_6185.MOV,left,10,,
+D_day7,IMG_6185.MOV,left,30,,
+D_day7,IMG_6185.MOV,left,60,,
+D_day7,IMG_6185.MOV,right,10,,
+D_day7,IMG_6185.MOV,right,30,,
+D_day7,IMG_6185.MOV,right,60,,
+D_day7,IMG_6196.MOV,middle,10,,
+D_day7,IMG_6196.MOV,middle,30,,
+D_day7,IMG_6196.MOV,middle,60,,
