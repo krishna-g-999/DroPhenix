@@ -84,6 +84,16 @@ __all__ = ["find_black_band", "detect_crossings", "count_flies_above_band",
 BAND_DARK = 80
 FLY_DARK = 140
 
+#: THE COUNTING ZONE IS "ABOVE THE LINE", NOT "250 PIXELS ABOVE THE LINE".
+#: A fixed 250 px was tuned on the Day-3/7 rig, where it happened to reach the
+#: cotton plug. On the 15th-Day rig the camera is closer and band-to-plug is
+#: ~400 px, so the good climbers sat above the zone and were never counted.
+#: Measured on C0689 left (wild-type, hand count 17 at 60 s): the blob detector
+#: over the whole tube finds 15 above the band; a 250 px zone keeps 2 of them,
+#: 400 px keeps 15, 600 px keeps 15. There is no value to fit -- the protocol
+#: counts everything above the line, so None means "to the top of the tube".
+ZONE_FULL = None
+
 
 def find_black_band(gray: np.ndarray, col_start: int, col_end: int,
                     dark_thresh: int = BAND_DARK,
@@ -340,10 +350,10 @@ def _blob_count(gray: np.ndarray, background: np.ndarray,
 
 def count_flies_above_band(gray: np.ndarray, background: np.ndarray, band_y: int,
                            col_start: int, col_end: int,
-                           zone_height_px: int = 250,
+                           zone_height_px: Optional[int] = ZONE_FULL,
                            params: Optional[dict] = None
                            ) -> Tuple[int, List[Tuple[int, int]], np.ndarray]:
-    """Flies in the strip from `band_y - zone_height_px` up to the band.
+    """Flies above the band -- the whole tube above it unless a height is given.
 
     THE PLAIN INTENSITY THRESHOLD THAT USED TO LIVE HERE IS GONE, AND THE
     MEASUREMENT THAT REMOVED IT IS WORTH KEEPING. Against 15 hand-counted
@@ -363,17 +373,17 @@ def count_flies_above_band(gray: np.ndarray, background: np.ndarray, band_y: int
     `background` is the temporal median of the same recording -- the tube with no
     flies in it -- which the detector uses as its null distribution.
     """
-    top = max(0, int(band_y) - int(zone_height_px))
+    top = 0 if zone_height_px is None else max(0, int(band_y) - int(zone_height_px))
     return _blob_count(gray, background, top, int(band_y), col_start, col_end,
                        params)
 
 
 def count_flies_below_band(gray: np.ndarray, background: np.ndarray, band_y: int,
                            col_start: int, col_end: int,
-                           zone_height_px: int = 250,
+                           zone_height_px: Optional[int] = ZONE_FULL,
                            params: Optional[dict] = None
                            ) -> Tuple[int, List[Tuple[int, int]], np.ndarray]:
-    """Flies in the strip from below the band down by `zone_height_px`.
+    """Flies below the band -- the whole tube below it unless a height is given.
 
     Counting the side nobody asked about, because it is often the easier side.
     Whichever side holds fewer animals can actually be resolved; the crowded side
@@ -389,8 +399,8 @@ def count_flies_below_band(gray: np.ndarray, background: np.ndarray, band_y: int
     """
     _lo, hi = _band_rows(background, band_y, col_start, col_end)
     r0 = hi + 1
-    return _blob_count(gray, background, r0, r0 + int(zone_height_px),
-                       col_start, col_end, params)
+    r1 = gray.shape[0] if zone_height_px is None else r0 + int(zone_height_px)
+    return _blob_count(gray, background, r0, r1, col_start, col_end, params)
 
 
 def persistence_filter(per_frame: Sequence[Sequence[Tuple[int, int]]],
@@ -452,7 +462,8 @@ def pi(count_above: float, n_flies_in_vial: int) -> Optional[float]:
 
 
 def analyse_video(video_path: str, col_start: int, col_end: int, n_flies: int,
-                  timepoints_sec: Sequence[float], zone_height_px: int = 250,
+                  timepoints_sec: Sequence[float],
+                  zone_height_px: Optional[int] = ZONE_FULL,
                   band_dark: int = BAND_DARK, fly_dark: int = FLY_DARK,
                   min_coverage: float = 0.60,
                   min_blob_area: int = 20, max_blob_area: int = 400,
@@ -594,8 +605,8 @@ def analyse_video(video_path: str, col_start: int, col_end: int, n_flies: int,
             "accounted_for": int(accounted),
             "accounted_gap": int(accounted - int(n_flies)),
             "n_flies": int(n_flies),
-            "zone_top": int(max(0, band_y - zone_height_px)),
-            "zone_height_px": int(zone_height_px),
+            "zone_top": int(0 if zone_height_px is None else max(0, band_y - zone_height_px)),
+            "zone_height_px": (-1 if zone_height_px is None else int(zone_height_px)),
             "status": "scored"})
     cap.release()
     return pd.DataFrame(rows)

@@ -7297,8 +7297,17 @@ def _climbing_simple_score():
     c1, c2, c3 = st.columns(3)
     n_flies = c1.number_input("Flies per cylinder", 1, 200, 20, 1, key="cbs_n")
     n_cyl = c2.number_input("Cylinders in frame", 1, 3, 3, 1, key="cbs_ncyl")
-    zone_h = c3.slider("Zone height above the band (px)", 100, 400, 250, 10,
-                       key="cbs_zone")
+    # THE ZONE IS THE WHOLE TUBE ABOVE THE BAND BY DEFAULT. A fixed 250 px was
+    # tuned on one rig and on a closer camera it stopped two-thirds of the way up
+    # the glass: measured on the 15th-Day set, 13 of 15 wild-type flies above the
+    # band sat beyond it and MAE against 361 hand counts was 7.38; with the whole
+    # tube it is 4.53, and the older rig's hold-out is unchanged (6.53 -> 6.52).
+    # A limit is still offered for footage where something above the glass must
+    # be excluded, but it is opt-in.
+    limit_zone = c3.checkbox("Limit the counting zone height", value=False,
+                             key="cbs_limit")
+    zone_h = (c3.slider("Zone height above the band (px)", 100, 800, 400, 10,
+                        key="cbs_zone") if limit_zone else None)
 
     tp_txt = st.text_input("Timepoints, seconds after the start of the recording",
                            "10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120",
@@ -7380,7 +7389,7 @@ def _climbing_simple_score():
             cv2.putText(vis, f"C{i} NO BAND", (max(c0 - 20, 2), 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             continue
-        top = max(0, by - int(zone_h))
+        top = 0 if zone_h is None else max(0, by - int(zone_h))
         cv2.rectangle(vis, (c0, top), (c1_, by), (0, 190, 255), 2)
         cv2.line(vis, (max(c0 - 25, 0), by), (min(c1_ + 25, fw - 1), by),
                  (0, 0, 255), 3)
@@ -7408,7 +7417,8 @@ def _climbing_simple_score():
     for i, (c0, c1_) in enumerate(cols_xy, 1):
         bar.progress(i / max(len(cols_xy), 1), text=f"Cylinder {i}…")
         df = CB.analyse_video(path, c0, c1_, int(n_flies), times,
-                              zone_height_px=int(zone_h), band_dark=int(band_dark),
+                              zone_height_px=(None if zone_h is None else int(zone_h)),
+                              band_dark=int(band_dark),
                               fly_dark=int(fly_dark), min_blob_area=int(min_a),
                               max_blob_area=int(max_a), drop_static=drop_static)
         df.insert(0, "cylinder", f"C{i}")
