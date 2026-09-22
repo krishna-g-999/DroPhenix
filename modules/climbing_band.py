@@ -62,7 +62,8 @@ from scipy.spatial import KDTree
 
 from . import fly_blob as FB
 
-__all__ = ["find_black_band", "detect_crossings", "count_flies_above_band",
+__all__ = ["find_black_band", "tube_width_from_band", "detect_crossings",
+           "count_flies_above_band",
            "count_flies_below_band", "persistence_filter",
            "analyse_video", "pi", "BAND_DARK", "FLY_DARK"]
 
@@ -296,6 +297,62 @@ def detect_crossings(video_path: str, band_y: int, col_start: int, col_end: int,
     return pd.DataFrame(rows)
 
 
+def tube_width_from_band(background: np.ndarray, band_y: int,
+                         col_start: int, col_end: int,
+                         dark_thresh: int = BAND_DARK) -> Optional[Tuple[int, int]]:
+    """The cylinder's true columns, measured from the drawn band itself.
+
+    WHY THIS EXISTS. Both detectors scale the expected fly from the width of the
+    region they are handed -- `fly_blob` as `fly_d_frac * width`, the adaptive
+    path as `min_area_w2 * width**2` -- and the page asks the operator to type
+    that region by hand. Measured on a 100 px cylinder holding 20 flies, with
+    only the drawn box widening:
+
+        box 100 px (the tube) -> 19 of 20 found, assumed fly  4.0 px
+        box 140 px            -> 19 of 20,       assumed fly  5.6 px
+        box 200 px            -> 19 of 20,       assumed fly  8.0 px
+        box 300 px            ->  0 of 20,       assumed fly 12.0 px
+
+    A box three times too wide reports an empty tube, silently. `fly_d_frac` is
+    documented in `fly_blob` as sharply peaked (0.05 -> MAE 9.11, 0.07 -> 2.93,
+    0.10 -> 9.82), so even a modest drawing error moves the detector off its
+    calibrated optimum.
+
+    The band is the measurement. It is drawn ROUND the cylinder, so at the band
+    row the dark run IS the glass, and its extent is the tube width -- no extra
+    edge detection, no new assumption. Returns (x0, x1) in FULL-FRAME columns, or
+    None when no run is found, so the caller can refuse rather than guess.
+    """
+    c0, c1 = int(col_start), int(col_end)
+    if background is None or background.ndim != 2 or c1 - c0 < 4:
+        return None
+    lo, hi = _band_rows(background, band_y, c0, c1, dark_thresh)
+    strip = background[max(0, lo):min(background.shape[0], hi + 1), c0:c1]
+    if strip.size == 0:
+        return None
+    # darkest value each column takes anywhere in the band's own rows: a
+    # specular highlight breaks the band on one row but rarely on all of them
+    dark = strip.min(axis=0) < int(dark_thresh)
+    if not dark.any():
+        return None
+    # longest contiguous run -- the tube. Anything else is a shadow or a
+    # neighbouring tube clipped by a generous box.
+    best_len = best_start = run_len = 0
+    run_start = None
+    for i, d in enumerate(np.append(dark, False)):
+        if d and run_start is None:
+            run_start, run_len = i, 1
+        elif d:
+            run_len += 1
+        elif run_start is not None:
+            if run_len > best_len:
+                best_len, best_start = run_len, run_start
+            run_start, run_len = None, 0
+    if best_len < 4:
+        return None
+    return c0 + best_start, c0 + best_start + best_len
+
+
 def _band_rows(background: np.ndarray, band_y: int, col_start: int, col_end: int,
                dark_thresh: int = BAND_DARK,
                min_coverage: float = 0.60) -> Tuple[int, int]:
@@ -449,14 +506,23 @@ def persistence_filter(per_frame: Sequence[Sequence[Tuple[int, int]]],
 
 
 def pi(count_above: float, n_flies_in_vial: int) -> Optional[float]:
-    """Performance Index, or None when the count exceeds what was loaded.
+    """Performance Index, or None when the count is not a possible count.
 
     A sealed cylinder cannot hold more flies than were put in it, so a count
     above `n_flies_in_vial` is not a high PI -- it is a detection fault, and it
     must not be rendered as a number.
+
+    THE SAME APPLIES BELOW ZERO, AND THAT BOUND USED TO BE MISSING. Only the
+    upper bound was checked, so `pi(-5, 20)` returned -0.25: a negative
+    proportion, which is not a low score but a fault reported as a score. That
+    is reachable from inside this module -- `detect_crossings` (kept as a
+    documented failure) produced net counts to -32 and PI to -1.60 on HTT Male
+    cylinders, because nothing in a difference of two running totals forbids it.
+    A count is a cardinality; if it is negative the estimator has failed and the
+    honest output is no number.
     """
     n = int(n_flies_in_vial)
-    if n <= 0 or count_above > n:
+    if n <= 0 or count_above < 0 or count_above > n:
         return None
     return float(count_above) / n
 
@@ -521,6 +587,40 @@ def analyse_video(video_path: str, col_start: int, col_end: int, n_flies: int,
             "pi": np.nan, "over_detection": True,
             "status": ("refused: no row reaches %.0f%% dark coverage, so the "
                        "band was not found" % (100 * min_coverage))}])
+
+    # MEASURE THE TUBE, DO NOT TAKE THE OPERATOR'S BOX FOR IT.
+    # Both detectors scale the expected fly from the width they are given, and
+    # the page asks for that width by hand. Measured on a 100 px cylinder with
+    # 20 flies, widening only the drawn box: 100 px -> 19 found, 200 px -> 19,
+    # 300 px -> 0 of 20, silently, because the assumed fly grew from 4.0 to
+    # 12.0 px. The band is drawn round the glass, so its dark run at the band
+    # row IS the tube; use that and report the discrepancy.
+    tube = tube_width_from_band(median_img, band_y, col_start, col_end, band_dark)
+    box_w = int(col_end) - int(col_start)
+    if tube is None:
+        cap.release()
+        return pd.DataFrame([{
+            "time_sec": np.nan, "band_y": float(band_y), "count_above": np.nan,
+            "pi": np.nan, "over_detection": True,
+            "status": ("refused: the band was found at row %d but its dark run "
+                       "does not give a tube width, so the fly size cannot be "
+                       "calibrated" % band_y)}])
+    det_c0, det_c1 = tube
+    tube_w = det_c1 - det_c0
+    box_excess = box_w / max(tube_w, 1)
+    if box_excess > 1.6:
+        cap.release()
+        return pd.DataFrame([{
+            "time_sec": np.nan, "band_y": float(band_y), "count_above": np.nan,
+            "pi": np.nan, "over_detection": True,
+            "status": ("refused: the drawn box is %d px wide but the cylinder "
+                       "measures %d px (%.1fx). The detector sizes a fly from "
+                       "the width it is given, so this box would look for a "
+                       "%.1f px fly instead of %.1f px and undercount badly. "
+                       "Draw the box to the glass."
+                       % (box_w, tube_w, box_excess,
+                          FB.fly_diameter(box_w), FB.fly_diameter(tube_w)))}])
+    col_start, col_end = det_c0, det_c1
 
     # PRIMARY: A BRACKET, NOT A POINT.
     #
@@ -605,6 +705,10 @@ def analyse_video(video_path: str, col_start: int, col_end: int, n_flies: int,
             "accounted_for": int(accounted),
             "accounted_gap": int(accounted - int(n_flies)),
             "n_flies": int(n_flies),
+            "tube_x0": int(det_c0), "tube_x1": int(det_c1),
+            "tube_w_px": int(tube_w), "box_w_px": int(box_w),
+            "box_over_tube": round(float(box_excess), 2),
+            "fly_diameter_px": round(float(FB.fly_diameter(tube_w)), 1),
             "zone_top": int(0 if zone_height_px is None else max(0, band_y - zone_height_px)),
             "zone_height_px": (-1 if zone_height_px is None else int(zone_height_px)),
             "status": "scored"})

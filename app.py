@@ -163,6 +163,7 @@ PAGES = [
     "Survival Analysis",
     "Y-maze",
     "Activity Monitoring (DAMS)",
+    "DAM Run Analysis",
     "Larval Crawling",
     "Grooming",
     "Dose-Response",
@@ -4975,6 +4976,260 @@ def page_dams():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PAGE — DAM Run Analysis (raw monitor files -> design-aware, verified report)
+# ══════════════════════════════════════════════════════════════════════════════
+def page_dam_pipeline():
+    render_header("DAM Run Analysis",
+                  "Raw TriKinetics monitor files to a design-aware, verified report")
+    try:
+        from modules import dam_pipeline as DP_, dam_figures as DF_, dam_report as DRp_
+        from modules import dam_reader as DRd_
+    except Exception as _e:
+        st.error(f"Pipeline import failed: {_e}")
+        return
+    import io as _io
+    import os
+    import tempfile as _tmp
+    import zipfile as _zip
+    import matplotlib.pyplot as plt
+
+    st.markdown(
+        "Upload the **raw `MonitorN.txt` files** DAMSystem wrote (one row per minute) and the "
+        "**channel map** saying which tube held which genotype, sex and treatment. The tool then: "
+        "reads the light channel of every monitor and picks the one that cycles; measures the "
+        "photoperiod; proposes the analysis window (complete days with a consistent light schedule, "
+        "no gaps, no flicker); drops dead tubes; scores every published sleep parameter; flags "
+        "outliers by a pre-specified rule; labels every contrast monitor-clean or confounded from "
+        "the map; runs sex-stratified primary tests with FDR; and writes a Word report whose every "
+        "number is checked against the tables. The quick-look **Activity Monitoring (DAMS)** page "
+        "still takes a pre-formatted CSV.")
+
+    def _save_uploads(ups, tag):
+        paths = []
+        tdir = st.session_state.setdefault("_dp_tmpdir", _tmp.mkdtemp(prefix="drophenix_dam_"))
+        for u in ups:
+            p = os.path.join(tdir, f"{tag}_{u.name}")
+            with open(p, "wb") as f:
+                f.write(u.getbuffer())
+            paths.append(p)
+        return paths
+
+    # ── inputs ────────────────────────────────────────────────────────────────
+    c1, c2 = st.columns([2, 1])
+    ups = c1.file_uploader("Monitor files (raw DAMSystem .txt, one per monitor)", type=["txt"],
+                           accept_multiple_files=True, key="dp_mon")
+    cm_up = c2.file_uploader("Channel map (CSV: Monitor, Channel, Genotype, Sex, Treatment)",
+                             type=["csv"], key="dp_map")
+    with c2.expander("Need a channel map?"):
+        st.caption("Make one on the **Plan a Run** page, or download this template and fill it in. "
+                   "Monitor names may be `Monitor_1`, `Monitor1`, `M1` — the first number in the "
+                   "name identifies the monitor.")
+        tpl = DRd_.channel_map_template(["Monitor_1", "Monitor_2"])
+        tpl["Treatment"] = ""
+        st.download_button("Channel map template", tpl.to_csv(index=False).encode(),
+                           "channel_map_template.csv", "text/csv", key="dp_tpl")
+    run_name = c1.text_input("Name for this run (e.g. 'day 15')", value="run A", key="dp_name")
+
+    with st.expander("Second run (optional): compare two timepoints", expanded=False):
+        ups_b = st.file_uploader("Monitor files, second run", type=["txt"], accept_multiple_files=True, key="dp_mon_b")
+        cm_up_b = st.file_uploader("Channel map, second run (leave empty to reuse the first)", type=["csv"], key="dp_map_b")
+        run_name_b = st.text_input("Name for the second run", value="run B", key="dp_name_b")
+
+    if not ups or cm_up is None:
+        st.info("Upload the monitor files and a channel map to begin.")
+        return
+
+    # ── load + quality ────────────────────────────────────────────────────────
+    sig = (tuple(sorted(u.name for u in ups)), cm_up.name, run_name,
+           tuple(sorted(u.name for u in (ups_b or []))), (cm_up_b.name if cm_up_b else None), run_name_b)
+    if st.session_state.get("_dp_sig") != sig:
+        for k in ("_dp_lab", "_dp_q", "_dp_lab_b", "_dp_q_b", "_dp_run", "_dp_run_b", "_dp_cmp", "_dp_figs"):
+            st.session_state.pop(k, None)
+        st.session_state["_dp_sig"] = sig
+        try:
+            cmap = pd.read_csv(cm_up)
+            with st.spinner("Reading monitor files and checking the recording..."):
+                lab = DP_.load_run(_save_uploads(ups, "A"), cmap,
+                                   monitor_names=[Path(u.name).stem for u in ups])
+                st.session_state["_dp_lab"] = lab
+                st.session_state["_dp_q"] = DP_.quality_report(lab)
+                if ups_b:
+                    cmap_b = pd.read_csv(cm_up_b) if cm_up_b is not None else cmap
+                    lab_b = DP_.load_run(_save_uploads(ups_b, "B"), cmap_b,
+                                         monitor_names=[Path(u.name).stem for u in ups_b])
+                    st.session_state["_dp_lab_b"] = lab_b
+                    st.session_state["_dp_q_b"] = DP_.quality_report(lab_b)
+        except Exception as _e:
+            st.error(f"Could not read the files: {_e}")
+            return
+    lab, q = st.session_state["_dp_lab"], st.session_state["_dp_q"]
+    lab_b, q_b = st.session_state.get("_dp_lab_b"), st.session_state.get("_dp_q_b")
+
+    st.subheader("1 · What the recording contains")
+    runs_q = [(run_name, q)] + ([(run_name_b, q_b)] if q_b else [])
+    cols = st.columns(len(runs_q))
+    windows = {}
+    for col, (nm, qq) in zip(cols, runs_q):
+        with col:
+            st.markdown(f"**{nm}**")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Bin (min)", f"{qq['bin_min']:.0f}")
+            m2.metric("Photoperiod", f"{(qq['photoperiod_min'] or 0)/60:.1f} h light")
+            m3.metric("Usable days", qq["n_usable_days"])
+            if not qq["sleep_scoreable"]:
+                st.error("This file is binned wider than the 5-min sleep criterion; sleep cannot be "
+                         "scored from it. Re-export at 1-minute binning from DAMSystem.")
+            for f in qq["faults"]:
+                st.warning(f)
+            st.dataframe(qq["monitors"], width="stretch", hide_index=True)
+            st.dataframe(qq["days"][["date", "minutes", "light_h", "transitions", "largest_gap_min", "usable", "exclude_reason"]],
+                         width="stretch", hide_index=True)
+            if qq["window"] is None:
+                st.error("No usable day found."); return
+            d0, d1 = qq["window"][0].date(), (qq["window"][1] - pd.Timedelta(1, "D")).date()
+            st.caption(f"Proposed window: **{d0} to {d1}** ({qq['n_usable_days']} complete days). Adjust if needed:")
+            w0 = st.date_input("first day", d0, key=f"dp_w0_{nm}")
+            w1 = st.date_input("last day", d1, key=f"dp_w1_{nm}")
+            windows[nm] = (pd.Timestamp(w0), pd.Timestamp(w1) + pd.Timedelta(1, "D"))
+
+    # ── design ────────────────────────────────────────────────────────────────
+    st.subheader("2 · Design")
+    tidy = DRd_.to_dams_long(lab, drop_dead=False)
+    d_auto = DP_.Design().resolve(tidy)
+    dc = st.columns(4)
+    genos = sorted(tidy["Genotype"].astype(str).unique()); trts = sorted(tidy["Treatment"].astype(str).unique())
+    ref_g = dc[0].selectbox("Reference genotype", genos, index=genos.index(d_auto.ref_genotype) if d_auto.ref_genotype in genos else 0, key="dp_refg")
+    ref_t = dc[1].selectbox("Reference treatment", trts, index=trts.index(d_auto.ref_treatment) if d_auto.ref_treatment in trts else 0, key="dp_reft")
+    strat_opts = ["Sex", "none"] if tidy["Sex"].nunique() > 1 else ["none"]
+    strat = dc[2].selectbox("Stratify by", strat_opts, key="dp_strat")
+    dc[3].metric("Tubes labelled", int(tidy.groupby(["Monitor", "Channel"]).ngroups))
+    design = DP_.Design(ref_genotype=ref_g, ref_treatment=ref_t, stratify_col=None if strat == "none" else strat)
+
+    if st.button("Run the analysis", type="primary", key="dp_run_btn"):
+        with st.spinner("Scoring sleep, testing every contrast, drawing figures..."):
+            try:
+                run = DP_.analyse_run(lab, run_name, design, windows[run_name], q)
+                st.session_state["_dp_run"] = run
+                if lab_b is not None:
+                    run_b = DP_.analyse_run(lab_b, run_name_b, design, windows[run_name_b], q_b)
+                    st.session_state["_dp_run_b"] = run_b
+                    st.session_state["_dp_cmp"] = DP_.compare_runs(run, run_b)
+                else:
+                    st.session_state.pop("_dp_run_b", None); st.session_state.pop("_dp_cmp", None)
+                st.session_state.pop("_dp_figs", None)
+            except Exception as _e:
+                st.error(f"Analysis failed: {_e}")
+                return
+    run = st.session_state.get("_dp_run")
+    if run is None:
+        return
+    run_b, cmp = st.session_state.get("_dp_run_b"), st.session_state.get("_dp_cmp")
+    d = run.design
+
+    # ── results ───────────────────────────────────────────────────────────────
+    st.subheader("3 · Results")
+    s = run.summary()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Flies analysed", s["n_flies"]); k2.metric("Outliers flagged", s["n_outliers"])
+    k3.metric("Photoperiod", s["photoperiod"]); k4.metric("Window", f"{s['window'][0]} → {s['window'][1]}")
+    tri = run.triage
+    for f in tri.blockers:
+        st.error(f"Triage: {f.message}")
+    for f in tri.warnings:
+        st.warning(f"Triage: {f.message}")
+
+    if "_dp_figs" not in st.session_state:
+        with st.spinner("Drawing figures..."):
+            figs = {}
+            def _png(fig):
+                b = _io.BytesIO(); fig.savefig(b, format="png", dpi=170); plt.close(fig); return b.getvalue()
+            figs["Primary analysis: every headline effect with its FDR q."] = _png(DF_.headline(run, run_b, cmp))
+            figs[f"Sleep profile by genotype, {d.ref_treatment} flies, {run.name}."] = _png(DF_.profiles(run, by="genotype"))
+            if len(trts) > 1:
+                figs[f"Effect of treatment on the sleep profile, {run.name}."] = _png(DF_.profiles(run, by="treatment"))
+            figs[f"Sleep amount, {run.name}."] = _png(DF_.bars(run, ["Total_sleep_min_per_day", "Day_sleep_min_per_day", "Night_sleep_min_per_day", "Sleep_latency_night_min"], run.name))
+            figs[f"Sleep architecture, {run.name}."] = _png(DF_.bars(run, ["N_bouts_per_day", "Mean_bout_min", "Night_mean_bout_min", "Longest_bout_min"], run.name))
+            figs[f"Activity, {run.name}."] = _png(DF_.bars(run, ["Total_activity_per_day", "Waking_activity", "Day_activity_per_light_h", "Night_activity_per_dark_h"], run.name))
+            figs[f"Outlier map, {run.name}."] = _png(DF_.outlier_map(run))
+            if run_b is not None:
+                figs[f"Sleep profile by genotype, {run_b.name}."] = _png(DF_.profiles(run_b, by="genotype"))
+                figs[f"{run.name} (dashed) vs {run_b.name} (solid), {d.ref_treatment} flies."] = _png(DF_.profiles(run, by="run", run_b=run_b))
+                figs[f"{run.name} vs {run_b.name} within each group."] = _png(DF_.age_bars(run, run_b, cmp))
+            st.session_state["_dp_figs"] = figs
+    figs = st.session_state["_dp_figs"]
+
+    t_ans, t_fig, t_tab, t_out, t_dl = st.tabs(["Answers", "Figures", "Tables", "Outliers", "Report & downloads"])
+    with t_ans:
+        st.image(list(figs.values())[0], width="stretch")
+        st.caption("Filled squares survive Benjamini–Hochberg FDR at 5% in the pre-specified stratified test. "
+                   "Grey rows are confounded with monitor and are not evidence on their own.")
+        rows = []
+        for fam, v in s["families"].items():
+            rows.append({"family": fam.replace("_", " "), "primary tests": v["n_tests"], "significant (FDR 5%)": v["n_significant"]})
+        if cmp is not None:
+            p = cmp["timepoint"]; p = p[p.analysis == "primary"]
+            rows.append({"family": f"{run.name} → {run_b.name}", "primary tests": len(p), "significant (FDR 5%)": int(p.significant.sum())})
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    with t_fig:
+        for cap, png in list(figs.items())[1:]:
+            st.image(png, width="stretch"); st.caption(cap)
+    with t_tab:
+        fam = st.selectbox("Family", list(run.contrasts.keys()) + (["timepoint"] if cmp else []), key="dp_fam")
+        variant = st.radio("Flies", ["all flies (primary)", "outliers removed (sensitivity)"], horizontal=True, key="dp_var")
+        if fam == "timepoint":
+            df = cmp["timepoint"] if variant.startswith("all") else cmp["timepoint_noout"]
+        else:
+            df = (run.contrasts if variant.startswith("all") else run.contrasts_noout)[fam]
+        show = ["metric", "stratum", "ref", "cmp", "n_per_stratum", "mean_ref", "mean_cmp", "pct_change",
+                "hedges_g", "g_lo", "g_hi", "I2_pct", "p", "q_BH", "significant", "monitor_clean"]
+        st.dataframe(df[df.analysis == "primary"][[c for c in show if c in df.columns]], width="stretch", hide_index=True)
+        with st.expander("Secondary (per-stratum, uncorrected)"):
+            st.dataframe(df[df.analysis == "secondary"][[c for c in show if c in df.columns and c not in ("q_BH", "significant", "n_per_stratum", "I2_pct")]],
+                         width="stretch", hide_index=True)
+        with st.expander("Group means"):
+            st.dataframe(run.group_table(), width="stretch")
+    with t_out:
+        o = run.per_fly[run.per_fly.Outlier]
+        st.dataframe(o[["Monitor", "Channel", d.genotype_col] + ([d.stratify_col] if d.stratify_col else []) + [d.treatment_col, "Outlier_reason",
+                        "Total_sleep_min_per_day", "z_Total_sleep_min_per_day", "Total_activity_per_day", "z_Total_activity_per_day"]],
+                     width="stretch", hide_index=True)
+        st.caption(f"Rule: |modified z| > {DP_.OUTLIER_Z} versus the fly's own group median, MAD pooled per run, on total "
+                   "sleep or total activity. The all-flies analysis is primary; every table is also given without these flies.")
+    with t_dl:
+        if st.button("Build the Word report", key="dp_docx"):
+            with st.spinner("Writing and verifying the report..."):
+                tdir = st.session_state["_dp_tmpdir"]
+                out = os.path.join(tdir, "DAM_report.docx")
+                DRp_.build(run, out, run_b=run_b, cmp=cmp, figures=figs)
+                ok, rep = DRp_.verify(out, run, run_b, cmp)
+                st.session_state["_dp_docx"] = (out, ok, rep)
+        if "_dp_docx" in st.session_state:
+            out, ok, rep = st.session_state["_dp_docx"]
+            (st.success if ok else st.error)(f"Verification: {rep}")
+            with open(out, "rb") as f:
+                st.download_button("Download Word report", f.read(), "DAM_report.docx",
+                                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="dp_dl_docx")
+        buf = _io.BytesIO()
+        with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as z:
+            for r in [run] + ([run_b] if run_b else []):
+                tag = r.name.replace(" ", "_")
+                z.writestr(f"{tag}/per_fly.csv", r.per_fly.to_csv(index=False))
+                z.writestr(f"{tag}/quality_days.csv", r.quality["days"].to_csv(index=False))
+                z.writestr(f"{tag}/profiles_per_fly.csv", r.profiles.to_csv(index=False))
+                for k, df in r.contrasts.items():
+                    z.writestr(f"{tag}/contrasts_{k}.csv", df.to_csv(index=False))
+                for k, df in r.contrasts_noout.items():
+                    z.writestr(f"{tag}/contrasts_{k}_nooutliers.csv", df.to_csv(index=False))
+            if cmp is not None:
+                z.writestr("timepoint/contrasts_timepoint.csv", cmp["timepoint"].to_csv(index=False))
+                z.writestr("timepoint/contrasts_timepoint_nooutliers.csv", cmp["timepoint_noout"].to_csv(index=False))
+                z.writestr("timepoint/pairing_test.csv", cmp["pairing"].to_csv(index=False))
+            for i, (cap, png) in enumerate(figs.items(), 1):
+                z.writestr(f"figures/fig{i:02d}.png", png)
+        st.download_button("Download all tables and figures (zip)", buf.getvalue(), "DAM_analysis.zip", "application/zip", key="dp_dl_zip")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PAGE — Larval Crawling
 # ══════════════════════════════════════════════════════════════════════════════
 def page_larval():
@@ -7265,6 +7520,7 @@ def _climbing_simple_score():
     """
     import tempfile as _tf
     from modules import climbing_band as CB
+    from modules import fly_blob as _FB
 
     up = st.file_uploader("Climbing video", type=["mp4", "mov", "avi", "mkv"],
                           key="cbs_up")
@@ -7380,12 +7636,13 @@ def _climbing_simple_score():
         "the band 322 px too low on one recording.")
 
     vis = first.copy()
-    bands = []
+    bands, tubes = [], []
     for i, (c0, c1_) in enumerate(cols_xy, 1):
         by = CB.find_black_band(median_img, c0, c1_, band_dark)
         bands.append(by)
         cv2.rectangle(vis, (c0, 0), (c1_, fh - 1), (255, 190, 0), 1)
         if by is None:
+            tubes.append(None)
             cv2.putText(vis, f"C{i} NO BAND", (max(c0 - 20, 2), 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             continue
@@ -7395,7 +7652,40 @@ def _climbing_simple_score():
                  (0, 0, 255), 3)
         cv2.putText(vis, f"C{i} band={by}", (max(c0 - 20, 2), max(top - 8, 14)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+        # THE FLY SIZE IS SET BY THE TUBE WIDTH, SO SHOW IT. The detector looks
+        # for a fly of 0.07 x width; measured on a 100 px cylinder holding 20
+        # flies, a box drawn 3x too wide assumed a 12 px fly and reported ZERO,
+        # silently. The tube is now measured from the band's own dark run and
+        # drawn in green, so a mis-drawn box is visible before the run, not
+        # after it.
+        _tube = CB.tube_width_from_band(median_img, by, c0, c1_, band_dark)
+        tubes.append(_tube)
+        if _tube is not None:
+            tx0, tx1 = _tube
+            cv2.line(vis, (tx0, by + 26), (tx1, by + 26), (0, 200, 0), 3)
+            cv2.putText(vis, f"tube {tx1 - tx0}px  fly {_FB.fly_diameter(tx1 - tx0):.1f}px",
+                        (max(tx0 - 20, 2), by + 52), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (0, 140, 0), 2)
     st.image(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB), width="stretch")
+
+    for i, (by, _tube) in enumerate(zip(bands, tubes), 1):
+        if by is None or _tube is None:
+            continue
+        tw = _tube[1] - _tube[0]
+        bw = cols_xy[i - 1][1] - cols_xy[i - 1][0]
+        if bw / max(tw, 1) > 1.6:
+            st.error(
+                f"Cylinder {i}: your box is {bw} px wide but the glass measures "
+                f"{tw} px ({bw / max(tw, 1):.1f}x). The detector sizes a fly from "
+                f"the width it is given, so this box looks for a "
+                f"{_FB.fly_diameter(bw):.1f} px fly instead of {_FB.fly_diameter(tw):.1f} px "
+                "and will undercount. Draw the box to the glass — the green bar "
+                "shows where it is.")
+        elif bw / max(tw, 1) > 1.25:
+            st.info(
+                f"Cylinder {i}: box {bw} px, glass {tw} px. Scoring uses the "
+                f"measured {tw} px, so the count is unaffected — but tightening "
+                "the box makes the preview easier to read.")
 
     for i, by in enumerate(bands, 1):
         if by is None:
@@ -7566,6 +7856,7 @@ PAGE_MAP = {
     "Survival Analysis":      page_survival,
     "Y-maze":                 page_ymaze,
     "Activity Monitoring (DAMS)": page_dams,
+    "DAM Run Analysis":       page_dam_pipeline,
     "Larval Crawling":        page_larval,
     "Grooming":               page_grooming,
     "Dose-Response":          page_dose_response,
