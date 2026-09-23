@@ -7553,6 +7553,35 @@ def _climbing_simple_score():
     c1, c2, c3 = st.columns(3)
     n_flies = c1.number_input("Flies per cylinder", 1, 200, 20, 1, key="cbs_n")
     n_cyl = c2.number_input("Cylinders in frame", 1, 3, 3, 1, key="cbs_ncyl")
+
+    # THE DENOMINATOR IS NOT A DETAIL, AND IT MUST NOT BE ASSUMED SILENTLY.
+    # PI is a proportion of the flies in the cylinder. This page used to take
+    # the number above on trust and divide by it. On this laboratory's own
+    # dataset the loading stated as 20 per cylinder was 14-25 in the operator's
+    # notes, which moves a PI by up to 30% -- larger than most effects anyone is
+    # trying to detect. So the page asks how the number is known, and the answer
+    # travels with the result instead of being lost.
+    _SRC = {"I counted them into the cylinder": ("MANUAL", "VERIFIED"),
+            "Counted from the video": ("VIDEO", "ESTIMATED"),
+            "The protocol says this many (not counted)": ("NOMINAL", "UNCERTAIN"),
+            "I do not know": ("UNKNOWN", "UNCERTAIN")}
+    _pick = st.selectbox("How is the number of flies per cylinder known?",
+                         list(_SRC), index=2, key="cbs_nsrc",
+                         help="PI is a proportion of the flies in the cylinder. "
+                              "An assumed denominator makes an assumed PI, so "
+                              "the assumption is recorded with the result.")
+    n_source, n_quality = _SRC[_pick]
+    if n_source == "UNKNOWN":
+        st.warning(
+            "Without the number of flies in the cylinder, a Performance Index "
+            "cannot be formed at all — it is a proportion of that number. The "
+            "counts will still be reported.")
+    elif n_source == "NOMINAL":
+        st.info(
+            "A protocol figure is an assumption, not a count. On this "
+            "laboratory's own recordings the loading stated as 20 per cylinder "
+            "was 14–25 in the operator's notes. The reading will be marked "
+            "`DENOMINATOR_UNCERTAIN`.")
     # THE ZONE IS THE WHOLE TUBE ABOVE THE BAND BY DEFAULT. A fixed 250 px was
     # tuned on one rig and on a closer camera it stopped two-thirds of the way up
     # the glass: measured on the 15th-Day set, 13 of 15 wild-type flies above the
@@ -7710,7 +7739,8 @@ def _climbing_simple_score():
                               zone_height_px=(None if zone_h is None else int(zone_h)),
                               band_dark=int(band_dark),
                               fly_dark=int(fly_dark), min_blob_area=int(min_a),
-                              max_blob_area=int(max_a), drop_static=drop_static)
+                              max_blob_area=int(max_a), drop_static=drop_static,
+                              n_source=n_source, n_quality=n_quality)
         df.insert(0, "cylinder", f"C{i}")
         df.insert(1, "video", up.name)
         all_rows.append(df)
@@ -7723,18 +7753,79 @@ def _climbing_simple_score():
         st.error("Nothing was scored. Every cylinder refused — see the messages above.")
         return
 
-    st.subheader("Flies above the band")
+    # ── LAYER 3 first, because it governs whether anything below may be used.
+    reportable = scored[scored.pi.notna()]
+    if reportable.empty:
+        worst = scored.pi_reasons.iloc[0].split(";") if len(scored) else []
+        st.error("**Performance Index: NOT REPORTABLE**")
+        st.markdown(
+            "No reading on this video may be reported as a Performance Index. "
+            "The detections, the counts and the estimate are all shown below — "
+            "they are what the algorithm observed, and they are useful for "
+            "working out *why* — but none of them is a measurement of the "
+            "animals until the reasons below are cleared.")
+        for c in worst:
+            if c in CB.REASONS:
+                sev, what, why = CB.REASONS[c]
+                st.markdown(f"- **`{c}`** — {what}  \n  <small>{why}</small>",
+                            unsafe_allow_html=True)
+        st.caption(
+            "This is not a bug and it is not conservatism for its own sake. On "
+            "the only independent set of hand counts, the slope of the reported "
+            "count against the true count is "
+            f"{CB.VALIDATION_EVIDENCE['day37']['slope']:.3f} with a 95% interval "
+            f"of [{CB.VALIDATION_EVIDENCE['day37']['slope_ci95'][0]:+.3f}, "
+            f"{CB.VALIDATION_EVIDENCE['day37']['slope_ci95'][1]:+.3f}] "
+            f"(n = {CB.VALIDATION_EVIDENCE['day37']['n']}). An instrument whose "
+            "reading may bear no established relation to the quantity it names "
+            "must not print that quantity as a result. Expanding the hand-count "
+            "set is what opens this gate.")
+    else:
+        st.success(f"**Performance Index reportable on {len(reportable)} of "
+                   f"{len(scored)} readings.**")
+
+    st.subheader("Layer 1 — what the algorithm observed")
+    st.caption(
+        "Raw detector observations. These are reported whatever the verdict "
+        "above, because a refusal that also hid the evidence would be useless.")
     wide = scored.pivot_table(index="time_sec", columns="cylinder",
-                              values="reported_count", aggfunc="mean")
+                              values="count_above", aggfunc="mean")
     st.line_chart(wide)
+    st.caption(
+        "Detections above the band — **objects, not confirmed flies**. Measured "
+        "on an empty tube (hand count 0 or 1, 8 cylinders) this detector still "
+        "finds a mean of 8.0 objects, of which 7.2 never move. Read this as "
+        "what the algorithm saw, not as a fly count.")
+
+    st.subheader("Layer 2 — the estimate, with its provenance")
+    st.caption(
+        "The count the estimator derives from those observations. It is not a "
+        "biological result and is deliberately reported under a different name "
+        "so that using it is a choice rather than an accident.")
+    wide2 = scored.pivot_table(index="time_sec", columns="cylinder",
+                               values="reported_count", aggfunc="mean")
+    st.line_chart(wide2)
     st.caption(
         "The reported count is the midpoint of a bracket. Its upper bound counts "
         "every detection above the band and is necessarily too high (the printed "
         "label is dark and fly-sized); its lower bound counts only detections "
         "that move and is necessarily too low (a fly clinging still is discarded "
-        "with the print). Measured against 15 hand counts: upper MAE 3.47 "
-        "(bias +2.53), lower MAE 2.80 (bias −2.67), **midpoint MAE 2.20 "
-        "(bias −0.07)** — inside the assay's own 3-fly noise floor.")
+        "with the print).  \n"
+        "**Accuracy, stated properly.** The midpoint's MAE of 2.20 that this page "
+        "used to quote was measured on the 15 readings the midpoint was *chosen* "
+        "on (IMG_6029 and IMG_6181) and must not be read as performance. Held "
+        f"out: MAE {CB.VALIDATION_EVIDENCE['day15']['mae']:.2f} on Day 15 "
+        f"(n = {CB.VALIDATION_EVIDENCE['day15']['n']}) and "
+        f"{CB.VALIDATION_EVIDENCE['day37']['mae']:.2f} on Day 3/7 "
+        f"(n = {CB.VALIDATION_EVIDENCE['day37']['n']}). MAE is also the wrong "
+        "single number here: on Day 15 it conceals a false-positive floor of "
+        f"{CB.VALIDATION_EVIDENCE['day15']['empty_tube_floor_cyl_weighted']:.1f} "
+        "objects on an empty tube against only ~22% of real flies surviving as "
+        "separate detections — two large errors in opposite directions that "
+        "partly cancel. The slope against hand counts is "
+        f"{CB.VALIDATION_EVIDENCE['day15']['slope']:.3f} where a faithful "
+        "instrument would give 1.000, so a real difference in climbing is "
+        "compressed roughly five-fold.")
 
     low = scored[scored.confidence == "LOW"]
     if not low.empty:
@@ -7758,10 +7849,21 @@ def _climbing_simple_score():
         st.dataframe(gap[["cylinder", "time_sec", "count_above", "count_below",
                           "accounted_for", "accounted_gap"]], width="stretch")
 
-    st.dataframe(scored[["cylinder", "time_sec", "band_y", "reported_count",
-                         "reported_pi", "count_lower", "count_upper",
-                         "bracket_width", "confidence", "count_below",
-                         "accounted_for"]], width="stretch")
+    st.subheader("Every reading, and what may be said about it")
+    st.dataframe(scored[["cylinder", "time_sec", "band_y",
+                         # layer 1 -- observations
+                         "count_above", "count_below", "static_removed",
+                         "tube_w_px", "accounted_for",
+                         # layer 2 -- estimate and provenance
+                         "reported_count", "count_lower", "count_upper",
+                         "bracket_width", "pi_estimate", "n_source", "n_quality",
+                         # layer 3 -- result, and why
+                         "pi", "pi_verdict", "pi_reasons"]], width="stretch")
+    st.caption(
+        "`pi` is the biological result and is empty unless every check passed. "
+        "`pi_estimate` is the same arithmetic without the guarantee. Downstream "
+        "analysis should consume `pi`; anyone taking `pi_estimate` is choosing "
+        "to, and `pi_reasons` says what they are choosing to overlook.")
     st.download_button("Download CSV", res.to_csv(index=False).encode(),
                        file_name=f"climbing_simple_{Path(up.name).stem}.csv",
                        mime="text/csv", key="cbs_dl")

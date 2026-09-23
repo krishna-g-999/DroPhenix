@@ -52,7 +52,12 @@ dark and in the same place.
 """
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+
+#: Distinguishes "caller passed None deliberately" from "caller passed nothing".
+#: `assess_reading(validated_domain=None)` must mean "there is no validated
+#: domain", which is a real and currently true state, not "use the default".
+_SENTINEL = object()
 
 import cv2
 import numpy as np
@@ -94,6 +99,89 @@ FLY_DARK = 140
 #: 400 px keeps 15, 600 px keeps 15. There is no value to fit -- the protocol
 #: counts everything above the line, so None means "to the top of the tube".
 ZONE_FULL = None
+
+
+# ────────────────────────────────────────────────── the validation manifest ──
+#
+# WHAT THIS IS FOR. Three times now a change has been evaluated on the same
+# recordings that suggested it, and twice that produced a number that did not
+# survive contact with a held-out set (development MAE 2.20 -> held-out 6.53).
+# The manifest states, in one place that the code itself reads, which sets have
+# been used for what -- so that an estimator cannot be re-chosen on a set that
+# has already seen it, and so that the software knows whether it is entitled to
+# report a biological result at all.
+#
+# IT IS NOT DOCUMENTATION. `assess_reading` consults `VALIDATED_DOMAIN`, and
+# while that is None every Performance Index is NOT_REPORTABLE. Opening the gate
+# is a deliberate edit here, made when the evidence below says it may be.
+
+#: The estimator currently shipped. Do not change this without changing the
+#: manifest, and do not change the manifest from a set listed as development.
+ESTIMATOR = "bracket midpoint: (count_upper + count_lower) / 2"
+
+#: FROZEN. Measured 2026-09-23, and this is the whole reason for the freeze:
+#: the ranking of the three available estimators REVERSES between the two sets.
+#:
+#:   set        n     estimator   MAE    bias    slope (ideal 1.000)
+#:   Day 15   432     upper      4.87   +2.39    0.272
+#:   Day 15   432     midpoint   4.54   -1.63    0.199   <- shipped
+#:   Day 15   432     lower      6.58   -5.64    0.125
+#:   Day 3/7   30     upper      7.10   -0.03   -0.190
+#:   Day 3/7   30     midpoint   6.53   -3.33    0.003   <- shipped
+#:   Day 3/7   30     lower      7.23   -6.63    0.196
+#:
+#: On Day 15 `upper` has the best slope and the best retention of the genotype
+#: contrast; on Day 3/7 it has the worst, and negative. Picking the Day-15
+#: winner would be selecting a method on the set it was found in. The Day-3/7
+#: slope CI is [-0.532, +0.539] at n = 30 -- wide enough to exclude a faithful
+#: instrument but not wide enough to rank three candidates. The blocker is hand
+#: counts, not code.
+ESTIMATOR_SELECTION = "FROZEN"
+
+#: Sets that have been used to choose or tune something. An estimator may never
+#: be selected on these again, whatever they show.
+DEVELOPMENT_SETS = (
+    "Day 15 (C0665-C0698, 432 paired readings) -- used for the floor/slope "
+    "decomposition and for generating the upper-bound hypothesis",
+    "IMG_6029 + IMG_6181 (15 readings) -- used to choose the midpoint over the "
+    "upper and lower bounds in the first place",
+    "paraquat set (19 fitted + 22 held out vials) -- fly_blob's parameters",
+)
+
+#: Sets held for confirmation. Small, which is the current blocker.
+CONFIRMATION_SETS = (
+    "Day 3/7 hand counts (hand_count_holdout.csv + hand_count_template.csv, "
+    "30 readings paired with a scored cylinder, 6 videos)",
+)
+
+#: What is actually known about the relationship between the reported count and
+#: a hand count. Both slopes exclude 1.0; neither establishes a usable one.
+VALIDATION_EVIDENCE = {
+    "day15": {"n": 432, "n_cylinders": 36, "slope": 0.199,
+              "slope_ci95": (0.154, 0.243), "intercept": 6.08,
+              "mae": 4.54, "bias": -1.63,
+              "empty_tube_floor_cyl_weighted": 5.62,
+              "contrast_retained_frac": (0.20, 0.27)},
+    "day37": {"n": 30, "n_videos": 6, "slope": 0.003,
+              "slope_ci95": (-0.532, 0.539), "intercept": 12.98,
+              "mae": 6.53, "bias": -3.33},
+}
+
+#: THE SET OF CONDITIONS UNDER WHICH A PERFORMANCE INDEX MAY BE REPORTED AS A
+#: BIOLOGICAL RESULT. None means "no such conditions have been established".
+#:
+#: That is the honest state today and it is not a placeholder: on the only
+#: independent set, the reported count's slope against the hand count is 0.003
+#: with a 95% interval of [-0.532, +0.539]. An instrument whose reading may bear
+#: no relation to the quantity it names cannot publish that quantity. The raw
+#: observations and the unvalidated estimate are still returned -- see the three
+#: layers in `assess_reading` -- so nothing diagnostic is hidden by this.
+#:
+#: To open the gate: expand the confirmation set (the near-term target is Day 7
+#: male, 3 conditions x 10/30/60 s, plus the blank Set D rows), re-measure the
+#: slope, and if its interval supports a stated relationship, replace this with
+#: the domain it holds over.
+VALIDATED_DOMAIN = None
 
 
 def find_black_band(gray: np.ndarray, col_start: int, col_end: int,
@@ -469,6 +557,31 @@ def persistence_filter(per_frame: Sequence[Sequence[Tuple[int, int]]],
     scratch, or a permanent mark -- not an animal. Positions are binned rather
     than matched pairwise; the pairwise form is O(n^2) per cylinder and does not
     finish on a two-minute clip.
+
+    DO NOT TUNE `static_frac` OR `bin_px` UNTIL STATIONARY-FLY SENSITIVITY HAS
+    BEEN MEASURED. This filter is working: above an empty tube it identifies 7.2
+    of 8.0 detections as static, and the lower bound it produces reads 0.88
+    where no fly is present. The temptation is therefore to lean on it harder.
+    It must be resisted, because the filter cannot tell a permanent mark from a
+    fly that is not moving, and on this assay those are not equally disposable:
+
+        - at 120 s most flies are clinging motionless to the glass, so late
+          timepoints are exactly where the loss would be largest;
+        - REDUCED MOVEMENT IS THE PHENOTYPE. A Huntingtin or ALS model fly that
+          climbs and then stops is the signal, and a filter tuned to delete
+          things that stop will delete the affected animals preferentially. It
+          would flatter the disease model and would do so invisibly.
+
+    The measured consequence of leaning on it is already known: the lower bound
+    (this filter applied in full) scores MAE 6.58 bias -5.64 on Day 15 against
+    the midpoint's 4.54 / -1.63, and its slope against hand counts is 0.125
+    against 0.199. Turning it up makes the instrument worse, not better.
+
+    The gate before any tuning here is a labelled set giving, separately:
+        sensitivity to a STATIONARY FLY   (what fraction survive this filter)
+        specificity to a STATIC ARTIFACT  (what fraction of print it removes)
+    The second is known to be good. The first has never been measured, and
+    without it a change here cannot be told from a change in the biology.
     """
     frames = [list(pts) for pts in per_frame]
     if not frames:
@@ -527,6 +640,247 @@ def pi(count_above: float, n_flies_in_vial: int) -> Optional[float]:
     return float(count_above) / n
 
 
+# ──────────────────────────────────────── three layers, and what gates them ──
+#
+# A reading carries three different kinds of statement and they were previously
+# emitted as one number. They are separated here because they have different
+# evidence behind them and deserve different trust:
+#
+#   LAYER 1  OBSERVATIONS   what the algorithm saw. count_above, count_below,
+#                           static_removed, tube_w_px, band_y. These are always
+#                           reported, even when everything else refuses, because
+#                           they are what a person needs in order to work out
+#                           WHY it refused. Suppressing them would hide the
+#                           diagnosis along with the result.
+#   LAYER 2  ESTIMATE       the count and PI the estimator derives, with their
+#                           provenance attached. Always computed, never
+#                           presented as a biological result.
+#   LAYER 3  RESULT         the Performance Index as a measurement of the
+#                           animals. Gated. Emitted only when the reading passes
+#                           every check AND the estimator is validated for the
+#                           state the reading is in.
+#
+# Downstream analysis must consume Layer 3. `pi_estimate` exists for someone who
+# knowingly wants the raw number; it is deliberately a different column name so
+# that taking it is a choice rather than an accident.
+
+VALID = "VALID"
+REVIEW_REQUIRED = "REVIEW_REQUIRED"
+NOT_REPORTABLE = "NOT_REPORTABLE"
+
+#: REVIEW_REQUIRED means a person may be able to resolve this -- redraw the box,
+#: supply the real N, look at the recording. NOT_REPORTABLE means the data in
+#: hand cannot support the measurement and no amount of looking will change it.
+_SEVERITY = {VALID: 0, REVIEW_REQUIRED: 1, NOT_REPORTABLE: 2}
+
+#: code -> (severity, what it means, where the threshold comes from)
+REASONS: Dict[str, Tuple[str, str, str]] = {
+    "INVALID_COUNT_RANGE": (
+        NOT_REPORTABLE,
+        "the count above the band is negative or exceeds the number of flies "
+        "in the cylinder, so it is not a possible count",
+        "arithmetic: a sealed cylinder holds what was put in it, and a "
+        "cardinality is not negative"),
+    "INVALID_DENOMINATOR": (
+        NOT_REPORTABLE,
+        "the number of flies in the cylinder is zero or negative",
+        "arithmetic"),
+    "DENOMINATOR_UNKNOWN": (
+        NOT_REPORTABLE,
+        "the number of flies in the cylinder was never recorded, so a "
+        "proportion of them cannot be formed",
+        "definition: PI is a proportion and has no meaning without its "
+        "denominator"),
+    "DENOMINATOR_UNCERTAIN": (
+        REVIEW_REQUIRED,
+        "the number of flies is assumed rather than counted",
+        "measured: on this dataset the loading stated as 20 per cylinder was "
+        "14-25 in the operator's own notes, so a nominal N is an assumption "
+        "and moves the PI by up to 30%"),
+    "TUBE_WIDTH_MISMATCH": (
+        NOT_REPORTABLE,
+        "the drawn box is far wider than the cylinder, so the detector is "
+        "looking for a fly of the wrong size",
+        "measured: widening the box on a 100 px cylinder holding 20 flies gave "
+        "19 found at 100-200 px and 0 of 20 at 300 px, silently"),
+    "ROI_OVERSIZED": (
+        REVIEW_REQUIRED,
+        "the drawn box is noticeably wider than the cylinder",
+        "measured: the same experiment, at the width where the count starts to "
+        "move"),
+    "BRACKET_TOO_WIDE": (
+        REVIEW_REQUIRED,
+        "the two bounds disagree by more than 7 flies, so the midpoint carries "
+        "real uncertainty",
+        "the bracket's own reported width; 7 is the threshold already used by "
+        "the LOW confidence flag"),
+    "CONSERVATION_VIOLATED": (
+        REVIEW_REQUIRED,
+        "the two zones together do not account for the flies loaded",
+        "a sealed cylinder: above + below must equal N. Measured, this sum ran "
+        "5 to 28 against a true 20, in both directions"),
+    "STATIC_ARTIFACT_EXCESS": (
+        REVIEW_REQUIRED,
+        "more than half of what was detected above the band never moved, so "
+        "the reading rests mostly on objects that may be print rather than "
+        "animals",
+        "A STATED CONVENTION, NOT A MEASURED THRESHOLD. Measured context: above "
+        "an empty tube 7.2 of 8.0 detections were judged static, and the "
+        "midpoint keeps half of them, giving a floor of 5.62 objects where no "
+        "fly is present. Half is chosen as the point where the reading is "
+        "carried by the static population; it has not been validated"),
+    "ESTIMATOR_NOT_VALIDATED": (
+        NOT_REPORTABLE,
+        "the relationship between what this estimator reports and a hand count "
+        "has not been established on any independent set",
+        "measured: on the only confirmation set the slope against hand counts "
+        "is 0.003, 95% CI [-0.532, +0.539], n = 30. See VALIDATED_DOMAIN"),
+}
+
+# THE THREE EMPIRICAL CODES DO NOT PREDICT ERROR. THEY PREDICT IT BACKWARDS.
+#
+# Measured on Day 15, 432 readings with a hand count beside each, applying these
+# codes to the stored columns (the instrument-level code excluded, since it
+# fires on everything by design and would make the test vacuous):
+#
+#   code                     fires on   MAE flagged   MAE clean   Welch p
+#   BRACKET_TOO_WIDE              56%          4.66        4.39     0.382
+#   CONSERVATION_VIOLATED         58%          4.14        5.08     0.002
+#   STATIC_ARTIFACT_EXCESS        79%          4.38        5.12     0.034
+#   any code at all               93%          4.42        5.97     0.012
+#
+# A reading that raises NO flag is WORSE than one that raises several. The old
+# `confidence` flag this sits beside is inverted in the same way (HIGH -> MAE
+# 5.15, MODERATE -> 4.28, LOW -> 4.66), which is more than the audit found: it
+# does not merely fail to discriminate, it points the wrong way.
+#
+# WHY, AND WHY IT IS NOT FIXED BY MOVING THE THRESHOLDS. The error on this
+# instrument is dominated by the calibration, not by per-reading conditions:
+# reported = 6.08 + 0.199 x true, so the error is essentially a function of the
+# true count alone (+3.7 flies at 3, -5.9 at 15) and is smallest near a true
+# count of about 7.6. Quiet readings -- few detections, narrow bracket, little
+# static, hence no flags -- are the sparse ones, and sparse is where the
+# additive floor dominates. No per-reading flag can predict an error that is set
+# by where the reading sits on a compressed calibration curve. YOU CANNOT QC
+# YOUR WAY OUT OF A CALIBRATION PROBLEM.
+#
+# WHAT THIS MEANS FOR THE CODES BELOW, and it is a real distinction:
+#   - the NOT_REPORTABLE codes are LOGICAL. An impossible count, an absent
+#     denominator, a box that makes the detector look for the wrong-sized
+#     animal, an estimator with no established relationship to the truth --
+#     none of these depend on the measurement above, and none is weakened by it.
+#   - the REVIEW_REQUIRED codes are DESCRIPTIVE. They say truly what state a
+#     reading is in ("this count rests mostly on objects that never moved"),
+#     and that is worth telling an operator. They are NOT a quality filter and
+#     must not be used to select readings, drop outliers, or weight an average:
+#     on the evidence above that would select the WORSE readings.
+# Anyone tempted to gate on them should re-run the measurement first. The script
+# is scratchpad/qc_discriminates.py and it takes seconds.
+
+#: Where the denominator came from, worst last.
+N_SOURCES = ("MANUAL", "VIDEO", "NOMINAL", "UNKNOWN")
+#: How well it is known, worst last.
+N_QUALITIES = ("VERIFIED", "ESTIMATED", "UNCERTAIN")
+
+
+class Assessment(NamedTuple):
+    """The three layers of one reading, and why the third is or is not given."""
+
+    verdict: str                        #: VALID / REVIEW_REQUIRED / NOT_REPORTABLE
+    reasons: Tuple[str, ...]            #: reason codes, worst first
+    pi_estimate: Optional[float]        #: LAYER 2 -- the number, always computed
+    pi_reportable: Optional[float]      #: LAYER 3 -- the number only when VALID
+    n_source: str
+    n_quality: str
+
+    def explain(self) -> str:
+        """One human paragraph. Used by the page and by the CLI report."""
+        if self.verdict == VALID:
+            return "PI %.3f -- passes every check." % (self.pi_reportable or 0.0)
+        head = ("PI: NOT REPORTABLE" if self.verdict == NOT_REPORTABLE
+                else "PI: REVIEW REQUIRED")
+        lines = [head]
+        for c in self.reasons:
+            sev, what, _why = REASONS[c]
+            lines.append("  %-26s %s" % (c, what))
+        return "\n".join(lines)
+
+
+def assess_reading(count_above: float, n_flies: Optional[int], *,
+                   n_source: str = "UNKNOWN",
+                   n_quality: str = "UNCERTAIN",
+                   bracket_width: Optional[float] = None,
+                   static_removed: Optional[float] = None,
+                   count_upper: Optional[float] = None,
+                   accounted_for: Optional[float] = None,
+                   box_over_tube: Optional[float] = None,
+                   validated_domain: object = _SENTINEL) -> Assessment:
+    """Decide what may be said about one reading, and why.
+
+    Pure: no video, no files, no global state except the manifest, which can be
+    overridden through `validated_domain` so the gate itself is testable.
+
+    The order of the checks does not matter -- every applicable code is
+    collected and the verdict is the worst severity among them, so a reading
+    that fails in three ways says so three times rather than reporting only the
+    first thing noticed.
+    """
+    domain = VALIDATED_DOMAIN if validated_domain is _SENTINEL else validated_domain
+    codes: List[str] = []
+
+    if n_source not in N_SOURCES:
+        raise ValueError("n_source must be one of %r, got %r" % (N_SOURCES, n_source))
+    if n_quality not in N_QUALITIES:
+        raise ValueError("n_quality must be one of %r, got %r" % (N_QUALITIES, n_quality))
+
+    # ── the denominator, before anything is divided by it
+    if n_source == "UNKNOWN" or n_flies is None:
+        codes.append("DENOMINATOR_UNKNOWN")
+    elif int(n_flies) <= 0:
+        codes.append("INVALID_DENOMINATOR")
+    elif n_source == "NOMINAL" or n_quality == "UNCERTAIN":
+        codes.append("DENOMINATOR_UNCERTAIN")
+
+    # ── the numerator
+    est: Optional[float] = None
+    if n_flies is not None and int(n_flies) > 0:
+        est = float(count_above) / int(n_flies)
+        if count_above < 0 or count_above > int(n_flies):
+            codes.append("INVALID_COUNT_RANGE")
+
+    # ── geometry
+    if box_over_tube is not None:
+        if box_over_tube > 1.6:
+            codes.append("TUBE_WIDTH_MISMATCH")
+        elif box_over_tube > 1.25:
+            codes.append("ROI_OVERSIZED")
+
+    # ── the estimator's own declared uncertainty
+    if bracket_width is not None and bracket_width > 7:
+        codes.append("BRACKET_TOO_WIDE")
+    if (accounted_for is not None and n_flies is not None
+            and abs(float(accounted_for) - float(n_flies)) > 5):
+        codes.append("CONSERVATION_VIOLATED")
+    if (static_removed is not None and count_upper is not None
+            and float(count_upper) > 0
+            and float(static_removed) / float(count_upper) > 0.5):
+        codes.append("STATIC_ARTIFACT_EXCESS")
+
+    # ── and whether this instrument is entitled to report at all
+    if domain is None:
+        codes.append("ESTIMATOR_NOT_VALIDATED")
+
+    verdict = VALID
+    for c in codes:
+        if _SEVERITY[REASONS[c][0]] > _SEVERITY[verdict]:
+            verdict = REASONS[c][0]
+    codes.sort(key=lambda c: -_SEVERITY[REASONS[c][0]])
+
+    return Assessment(verdict=verdict, reasons=tuple(codes), pi_estimate=est,
+                      pi_reportable=(est if verdict == VALID else None),
+                      n_source=n_source, n_quality=n_quality)
+
+
 def analyse_video(video_path: str, col_start: int, col_end: int, n_flies: int,
                   timepoints_sec: Sequence[float],
                   zone_height_px: Optional[int] = ZONE_FULL,
@@ -534,12 +888,21 @@ def analyse_video(video_path: str, col_start: int, col_end: int, n_flies: int,
                   min_coverage: float = 0.60,
                   min_blob_area: int = 20, max_blob_area: int = 400,
                   t_zero_sec: float = 0.0,
-                  drop_static: bool = False) -> pd.DataFrame:
+                  drop_static: bool = False,
+                  n_source: str = "NOMINAL",
+                  n_quality: str = "UNCERTAIN") -> pd.DataFrame:
     """One cylinder, one column range. Returns a row per timepoint.
 
     `drop_static` reports the count with never-moving detections removed. Both
     counts are always returned, so the size of that correction is visible rather
     than folded silently into the result.
+
+    `n_source` and `n_quality` say where the denominator came from. They default
+    to NOMINAL/UNCERTAIN -- not to a flattering value -- because that is what an
+    un-argued `n_flies=20` actually is, and because the operator's own notes on
+    this dataset put the real loading at 14-25 against a stated 20. A caller who
+    has counted the flies should say so; a caller who has not should not be
+    given the benefit of the doubt by a default.
     """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -691,10 +1054,32 @@ def analyse_video(video_path: str, col_start: int, col_end: int, n_flies: int,
         conf = ("HIGH" if width <= 3 else
                 "MODERATE" if width <= 7 else "LOW")
 
+        # THE EXPORTED PI USED TO BYPASS EVERY CHECK IN THIS MODULE.
+        # `pi()` gained its bounds in F3 and then turned out to have no callers:
+        # the number that actually left the module was `mid / max(n_flies, 1)`,
+        # computed inline, which cannot refuse anything. `max(..., 1)` even
+        # turned a denominator of zero into a division by one, so a cylinder
+        # with no flies recorded produced a PI equal to the raw count. The
+        # assessment below is now the only route out.
+        a = assess_reading(
+            float(mid), int(n_flies),
+            n_source=n_source, n_quality=n_quality,
+            bracket_width=float(width), static_removed=float(static_est),
+            count_upper=float(hi), accounted_for=float(accounted),
+            box_over_tube=float(box_excess))
+
         rows.append({
             "time_sec": float(t), "band_y": int(band_y),
             "reported_count": round(float(mid), 1),
-            "reported_pi": round(float(mid) / max(int(n_flies), 1), 4),
+            # LAYER 3 -- the biological result. None unless every check passes.
+            "pi": (round(a.pi_reportable, 4) if a.pi_reportable is not None
+                   else None),
+            "pi_verdict": a.verdict,
+            "pi_reasons": ";".join(a.reasons),
+            # LAYER 2 -- the estimate, with its provenance. Never a result.
+            "pi_estimate": (round(a.pi_estimate, 4)
+                            if a.pi_estimate is not None else None),
+            "n_source": n_source, "n_quality": n_quality,
             "count_lower": int(lo), "count_upper": int(hi),
             "bracket_width": int(width),
             "confidence": conf,

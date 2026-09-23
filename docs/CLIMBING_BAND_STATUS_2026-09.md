@@ -468,11 +468,170 @@ against hand counts. `count_lower`/`count_upper` give the interval.
 ## 12. Bottom line
 
 The estimator is honest, auditable, and roughly **1.5× noisier than the human it
-would replace**, with a known and characterised range compression. It is suitable
-today for *screening* — telling you which vials climbed and which did not — and
-**not** for quantifying an effect size. The biology in this dataset is real and
-rests on the operator's 480 hand counts.
+would replace**, with a known and characterised range compression. The biology in
+this dataset is real and rests on the operator's 480 hand counts.
+
+**This paragraph previously said the tool was "suitable today for screening".
+Section 13 withdraws that.** On the only independent set the slope of the reported
+count against the hand count is 0.003 with a 95% interval of [−0.532, +0.539] —
+which does not establish screening either. The software now refuses to report a
+Performance Index rather than leaving that judgement to the reader.
 
 The engineering history above exists so that the next person does not repeat the
 crossing gate, the complementary estimate, proportional closure, or N-from-video.
 Each is recorded with the number that killed it.
+
+
+---
+
+## 13. What the calibration audit found (2026-09-23), and what was done about it
+
+Section 12 used to end by recommending the tool for screening. This section is
+why it no longer does.
+
+### 13.1 MAE was hiding two large errors that cancel
+
+Day 15, 432 readings paired with hand counts:
+
+```
+calibration   reported = 6.08 + 0.199 x true      (ideal 0 + 1.000)
+
+FLOOR      hand <= 1:  8.0 objects detected above an EMPTY tube,
+                       of which 7.2 never move. Cylinder-weighted
+                       reported floor 5.62 (8 cylinders, range 3.12-10.50)
+SURVIVAL   hand >= 10: cylinder-weighted 0.22 of real flies survive
+                       as separate detections (20 cylinders, range 0.00-0.56)
+```
+
+The tool invents about five or six objects that are not flies and catches
+roughly one real fly in five. These are large errors in opposite directions and
+they cancel into an MAE of 4.5. **Every MAE quoted for this estimator is the
+residue of that cancellation**, which is why the F12/F13 change moved it by 0.01
+and why chasing it was never going to mean anything.
+
+Cost to the biology: the tool retains **20-27%** of the true genotype separation
+in PI (Wildtype - Htt and Wildtype - CyO, at 10 s and 60 s). Ordering survives;
+magnitude does not.
+
+### 13.2 Phenotype bias is not a separate defect
+
+Raw error by genotype looks disqualifying (Wildtype -5.69, Htt -1.88, CyO +2.69;
+ANOVA p = 3.8e-52). It vanishes entirely once the true-count trend is removed:
+residual means within 0.2 flies, p = 0.67 by reading and p = 0.96 by cylinder.
+**The detector is count-aware, not phenotype-aware.** There is one defect wearing
+three genotype masks, and fixing the calibration fixes all three.
+
+Two checks that had to pass before any of the above could be believed:
+
+  - **Left/middle/right pairing.** All six permutations were scored. Identity
+    wins overall (MAE 4.538 against 4.99-5.94) and the per-video winners are
+    scattered across five different permutations, which is what post-hoc fitting
+    to noise looks like. The mapping is sound. C0665 alone fits a rotation much
+    better (5.46 -> 2.54) and deserves an eye.
+  - **Are the hand counts cumulative?** `fly_blob`'s docstring records that the
+    paraquat laboratory's were. If Day 15's were too, every comparison here would
+    be between two different quantities. They are not: 44 of 396 consecutive
+    steps decrease, across 19 of 36 cylinders.
+
+### 13.3 The obvious fix failed confirmation, and was not adopted
+
+The floor is 89% static, and the static detector correctly identifies it -- the
+lower bound reads 0.88 on an empty tube. The midpoint estimator then adds half of
+it back by construction (`mid = upper - static/2`). That looks like a free fix.
+It is not:
+
+```
+Day 15 (n=432)        MAE    bias   slope      Day 3/7 (n=30)      MAE    bias   slope
+  upper              4.87   +2.39   0.272        upper            7.10   -0.03  -0.190
+  midpoint SHIPPED   4.54   -1.63   0.199        midpoint         6.53   -3.33   0.003
+  lower              6.58   -5.64   0.125        lower            7.23   -6.63   0.196
+```
+
+**The ranking reverses between the two sets.** Upper has the best slope on Day 15
+and the worst -- and negative -- on Day 3/7. Adopting the Day-15 winner would be
+selecting a method on the set it was found in, which is precisely the mistake
+that took a development MAE of 2.20 to a held-out 6.53.
+
+The Day-3/7 slope CI is [-0.532, +0.539] at n = 30. It excludes a faithful
+instrument but cannot rank three candidates. **The blocker is hand counts, not
+code.** The estimator is therefore FROZEN -- see `climbing_band.ESTIMATOR_SELECTION`.
+
+Nor can the static filter simply be leaned on harder. It cannot distinguish a
+permanent mark from a fly that is not moving, and **reduced movement is the
+phenotype**: a filter tuned to delete things that stop will preferentially delete
+affected animals and flatter the disease model invisibly. The gate before any
+tuning there is a labelled measurement of stationary-fly sensitivity, which has
+never been made. See the protective note on `persistence_filter`.
+
+### 13.4 The QC flags run backwards
+
+Applying the new reason codes to the 432 Day-15 readings:
+
+```
+code                     fires on   MAE flagged   MAE clean   Welch p
+BRACKET_TOO_WIDE              56%          4.66        4.39     0.382
+CONSERVATION_VIOLATED         58%          4.14        5.08     0.002
+STATIC_ARTIFACT_EXCESS        79%          4.38        5.12     0.034
+any code at all               93%          4.42        5.97     0.012
+```
+
+A reading that raises **no** flag is **worse** than one raising several. The old
+`confidence` flag is inverted the same way (HIGH -> 5.15, MODERATE -> 4.28,
+LOW -> 4.66) -- worse than the audit's finding that it fails to discriminate.
+
+The reason is structural: error on this instrument is set by where a reading sits
+on a compressed calibration curve, not by any per-reading condition. Quiet
+readings are sparse ones, and sparse is where the additive floor dominates.
+**You cannot QC your way out of a calibration problem.**
+
+Consequence, and it is encoded in the module: the codes that **gate** are logical
+(impossible count, absent denominator, wrong tube width, unvalidated estimator)
+and do not rest on this correlation. The codes that merely **describe** are
+REVIEW_REQUIRED only, and must never be used to select readings, drop outliers or
+weight an average -- on this evidence that would select the worse ones.
+`validate_climbing_band.py` has a test that locks the distinction.
+
+### 13.5 What was changed
+
+Three layers, because a reading carries three kinds of statement and they were
+being emitted as one number:
+
+| layer | what | gated? |
+|---|---|---|
+| 1 Observations | `count_above`, `count_below`, `static_removed`, `tube_w_px`, `band_y` | never -- a refusal must not hide its own evidence |
+| 2 Estimate | `reported_count`, `pi_estimate`, `n_source`, `n_quality` | never, but never presented as a result |
+| 3 Result | `pi`, with `pi_verdict` and `pi_reasons` | yes |
+
+- **`VALIDATED_DOMAIN = None`.** No conditions have been established under which
+  a PI may be reported, so today every reading is `NOT_REPORTABLE`. This is not a
+  placeholder; it is the honest state, and opening the gate is a deliberate edit
+  made when the evidence allows.
+- **The exported PI used to bypass every check in the module.** `pi()` gained its
+  bounds in F3 and then turned out to have no callers: what left the module was
+  an inline `mid / max(n_flies, 1)`, which cannot refuse anything and turned a
+  zero denominator into a division by one -- so a cylinder with no flies recorded
+  produced a PI equal to the raw count. It now goes through `assess_reading`.
+- **The denominator's provenance travels with the result** (`MANUAL | VIDEO |
+  NOMINAL | UNKNOWN` x `VERIFIED | ESTIMATED | UNCERTAIN`). `UNKNOWN` cannot
+  produce a PI at all; `NOMINAL` is REVIEW_REQUIRED, because on this dataset the
+  loading stated as 20 was 14-25 in the operator's notes.
+- **`validation/validate_climbing_band.py` now exists** -- 91 checks. The module
+  had none, and previous reports of "28 suites passed" meant the *other* modules
+  still passed. Nothing was checking this one.
+- **The page no longer advertises MAE 2.20.** That was measured on the 15 readings
+  the midpoint was *chosen* on. It now states the held-out 4.54 and 6.53, the
+  floor, the survival fraction and the slope.
+
+### 13.6 The one thing that would move this
+
+Hand counts on Day 3/7, distributed across videos and cylinders rather than piled
+into one recording -- the split that matters is at the **video/vial** level, since
+timepoints within a cylinder are not independent. Target: Day 7 male, 3
+conditions x 10/30/60 s (~81 counts), plus the 9 blank Set D rows in
+`hand_count_holdout.csv`. That takes the confirmation set from 30 to ~120 and the
+slope interval from about +/-0.53 to about +/-0.25 -- enough to rank the three
+estimators and, if one holds, to open `VALIDATED_DOMAIN`.
+
+The Set D blanks are worth keeping separate: they answer a different question
+(*what does the instrument report when there are no flies?*), which is the
+specificity test the floor measurement above is a proxy for.
