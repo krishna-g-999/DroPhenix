@@ -32,8 +32,19 @@ import re
 import numpy as np
 import pandas as pd
 
+try:  # package-relative import when loaded as modules.data_parser
+    from .design_schema import DESIGN_ALIASES, standardize_design_columns
+except ImportError:  # direct-script fallback
+    from design_schema import DESIGN_ALIASES, standardize_design_columns
+
 
 REQUIRED_LONG_COLS = {"Genotype", "Sex", "Treatment", "Replicate", "Time", "Count", "n"}
+
+# Optional design columns that must participate in the row-uniqueness key.
+# Omitting them would silently average genuinely distinct observations -- e.g.
+# the same vial measured morning and evening, or two different flies.
+DESIGN_KEY_COLS = ["Age", "FlyID", "VialID", "TimeOfDay", "ZT", "SessionIndex",
+                   "TrialIndex", "Dose", "Compound", "Batch", "ExperimentID", "Date"]
 MIN_N_WARNING = 10
 MIN_REPLICATES_WARNING = 3
 MIN_TIMEPOINTS_WARNING = 5
@@ -150,15 +161,21 @@ def _read_source(
 def _detect_format(df: pd.DataFrame) -> str:
     cols = {str(c).strip().lower() for c in df.columns}
 
-    long_core = {"genotype", "sex", "treatment", "time"}
+    long_core = {"genotype", "sex", "treatment"}
     # Note: must stay in sync with the alias sets in _standardize(). Includes the
     # names used by the shipped data template (count_climbed, n_total_flies).
+    # `time` was previously required LITERALLY here while _standardize() also
+    # accepts time_sec/seconds/sec, so a file using those aliases was rejected as
+    # "unrecognized format" before the renaming that would have fixed it ever ran
+    # -- which is exactly what the video analyser's export does.
+    time_like = {"time", "time_sec", "seconds", "sec"}
     count_like = {"count", "climbed", "count_climbed", "flies_climbed",
                   "flies climbed", "counts", "n_climbed", "num_climbed"}
     n_like = {"n", "total", "total_flies", "n_total_flies", "total flies",
               "n_total", "ntotal", "total_n"}
 
-    if long_core.issubset(cols) and (cols & count_like) and (cols & n_like):
+    if (long_core.issubset(cols) and (cols & time_like)
+            and (cols & count_like) and (cols & n_like)):
         return "long"
 
     time_cols = []
@@ -230,6 +247,11 @@ def _standardize(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], List[str]]:
     warnings: List[str] = []
     errors: List[str] = []
     df = df.copy()
+
+    # Optional extended design columns (FlyID, VialID, TimeOfDay, Dose, Batch, ...)
+    # are canonicalised first so the core renaming below sees stable names.
+    df, design_warnings = standardize_design_columns(df)
+    warnings.extend(design_warnings)
 
     rename_map: Dict[str, str] = {}
     for col in df.columns:
@@ -339,8 +361,7 @@ def _validate_science(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], List[s
     # key, otherwise the same (Genotype,Sex,Treatment,Replicate,Time) measured at
     # different ages would be wrongly collapsed into one row.
     key = ["Genotype", "Sex", "Treatment", "Replicate", "Time"]
-    if "Age" in df.columns:
-        key = key + ["Age"]
+    key += [c for c in DESIGN_KEY_COLS if c in df.columns and df[c].notna().any()]
     dup_mask = df.duplicated(subset=key, keep=False)
     if dup_mask.any():
         dup_n = int(dup_mask.sum())

@@ -26,10 +26,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Suppress verbose DSHOW/FFMPEG probing on Windows
+# Suppress verbose DSHOW probing on Windows when enumerating CAMERAS.
+#
+# FFMPEG must stay ENABLED. These variables are process-wide and are read once,
+# when OpenCV first builds its backend registry, so they govern FILE decoding as
+# much as camera capture -- and FFMPEG is the only backend that reads an iPhone
+# HEVC .MOV. Priority 0 does not merely deprioritise a backend, it removes it
+# from the registry: with FFMPEG at 0, even an explicit
+# `cv2.VideoCapture(path, cv2.CAP_FFMPEG)` fails. Because app.py imports this
+# module at startup, that one setting silently made every video file in the
+# application unreadable ("Could not open ...") on Windows, including on pages
+# that have nothing to do with cameras. It costs nothing here: FFMPEG cannot
+# open an integer camera index on Windows anyway, so it never competes with
+# MSMF for a camera -- it only ever wins for files, which is what is wanted.
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"]  = "1"
 os.environ["OPENCV_VIDEOIO_PRIORITY_DSHOW"] = "0"
-os.environ["OPENCV_VIDEOIO_PRIORITY_FFMPEG"] = "0"
+os.environ["OPENCV_VIDEOIO_PRIORITY_FFMPEG"] = "1"
 
 try:
     import cv2

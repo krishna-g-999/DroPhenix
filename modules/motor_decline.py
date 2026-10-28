@@ -73,13 +73,63 @@ from scipy.stats import pearsonr, spearmanr
 
 # ─── Decay and linear models ──────────────────────────────────────────────────
 def _exp_decay(t: np.ndarray, PI0: float, k: float) -> np.ndarray:
-    """Exponential decay: PI(t) = PI0 * exp(-k * t)"""
+    """Two-parameter exponential decay: PI(t) = PI0 * exp(-k * t). Floors at 0."""
     return PI0 * np.exp(-k * t)
+
+
+def _exp_decay_offset(t: np.ndarray, A: float, k: float, C: float) -> np.ndarray:
+    """
+    Three-parameter exponential decay: PI(t) = A * exp(-k * t) + C.
+
+    PI is defined on [-100, +100]. The two-parameter form PI0*exp(-k*t) with
+    PI0 >= 0 cannot produce a negative value, so it could not fit any genotype
+    whose performance index crosses zero — i.e. exactly the severely affected
+    models the experiment is about (audit S2 finding 2.2). The free asymptote C
+    gives the model the same support as the metric.
+    """
+    return A * np.exp(-k * t) + C
 
 
 def _linear_decline(t: np.ndarray, m: float, b: float) -> np.ndarray:
     """Linear fallback: PI(t) = b + m * t"""
     return b + m * t
+
+
+def _aic(rss: float, n: int, p: int) -> float:
+    """
+    Small-sample-corrected AIC (AICc) for least squares, in the standard
+    Burnham & Anderson (2002, Model Selection and Multimodel Inference, 2nd ed.,
+    section 2.2) form:
+
+        AIC  = n * ln(RSS / n) + 2K
+        AICc = AIC + 2K(K + 1) / (n - K - 1)
+
+    where K is the number of ESTIMATED PARAMETERS INCLUDING the residual
+    variance, i.e. K = p + 1 for a p-parameter regression. Counting sigma^2 is
+    not optional book-keeping: the AICc correction is nonlinear in K, so
+    omitting it changes the DIFFERENCE between two models with different p and
+    can flip the selection. Measured on n = 9 with RSS 10.0 (linear, p = 2) vs
+    5.0 (offset exponential, p = 3): the K = p convention gives dAICc = +1.44
+    (picks linear) while the correct K = p + 1 gives -0.96 (picks the
+    exponential).
+
+    `p` here is the number of curve parameters; K = p + 1 is applied inside.
+    Falls back to uncorrected AIC when n - K - 1 <= 0, where the correction is
+    undefined. Burnham & Anderson recommend AICc whenever n/K < ~40, which is
+    always the case for a longitudinal climbing design.
+
+    Model choice between the exponential and linear forms must be made on a
+    criterion that penalises parameters: the exponential-with-offset has three,
+    the linear form two. Comparing raw R2 across different parameter counts
+    would always favour the richer model.
+    """
+    K = p + 1                      # + 1 for the estimated residual variance
+    if not np.isfinite(rss) or n <= K:
+        return float("inf")
+    rss = max(float(rss), 1e-300)
+    aic = n * np.log(rss / n) + 2 * K
+    denom = n - K - 1
+    return aic + (2 * K * (K + 1) / denom) if denom > 0 else aic
 
 
 def _r_squared(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -120,6 +170,8 @@ def fit_decay(
     dict: PI0, k, t_half, R2, RSE, fit_model, fit_success,
           linear_slope, linear_R2
     """
+    from scipy import stats as _st
+
     # CRITICAL: guarantee 1-D regardless of input shape
     t = np.asarray(time, dtype=float).ravel()
     p = np.asarray(pi,   dtype=float).ravel()
@@ -130,76 +182,176 @@ def fit_decay(
 
     base = {
         "PI0": float("nan"), "k": float("nan"), "t_half": float("nan"),
+        "PI_asymptote": float("nan"),
+        "k_se": float("nan"), "k_CI_lower": float("nan"), "k_CI_upper": float("nan"),
+        "t_half_se": float("nan"),
+        "t_half_CI_lower": float("nan"), "t_half_CI_upper": float("nan"),
         "R2": float("nan"),  "RSE": float("nan"),
         "fit_model": "none", "fit_success": False,
         "linear_slope": float("nan"), "linear_R2": float("nan"),
+        "AICc_exp": float("nan"), "AICc_linear": float("nan"),
+        "delta_AICc": float("nan"), "fit_note": "",
     }
 
-    if len(t) < 3:
-        return base
+    n = len(t)
+    if n < 3:
+        return {**base, "fit_note": f"only {n} usable timepoint(s); need >= 3"}
+
+    span = float(np.nanmax(p) - np.nanmin(p))
+    lo_p, hi_p = float(np.nanmin(p)), float(np.nanmax(p))
+
+    def _fit(model, p0, bounds, n_par):
+        """Least-squares fit KEEPING the covariance matrix."""
+        popt, pcov = curve_fit(model, t, p, p0=p0, bounds=bounds,
+                               maxfev=40000, method="trf")
+        pred = model(t, *popt)
+        rss = float(np.sum((p - pred) ** 2))
+        se = np.sqrt(np.clip(np.diag(np.asarray(pcov, dtype=float)), 0.0, np.inf))
+        return popt, se, pred, rss, _aic(rss, n, n_par)
 
     # ── Exponential fit ───────────────────────────────────────────────────────
-    exp_result = base.copy()
-    try:
-        PI0_guess = max(float(np.nanmax(p)), 1.0)
-        k_guess   = max(1e-4, float(
-            -np.polyfit(t, np.log(np.clip(p, 1e-6, None)), 1)[0]
-        ))
-        popt, _ = curve_fit(
-            _exp_decay, t, p,
-            p0=[PI0_guess, k_guess],
-            bounds=([0.0, 1e-6], [200.0, 10.0]),
-            maxfev=20000,
-            method="trf",
-        )
-        PI0, k   = float(popt[0]), float(popt[1])
-        pred     = _exp_decay(t, PI0, k)
-        r2       = _r_squared(p, pred)
-        rse      = _residual_se(p, pred, n_params=2)
-        t_half   = float(np.log(2) / k) if k > 1e-9 else float("inf")
-        exp_result.update({
-            "PI0":         round(PI0, 3),
-            "k":           round(k, 5),
-            "t_half":      round(t_half, 2) if np.isfinite(t_half) else 9999.0,
-            "R2":          r2,
-            "RSE":         rse,
-            "fit_model":   "exponential",
-            "fit_success": True,
-        })
-    except Exception:
-        pass
+    # Prefer the three-parameter form A*exp(-k*t) + C, whose support covers the
+    # whole PI range. It needs one more point than the two-parameter form, so
+    # fall back to PI0*exp(-k*t) when there are too few ages — but only when the
+    # data stay non-negative, where that form is actually applicable.
+    exp_result, exp_aic = base.copy(), float("inf")
+    tried = []
 
-    # ── Linear fallback ───────────────────────────────────────────────────────
-    lin_result: dict = {}
+    # Candidate order matters. The two-parameter form PI0*exp(-k*t) has the same
+    # parameter count as the linear model, so AICc compares them on equal terms.
+    # The three-parameter offset form is only preferred when the data actually
+    # need it — i.e. when PI goes negative, where the two-parameter form has the
+    # wrong support and cannot be fitted at all. Trying the offset form first on
+    # non-negative data would hand the linear model an unearned win, because the
+    # AICc correction at n = 5 ages costs a third parameter +24 units.
+    candidates = []
+    if lo_p >= 0:
+        candidates.append(("exponential", _exp_decay,
+                           [max(hi_p, 1.0), 0.02],
+                           ([0.0, 1e-6], [200.0, 10.0]), 2))
+        candidates.append(("exponential_offset", _exp_decay_offset,
+                           [max(span, 1.0), 0.02, lo_p],
+                           ([0.0, 1e-6, -100.0], [400.0, 10.0, 100.0]), 3))
+    else:
+        tried.append("exponential: not applicable (PI goes negative; "
+                     "PI0*exp(-k*t) with PI0 >= 0 has support [0, inf))")
+        candidates.append(("exponential_offset", _exp_decay_offset,
+                           [max(span, 1.0), 0.02, lo_p],
+                           ([0.0, 1e-6, -100.0], [400.0, 10.0, 100.0]), 3))
+
+    for label, model, p0, bounds, n_par in candidates:
+        if n < n_par + 1:
+            tried.append(f"{label}: skipped (needs >= {n_par + 1} ages, have {n})")
+            continue
+        try:
+            popt, se, pred, rss, aic = _fit(model, p0, bounds, n_par)
+        except Exception as e:
+            tried.append(f"{label}: fit failed ({type(e).__name__})")
+            continue
+
+        if label == "exponential_offset":
+            A, k, C = (float(v) for v in popt)
+            k_se = float(se[1])
+            pi0 = A + C
+        else:
+            pi0, k = float(popt[0]), float(popt[1])
+            k_se, C = float(se[1]), 0.0
+
+        t_half = float(np.log(2) / k) if k > 1e-9 else float("inf")
+        # Delta method: t_half = ln2/k  =>  SE(t_half) = ln2 * SE(k) / k^2
+        t_half_se = (float(np.log(2) * k_se / (k ** 2))
+                     if np.isfinite(k_se) and k > 1e-9 else float("nan"))
+        dfree = max(n - n_par, 1)
+        crit = float(_st.t.ppf(0.975, dfree)) if dfree > 0 else float("nan")
+
+        # t_half = ln2 / k is a convex, strictly decreasing function of k, so a
+        # SYMMETRIC Wald interval t_half +/- z*SE undercovers: measured 0.865
+        # against a nominal 0.95 over 400 simulations. The standard remedy is to
+        # build the interval on the scale where the estimate is approximately
+        # normal (k) and TRANSFORM THE ENDPOINTS, which is exact given the k
+        # interval because the map is monotone. t_half_se is still reported as a
+        # delta-method standard error for reporting, but the CI is the
+        # transformed one and is what should be quoted.
+        k_lo = k - crit * k_se if np.isfinite(k_se) else np.nan
+        k_hi = k + crit * k_se if np.isfinite(k_se) else np.nan
+        th_lo = float(np.log(2) / k_hi) if np.isfinite(k_hi) and k_hi > 0 else np.nan
+        th_hi = float(np.log(2) / k_lo) if np.isfinite(k_lo) and k_lo > 0 else np.inf
+
+        cand = {
+            "PI0": round(pi0, 3), "k": round(k, 5),
+            "PI_asymptote": round(C, 3),
+            "t_half": round(t_half, 2) if np.isfinite(t_half) else float("inf"),
+            "k_se": round(k_se, 6) if np.isfinite(k_se) else float("nan"),
+            "k_CI_lower": round(k_lo, 6) if np.isfinite(k_lo) else float("nan"),
+            "k_CI_upper": round(k_hi, 6) if np.isfinite(k_hi) else float("nan"),
+            "t_half_CI_lower": round(th_lo, 2) if np.isfinite(th_lo) else float("nan"),
+            "t_half_CI_upper": round(th_hi, 2) if np.isfinite(th_hi) else float("inf"),
+            "t_half_se": round(t_half_se, 3) if np.isfinite(t_half_se) else float("nan"),
+            "R2": _r_squared(p, pred),
+            "RSE": _residual_se(p, pred, n_params=n_par),
+            "fit_model": label, "fit_success": True,
+            "AICc_exp": round(aic, 3),
+        }
+        if aic < exp_aic:
+            exp_result, exp_aic = {**base, **cand}, aic
+
+    # ── Linear alternative ────────────────────────────────────────────────────
+    lin_result, lin_aic = {}, float("inf")
     if try_linear_fallback:
         try:
-            coeffs     = np.polyfit(t, p, 1)
-            m, b       = float(coeffs[0]), float(coeffs[1])
-            pred_lin   = _linear_decline(t, m, b)
-            r2_lin     = _r_squared(p, pred_lin)
+            m, b = (float(v) for v in np.polyfit(t, p, 1))
+            pred_lin = _linear_decline(t, m, b)
+            rss_lin = float(np.sum((p - pred_lin) ** 2))
+            lin_aic = _aic(rss_lin, n, 2)
             lin_result = {
-                "linear_slope":     round(m,     5),
-                "linear_intercept": round(b,     3),
-                "linear_R2":        round(r2_lin, 4),
+                "linear_slope":     round(m, 5),
+                "linear_intercept": round(b, 3),
+                "linear_R2":        round(_r_squared(p, pred_lin), 4),
+                "AICc_linear":      round(lin_aic, 3),
             }
         except Exception:
             lin_result = {"linear_slope": float("nan"), "linear_R2": float("nan")}
 
-    # Choose best model
-    exp_r2 = exp_result.get("R2", float("nan"))
-    lin_r2 = lin_result.get("linear_R2", float("nan"))
+    # ── Model selection on AICc, not on a bare R2 threshold ──────────────────
+    # The old rule was "use the exponential if its R2 >= 0.5", which never
+    # compared the two models: exactly linear data was reported as an
+    # exponential with a half-life (audit S2 finding 2.3).
+    note_parts = list(tried)
+    if n <= 4:
+        note_parts.append(f"n={n} ages: model selection is weakly determined")
 
-    if pd.notna(exp_r2) and exp_r2 >= 0.5:
-        result = exp_result
-        result.update(lin_result)
-    elif pd.notna(lin_r2):
-        result = base.copy()
-        result.update(lin_result)
-        result["fit_model"]   = "linear_fallback"
-        result["fit_success"] = bool(pd.notna(lin_r2))
-    else:
-        result = base.copy()
+    # Both fits are always REPORTED; selection only decides which is named in
+    # `fit_model`. Blanking k when the linear model wins would make k
+    # unavailable for exactly the cross-group comparison MDR exists to support:
+    # one group going linear would turn every k comparison into NaN > NaN.
+    result = {**base, **exp_result, **lin_result}
+    exp_ok = bool(exp_result.get("fit_success", False))
 
+    if exp_ok and np.isfinite(exp_aic) and exp_aic <= lin_aic:
+        pass                                    # fit_model already the exp label
+    elif lin_result and np.isfinite(lin_aic):
+        result["fit_model"] = "linear"
+        result["fit_success"] = True
+        note_parts.append("linear preferred over exponential by AICc" if exp_ok
+                          else "no exponential form was applicable; linear only")
+    elif not exp_ok:
+        result = dict(base)
+
+    result["exp_k_available"] = exp_ok
+    result["selected_model_is_exponential"] = str(result.get("fit_model", "")).startswith("exp")
+
+    if np.isfinite(exp_aic) and np.isfinite(lin_aic):
+        result["delta_AICc"] = round(abs(exp_aic - lin_aic), 3)
+        if abs(exp_aic - lin_aic) < 2.0:
+            note_parts.append("exponential and linear within 2 AICc: not distinguishable")
+    result["fit_note"] = "; ".join(note_parts)
+
+    # Goodness of fit OF THE MODEL THAT WAS SELECTED. Without this, a well-fitted
+    # linear decline reached classify_trajectory with R2 = NaN (the exponential
+    # slot) and was labelled "Irregular / poor fit".
+    result["fit_R2"] = (result.get("linear_R2", float("nan"))
+                        if str(result.get("fit_model", "")).startswith("linear")
+                        else result.get("R2", float("nan")))
     return result
 
 
@@ -418,29 +570,48 @@ def compute_mdr_table(
     # ── Delta-k: rescue vs. vehicle ──────────────────────────────────────────
     veh_mask = out["Treatment"].astype(str).str.lower().isin(veh_lower)
     if veh_mask.any():
-        k_veh = (
+        ref = (
             out.loc[veh_mask]
-               .groupby(["Genotype", "Sex"])["k"]
+               .groupby(["Genotype", "Sex"])[["k", "k_se"]]
                .mean()
-               .rename("k_vehicle")
+               .rename(columns={"k": "k_vehicle", "k_se": "k_vehicle_se"})
         )
-        out = out.merge(k_veh, on=["Genotype", "Sex"], how="left")
-        out["delta_k"]    = (out["k_vehicle"] - out["k"]).round(5)
-        out["Rescue_pct"] = (
-            (out["delta_k"] / out["k_vehicle"].replace(0, float("nan"))) * 100
-        ).round(1)
-        out = out.drop(columns=["k_vehicle"])
+        out = out.merge(ref, on=["Genotype", "Sex"], how="left")
+        out["delta_k"] = (out["k_vehicle"] - out["k"]).round(5)
+
+        # Uncertainty propagation. The treated and vehicle groups are separate
+        # fits on separate flies, so their estimates are independent and the
+        # variances add. Previously curve_fit's covariance was discarded and
+        # delta_k / Rescue_pct carried no error at all (audit S2 finding 2.4).
+        var_sum = out["k_se"] ** 2 + out["k_vehicle_se"] ** 2
+        out["delta_k_se"] = np.sqrt(var_sum).round(6)
+        out["delta_k_CI_lower"] = (out["delta_k"] - 1.96 * out["delta_k_se"]).round(6)
+        out["delta_k_CI_upper"] = (out["delta_k"] + 1.96 * out["delta_k_se"]).round(6)
+
+        kv = out["k_vehicle"].replace(0, float("nan"))
+        out["Rescue_pct"] = ((out["delta_k"] / kv) * 100).round(1)
+        # Rescue_pct = 100*(1 - k/k_vehicle). Delta method on the ratio
+        # r = k/k_vehicle, with k and k_vehicle independent:
+        #   Var(r) ~= r^2 * ( Var(k)/k^2 + Var(k_veh)/k_veh^2 )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = out["k"] / kv
+            rel_var = (out["k_se"] / out["k"]) ** 2 + (out["k_vehicle_se"] / kv) ** 2
+            out["Rescue_pct_se"] = (100.0 * (ratio.abs() * np.sqrt(rel_var))).round(1)
+        out = out.drop(columns=["k_vehicle", "k_vehicle_se"])
     else:
-        out["delta_k"]    = float("nan")
-        out["Rescue_pct"] = float("nan")
+        for c in ("delta_k", "delta_k_se", "delta_k_CI_lower", "delta_k_CI_upper",
+                  "Rescue_pct", "Rescue_pct_se"):
+            out[c] = float("nan")
 
     # ── Trajectory labels ─────────────────────────────────────────────────────
     out["Trajectory"] = out.apply(
         lambda r: classify_trajectory(
             k=r.get("k",       float("nan")),
             delta_k=r.get("delta_k",  float("nan")),
-            r2=r.get("R2",      float("nan")),
+            r2=r.get("fit_R2",  r.get("R2", float("nan"))),
             pi0=r.get("PI0",     float("nan")),
+            fit_model=r.get("fit_model", ""),
+            linear_slope=r.get("linear_slope", float("nan")),
         ),
         axis=1,
     )
@@ -448,11 +619,16 @@ def compute_mdr_table(
 
     col_order = [
         "Genotype", "Treatment", "Sex", "n_timepoints",
-        "PI0", "k", "t_half", "R2", "RSE",
+        "PI0", "PI_asymptote",
+        "k", "k_se", "k_CI_lower", "k_CI_upper",
+        "t_half", "t_half_CI_lower", "t_half_CI_upper", "t_half_se",
+        "R2", "fit_R2", "RSE",
         "fit_model", "fit_success",
         "linear_slope", "linear_R2",
-        "delta_k", "Rescue_pct",
-        "Trajectory", "MDR_label",
+        "AICc_exp", "AICc_linear", "delta_AICc",
+        "delta_k", "delta_k_se", "delta_k_CI_lower", "delta_k_CI_upper",
+        "Rescue_pct", "Rescue_pct_se",
+        "Trajectory", "MDR_label", "fit_note",
     ]
     col_order = [c for c in col_order if c in out.columns]
     return out[col_order].reset_index(drop=True)
@@ -464,6 +640,8 @@ def classify_trajectory(
     delta_k: float,
     r2: float,
     pi0: float,
+    fit_model: str = "",
+    linear_slope: float = float("nan"),
 ) -> str:
     """
     Rule-based trajectory phenotype labeler.
@@ -476,9 +654,28 @@ def classify_trajectory(
     4. Rapid decline (k > 0.025)        → Progressive Decline
     5. Very slow decline (k < 0.005)    → Plateau
     6. Default                          → Moderate Decline
+
+    UNITS: the k and Δk thresholds are per DAY. They are heuristic labels, not
+    published cut-offs — no source in the reference list defines k = 0.025/day
+    as "progressive". Treat them as a display convenience and report k with its
+    confidence interval as the actual result.
+
+    When the linear model was selected there is no decay constant, so the label
+    is derived from the fitted slope (PI units per day) instead of returning
+    "Irregular / poor fit" for what may be an excellent straight-line fit.
     """
     if pd.isna(r2) or r2 < 0.5:
         return "Irregular / poor fit"
+
+    if str(fit_model).startswith("linear"):
+        if pd.isna(linear_slope):
+            return "Irregular / poor fit"
+        if linear_slope > -0.05:
+            return "Plateau (linear fit)"
+        if linear_slope < -1.0:
+            return "Progressive Decline (linear fit)"
+        return "Moderate Decline (linear fit)"
+
     if pd.notna(delta_k) and delta_k > 0.005 and pd.notna(pi0) and pi0 >= 30:
         return "Sustained Rescue"
     if pd.notna(delta_k) and delta_k > 0.002:
@@ -504,6 +701,64 @@ def _mdr_label(row: pd.Series) -> str:
 
 
 # ─── Motor-Survival Coupling Index ───────────────────────────────────────────
+def _sigfig(v: float, sig: int = 3) -> float:
+    """Round to `sig` significant figures, so a small p never renders as 0.0."""
+    if v is None or not np.isfinite(v) or v == 0:
+        return float(v) if v is not None and np.isfinite(v) else float("nan")
+    return float(f"{float(v):.{sig}g}")
+
+
+def _exact_spearman_p(x: np.ndarray, y: np.ndarray,
+                      max_exact_n: int = 8, n_mc: int = 20000,
+                      seed: int = 42) -> Tuple[float, float]:
+    """
+    Two-sided permutation p-value for Spearman's rho, and the SMALLEST p-value
+    the design can attain.
+
+    scipy.stats.spearmanr returns an asymptotic t-approximation whose statistic
+    is infinite at |rho| = 1. At n = 3 that produced p = 0.0 from three points,
+    while the exact permutation p for |rho| = 1 is 2/3! = 0.333
+    (audit S1 finding 1.1). For n <= max_exact_n every permutation is
+    enumerated, so the p-value is exact; above that a seeded Monte-Carlo
+    permutation is used with the Phipson & Smyth (2010) (1 + count)/(1 + B)
+    estimator, which never returns an unattainable p of 0.
+
+    Returns (p_value, p_min_attainable).
+    """
+    from itertools import permutations as _perms
+
+    n = len(x)
+    if n < 3:
+        return float("nan"), float("nan")
+    rx = pd.Series(x).rank().to_numpy(dtype=float)
+    ry = pd.Series(y).rank().to_numpy(dtype=float)
+    rx = rx - rx.mean()
+    ry0 = ry - ry.mean()
+    denom = float(np.sqrt(np.sum(rx ** 2) * np.sum(ry0 ** 2)))
+    if denom <= 0:
+        return float("nan"), float("nan")
+
+    obs = abs(float(np.dot(rx, ry0)) / denom)
+
+    if n <= max_exact_n:
+        stats_null = []
+        for perm in _perms(range(n)):
+            yp = ry0[list(perm)]
+            stats_null.append(abs(float(np.dot(rx, yp)) / denom))
+        arr = np.asarray(stats_null)
+        p = float(np.mean(arr >= obs - 1e-12))
+        p_min = float(np.mean(arr >= arr.max() - 1e-12))
+        return p, p_min
+
+    rng = np.random.default_rng(seed)
+    cnt = 0
+    for _ in range(n_mc):
+        yp = rng.permutation(ry0)
+        if abs(float(np.dot(rx, yp)) / denom) >= obs - 1e-12:
+            cnt += 1
+    return (1.0 + cnt) / (1.0 + n_mc), 1.0 / (1.0 + n_mc)
+
+
 def compute_msci(
     mdr_df: pd.DataFrame,
     lifespan_df: pd.DataFrame,
@@ -512,8 +767,21 @@ def compute_msci(
     """
     Motor-Survival Coupling Index (MSCI).
 
-    Spearman ρ between per-group MDR (k) and median lifespan.
-    Positive ρ = faster motor decline → shorter lifespan.
+    Spearman rho between per-group MDR (k) and median lifespan, with an EXACT
+    permutation p-value (see _exact_spearman_p). Positive rho = faster motor
+    decline goes with shorter lifespan.
+
+    TWO LIMITATIONS ARE REPORTED, NOT HIDDEN
+    ----------------------------------------
+    1. `p_min_attainable` is the smallest p this design could ever produce. At
+       n = 3 groups it is 0.333, so no result can reach the 0.05 level however
+       perfect the correlation. When p_min_attainable > 0.05 the row is labelled
+       "Underpowered by construction" rather than being given a verdict.
+    2. This is an ECOLOGICAL correlation between two group-level summaries. A
+       genotype that dies early has less opportunity to decline, so k and
+       lifespan are coupled through follow-up length as well as through biology.
+       `modules/survivor_bias.py` handles that confound; MSCI does not. The
+       `Caveat` column says so on every row.
     """
     if mdr_df is None or lifespan_df is None:
         return pd.DataFrame(), pd.DataFrame()
@@ -531,31 +799,51 @@ def compute_msci(
         valid = grp[["k", "Median_Survival_days"]].dropna()
         if len(valid) < min_groups:
             continue
+        xv = valid["k"].to_numpy(dtype=float)
+        yv = valid["Median_Survival_days"].to_numpy(dtype=float)
+
         try:
-            rho, p = spearmanr(valid["k"], valid["Median_Survival_days"])
+            rho, _p_asym = spearmanr(xv, yv)
         except Exception:
-            rho, p = float("nan"), float("nan")
+            rho, _p_asym = float("nan"), float("nan")
+        p, p_min = _exact_spearman_p(xv, yv)
         try:
-            pr, pp = pearsonr(valid["k"], valid["Median_Survival_days"])
+            pr, pp = pearsonr(xv, yv)
         except Exception:
             pr, pp = float("nan"), float("nan")
+
+        underpowered = pd.notna(p_min) and p_min > 0.05
+        significant = (not underpowered) and pd.notna(p) and p < 0.05
+
+        if underpowered:
+            interp = (f"Underpowered by construction: with {len(valid)} groups the "
+                      f"smallest attainable p is {p_min:.3f}, so no correlation "
+                      f"however perfect can reach the 0.05 level. Report rho as "
+                      f"descriptive only.")
+        elif significant and pd.notna(rho) and abs(rho) >= 0.7:
+            interp = "Motor decline strongly predicts lifespan"
+        elif significant and pd.notna(rho) and abs(rho) >= 0.4:
+            interp = "Moderate motor-survival coupling"
+        else:
+            interp = "No significant motor-survival coupling"
 
         rows.append({
             "Genotype":            geno,
             "Sex":                 sex,
             "n_groups":            len(valid),
             "MSCI_Spearman_rho":   round(float(rho), 4) if pd.notna(rho) else float("nan"),
-            "p_Spearman":          round(float(p),   4) if pd.notna(p)   else float("nan"),
+            # 3 significant figures, NOT 4 decimal places: an exact p of
+            # 4.96e-05 rounds to "0.0" at 4dp, and a p-value printed as zero is
+            # the very thing this function was fixed to stop reporting.
+            "p_Spearman":          _sigfig(p),
+            "p_min_attainable":    _sigfig(p_min),
+            "p_method":            "exact permutation" if len(valid) <= 8 else "Monte-Carlo permutation",
             "MSCI_Pearson_r":      round(float(pr),  4) if pd.notna(pr)  else float("nan"),
             "p_Pearson":           round(float(pp),  4) if pd.notna(pp)  else float("nan"),
-            "Significant":         "Yes" if pd.notna(p) and p < 0.05 else "No",
-            "Interpretation": (
-                "Motor decline strongly predicts lifespan"
-                if pd.notna(rho) and abs(rho) >= 0.7 and pd.notna(p) and p < 0.05
-                else "Moderate motor-survival coupling"
-                if pd.notna(rho) and abs(rho) >= 0.4 and pd.notna(p) and p < 0.05
-                else "No significant motor-survival coupling"
-            ),
+            "Significant":         "Yes" if significant else "No",
+            "Interpretation":      interp,
+            "Caveat": ("Ecological correlation between two group-level summaries; "
+                       "not adjusted for survivor bias (see modules/survivor_bias.py)."),
         })
 
     return pd.DataFrame(rows), merged

@@ -255,10 +255,27 @@ def main() -> int:
     print("DroPhenix vs established tools — head-to-head on identical data")
     print("=" * 100)
     print(df.to_string(index=False))
-    n_agree = (df["Agree"] == "yes").sum()
-    n_total = (df["Agree"].isin(["yes", "NO"])).sum()
+    # Reporting convention, stated explicitly because it is easy to get wrong in
+    # a way that flatters the result: EVERY row is counted in the denominator.
+    # An earlier version computed the denominator from rows tagged yes/NO only,
+    # which excluded the "info" rows -- the documented method differences and
+    # unavailable comparators -- by construction. That makes the headline ratio
+    # arithmetically incapable of expressing a disagreement, which is not a
+    # benchmark. The three categories are now reported separately.
+    n_agree = int((df["Agree"] == "yes").sum())
+    n_disagree = int((df["Agree"] == "NO").sum())
+    n_info = int(len(df) - n_agree - n_disagree)
+    n_rows = int(len(df))
     print("-" * 100)
-    print(f"Agreement: {n_agree}/{n_total} metrics match the reference within tolerance.")
+    print(f"Agreement: {n_agree} agree / {n_disagree} disagree / {n_info} "
+          f"method-difference or unavailable, out of {n_rows} comparisons.")
+    if n_info:
+        print("Method-difference and unavailable rows (excluded from agree/disagree, "
+              "listed here in full):")
+        for _, r in df[~df["Agree"].isin(["yes", "NO"])].iterrows():
+            print(f"  - {r['Domain']} / {r['Metric']}: DroPhenix {r['DroPhenix']} vs "
+                  f"{r['Reference tool']} {r['Reference']} ({r['Agree']})")
+    n_total = n_agree + n_disagree
 
     # markdown report
     rep = Path(__file__).resolve().parent / "comparison_report.md"
@@ -268,7 +285,17 @@ def main() -> int:
                  "(Freireich 1963 6-MP trial; PlantGrowth; a known 24 h rhythm; a fixed "
                  "set of effect sizes). Values are reproducible.\n\n")
         fh.write(df.to_markdown(index=False))
-        fh.write(f"\n\n**Agreement: {n_agree}/{n_total} metrics within tolerance.**\n")
+        fh.write(
+            f"\n\n**Agreement: {n_agree} of {n_rows} comparisons agree within tolerance; "
+            f"{n_disagree} disagree; {n_info} are documented method differences or "
+            f"unavailable comparators.**\n\n"
+            "Every row is counted in the denominator. Rows tagged `info` are method "
+            "differences (for example, Breslow versus Efron handling of tied event times, "
+            "where both answers are correct for their respective conventions) or "
+            "comparators that could not be installed in this environment. They are "
+            "reported here rather than excluded, because a benchmark whose denominator "
+            "cannot express a disagreement is not a benchmark.\n"
+        )
     print(f"Report written: {rep}")
     return 0 if n_agree == n_total else 1
 

@@ -25,6 +25,20 @@ Scientific notes:
 
 Calibration of speed REQUIRES px_per_mm (pixels per millimetre). Without it,
 metrics are reported in pixel units (mm columns are NaN).
+
+CLUSTERING CAVEAT (audit S3 finding 3.9)
+-----------------------------------------
+`compare_groups` passes one row per ANIMAL straight to stats_engine.auto_test,
+which treats every animal as an independent observation. Animals from the same
+vial share a food batch, a rearing density and a handling event, so they are
+correlated. The 2026-08 simulation measured what that costs: a naive
+fly-as-independent test rejects 25.9% of the time under a TRUE NULL at
+ICC = 0.10 — a 5.2x inflation of the nominal 5% error rate.
+
+If the input carries a vial identifier, route the comparison through
+`modules/hierarchical.py` instead, or at minimum report the design effect
+DEFF = 1 + (m - 1) * ICC alongside the p-value. The p-values from this helper
+are only valid when each animal really is an independent experimental unit.
 """
 
 from __future__ import annotations
@@ -51,7 +65,20 @@ def track_larva(video_path: str, px_per_mm: Optional[float] = None,
     cap = cv2.VideoCapture(str(video_path))   # default backend for files
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0) or 20.0
+    # Audit S2 finding 2.8: this used to fall back to `or 20.0`, so a container
+    # reporting no frame rate produced speeds wrong by an unknown factor with
+    # nothing in the output saying so. A speed with an invented time base is not
+    # a measurement — refuse it and make the caller supply the true rate.
+    fps_raw = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+    if not np.isfinite(fps_raw) or fps_raw <= 0:
+        cap.release()
+        raise ValueError(
+            f"{video_path}: the container reports no usable frame rate "
+            f"(CAP_PROP_FPS = {fps_raw}). Every speed and duration derived from "
+            f"this video would be scaled by an unknown factor. Pass the true "
+            f"frame rate explicitly rather than assuming one."
+        )
+    fps = fps_raw
     rows = []
     fidx = 0
     try:
@@ -79,6 +106,150 @@ def track_larva(video_path: str, px_per_mm: Optional[float] = None,
     return {"trajectory": traj, "summary": summary, "fps": fps}
 
 
+PAUSE_SPEED_MM_S = 0.1   # absolute immobility threshold; see _trajectory_metrics
+PAUSE_MIN_S      = 0.5   # a pause must last at least this long to be one pause
+
+# Speed-curvature power law (Zago et al. 2016) — see speed_curvature_exponent.
+POWER_LAW_CUTOFF_HZ = 0.07   # the cut-off used in the source paper
+
+
+def _tls_slope(x: np.ndarray, y: np.ndarray) -> float:
+    """
+    Total-least-squares (orthogonal) regression slope of y on x.
+
+    Zago et al. estimate the power-law exponent by "least-squares
+    orthogonal-regression of log10 A(t) versus log10 C(t)", NOT by ordinary
+    least squares. The distinction matters: both axes are estimated from the
+    same noisy trajectory, so OLS is attenuated toward zero by regression
+    dilution. This is the first principal component's slope.
+    """
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    x = x - x.mean(); y = y - y.mean()
+    sxx = float((x * x).mean()); syy = float((y * y).mean()); sxy = float((x * y).mean())
+    if abs(sxy) < 1e-300:
+        return float("nan")
+    return float((syy - sxx + np.sqrt((syy - sxx) ** 2 + 4 * sxy ** 2)) / (2 * sxy))
+
+
+def speed_curvature_exponent(x_mm, y_mm, fps: float,
+                             cutoff_hz: float = POWER_LAW_CUTOFF_HZ) -> dict:
+    """
+    Estimate the speed-curvature power-law exponent of a larval trajectory.
+
+    Crawling and reaching movements across many species obey a power law
+    relating angular speed A to path curvature C:
+
+        A(t) = k * C(t) ** beta
+
+    In human drawing beta is close to 2/3 (the "two-thirds power law"). Zago,
+    Lacquaniti & Gomez-Marin (2016) "The speed-curvature power law in
+    Drosophila larval locomotion", Biol Lett 12:20160597
+    (doi:10.1098/rsbl.2016.0597) showed larvae obey it with beta nearer 3/4,
+    which they attribute to dynamic effects on top of the kinematic constraint.
+
+    This is the one larval read-out in DroPhenix with a QUANTITATIVE published
+    reference value rather than only a direction, which is why it is worth
+    computing: it is an external check that the trajectory differentiation is
+    right, not just self-consistent.
+
+    Method follows the paper exactly:
+      1. positions in mm, sampled at `fps`
+      2. second-order zero-phase Butterworth low-pass at `cutoff_hz`
+         (filtfilt, so no phase lag)
+      3. cubic-spline interpolation; first and second derivatives taken
+         analytically from the spline
+      4. standard differential geometry for a planar curve:
+             v = hypot(x', y')
+             C = |x' y'' - y' x''| / v**3        (curvature)
+             A = |x' y'' - y' x''| / v**2        (angular speed, = C * v)
+      5. total-least-squares regression of log10 A on log10 C
+
+    Returns dict: beta, r2, k, n_points, cutoff_hz, fps.
+    beta is NaN when the trajectory is too short or degenerate.
+
+    VALIDATED against the authors' own raw data in
+    validation/validate_larval_powerlaw.py: 123 real larvae across three
+    behavioural conditions reproduce their published medians and IQRs.
+    """
+    from scipy.signal import butter, filtfilt
+    from scipy.interpolate import CubicSpline
+
+    base = {"beta": float("nan"), "r2": float("nan"), "k": float("nan"),
+            "n_points": 0, "cutoff_hz": float(cutoff_hz), "fps": float(fps)}
+
+    x = np.asarray(x_mm, float).ravel()
+    y = np.asarray(y_mm, float).ravel()
+    ok = np.isfinite(x) & np.isfinite(y)
+    x, y = x[ok], y[ok]
+    if len(x) < 60 or not np.isfinite(fps) or fps <= 0:
+        return base
+    nyq = fps / 2.0
+    if not (0 < cutoff_hz < nyq):
+        return base
+
+    b, a = butter(2, cutoff_hz / nyq, btype="low")
+    # filtfilt needs more samples than its padlen; guard rather than raise.
+    if len(x) <= 3 * max(len(a), len(b)):
+        return base
+    x = filtfilt(b, a, x)
+    y = filtfilt(b, a, y)
+
+    t = np.arange(len(x)) / float(fps)
+    cx, cy = CubicSpline(t, x), CubicSpline(t, y)
+    dx, dy = cx(t, 1), cy(t, 1)
+    ddx, ddy = cx(t, 2), cy(t, 2)
+    v = np.hypot(dx, dy)
+    cross = np.abs(dx * ddy - dy * ddx)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        C = cross / v ** 3
+        A = cross / v ** 2
+
+    m = np.isfinite(C) & np.isfinite(A) & (C > 0) & (A > 0)
+    if int(m.sum()) < 50:
+        return {**base, "n_points": int(m.sum())}
+
+    lc, la = np.log10(C[m]), np.log10(A[m])
+    beta = _tls_slope(lc, la)
+    r = float(np.corrcoef(lc, la)[0, 1])
+    k = float(10.0 ** (la.mean() - beta * lc.mean())) if np.isfinite(beta) else float("nan")
+    return {"beta": beta, "r2": r ** 2, "k": k, "n_points": int(m.sum()),
+            "cutoff_hz": float(cutoff_hz), "fps": float(fps)}
+
+
+def _count_pause_episodes(inst_speed: np.ndarray, dt: np.ndarray,
+                          threshold: float, min_s: float) -> tuple:
+    """
+    Count RUNS of consecutive below-threshold frames lasting >= min_s, and the
+    total time paused. Returns (n_episodes, total_paused_s).
+
+    Audit S2 finding 2.7: the previous implementation returned
+    `np.sum(inst_speed < 0.1 * median(inst_speed))`, which
+      (a) counted FRAMES, not episodes — one continuous 5-second pause at 20 fps
+          scored 99 — making the metric frame-rate dependent, and
+      (b) used a threshold relative to that same animal's median speed, so a
+          larva crawling twenty times slower reported the identical pause count
+          as a fast one. A self-referential threshold cannot express absolute
+          immobility, which is the whole point of the measure.
+    """
+    below = inst_speed < threshold
+    n_ep, total = 0, 0.0
+    i = 0
+    while i < len(below):
+        if not below[i]:
+            i += 1
+            continue
+        j = i
+        run = 0.0
+        while j < len(below) and below[j]:
+            run += float(dt[j]) if j < len(dt) else 0.0
+            j += 1
+        if run >= min_s:
+            n_ep += 1
+            total += run
+        i = j
+    return n_ep, total
+
+
 def _trajectory_metrics(traj: pd.DataFrame, fps: float,
                         px_per_mm: Optional[float]) -> dict:
     """Locomotion metrics from a centroid trajectory."""
@@ -93,7 +264,9 @@ def _trajectory_metrics(traj: pd.DataFrame, fps: float,
     dur = float(t[-1] - t[0]) if len(t) > 1 else np.nan
     with np.errstate(divide="ignore", invalid="ignore"):
         inst_speed_px = step_px / dt
-    inst_speed_px = inst_speed_px[np.isfinite(inst_speed_px)]
+    finite = np.isfinite(inst_speed_px)
+    inst_speed_px = inst_speed_px[finite]
+    dt_ok = dt[finite]
     scale = (1.0 / px_per_mm) if px_per_mm else np.nan   # mm per px
     mean_speed_px = path_px / dur if dur and dur > 0 else np.nan
     out = {
@@ -103,16 +276,32 @@ def _trajectory_metrics(traj: pd.DataFrame, fps: float,
         "displacement_px": round(disp_px, 1),
         "mean_speed_px_s": round(mean_speed_px, 2) if np.isfinite(mean_speed_px) else np.nan,
         "tortuosity": round(path_px / disp_px, 3) if disp_px > 0 else np.nan,
-        "n_pauses": int(np.sum(inst_speed_px < 0.1 * (np.median(inst_speed_px) + 1e-9))),
     }
     if px_per_mm:
         out["path_length_mm"] = round(path_px * scale, 3)
         out["displacement_mm"] = round(disp_px * scale, 3)
         out["mean_speed_mm_s"] = round(mean_speed_px * scale, 3) if np.isfinite(mean_speed_px) else np.nan
         out["max_speed_mm_s"] = round(float(np.max(inst_speed_px)) * scale, 3) if len(inst_speed_px) else np.nan
+        # Pauses need an ABSOLUTE speed threshold, which needs a spatial
+        # calibration. Without px_per_mm the metric is not defined, and is
+        # reported as NaN rather than computed against a self-referential
+        # threshold that cannot be compared across animals.
+        n_ep, paused_s = _count_pause_episodes(inst_speed_px * scale, dt_ok,
+                                               PAUSE_SPEED_MM_S, PAUSE_MIN_S)
+        out["n_pauses"] = int(n_ep)
+        out["total_paused_s"] = round(float(paused_s), 2)
+        out["pause_threshold_mm_s"] = PAUSE_SPEED_MM_S
+        out["pause_min_s"] = PAUSE_MIN_S
     else:
         for k in ("path_length_mm", "displacement_mm", "mean_speed_mm_s", "max_speed_mm_s"):
             out[k] = np.nan
+        out["n_pauses"] = np.nan
+        out["total_paused_s"] = np.nan
+        out["pause_threshold_mm_s"] = np.nan
+        out["pause_min_s"] = np.nan
+        out["pause_note"] = ("n_pauses requires px_per_mm: a pause is defined by an "
+                             "absolute speed threshold in mm/s, not relative to this "
+                             "animal's own median speed.")
     return out
 
 

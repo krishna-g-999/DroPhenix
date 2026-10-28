@@ -2,10 +2,34 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "drophenix-8510",
+      "runtimeExecutable": "D:/DroPhenix/DroPhenix-main/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "D:/DroPhenix/DroPhenix-main/app.py",
+        "--server.port",
+        "8510",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8510
+    },
+    {
       "name": "drophenix",
-      "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "streamlit", "run", "app.py", "--server.port", "8501", "--server.headless", "true"],
-      "port": 8501
+      "runtimeExecutable": "D:/DroPhenix/DroPhenix-main/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "D:/DroPhenix/DroPhenix-main/app.py",
+        "--server.port",
+        "8510",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8510
     }
   ]
 }

@@ -48,6 +48,7 @@ WT_LABELS      = {"oregon", "canton-s", "w1118", "wt", "wild-type",
                   "wildtype", "control", "w[1118]", "cs", "ore-r"}
 VEHICLE_LABELS = {"untreated", "vehicle", "dmso", "control", "pbs"}
 MIN_REPS_CRI   = 2
+PI_SCALE_SPAN  = 200.0   # PI is defined on [-100, +100]; see compute_sdq
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -66,8 +67,16 @@ def _is_wt(label: str) -> bool:
 def _is_vehicle(label: str) -> bool:
     return str(label).strip().lower() in VEHICLE_LABELS
 
-def _normalise_pi(val: float) -> float:
-    """Normalise PI [-100, 100] to [0, 1]."""
+def normalise_pi(val: float) -> float:
+    """
+    Normalise PI [-100, 100] to [0, 1] on its own absolute scale.
+
+    Used by multi_assay and translational_score so that a normalised score means
+    the same thing in every dataset. (Previously this was a private, unused
+    helper `_normalise_pi`; those modules each min-max normalised within the
+    submitted table instead, which made their tier labels depend on which other
+    groups shared the file.)
+    """
     return float(np.clip((val + 100.0) / 200.0, 0.0, 1.0))
 
 def _resolve_col(df: pd.DataFrame, candidates: List[str], default: str = "") -> str:
@@ -79,8 +88,20 @@ def _resolve_col(df: pd.DataFrame, candidates: List[str], default: str = "") -> 
 
 def _rescue_fraction(treated: float, disease: float, healthy: float) -> float:
     """
-    Fractional rescue in [−0.5, 1.5]:
-    f = (treated − disease) / (healthy − disease)
+    Fractional rescue, clipped to [−0.5, 1.5]:
+        f = (treated − disease) / (healthy − disease)
+
+    f = 0 is "no better than the untreated disease genotype", f = 1 is "fully
+    restored to wild-type", f > 1 is over-correction past wild-type.
+
+    THE CLIP IS ASYMMETRIC AND IT BIASES BOTH TAILS (audit S3 finding 3.7).
+    Over-rescue is capped at +150% while worse-than-disease is capped at −50%,
+    so an extreme result in either direction is pulled toward the middle and the
+    censoring is invisible in the output. The bounds exist to stop a near-zero
+    disease-to-wildtype gap producing a meaningless four-figure percentage; when
+    that gap is small the whole ratio is unstable and CRI should be read as
+    ordinal, not as a percentage. Report the raw component deltas alongside CRI
+    if the exact magnitude matters.
     """
     denom = healthy - disease
     if pd.isna(denom) or abs(denom) < 1e-6:
@@ -247,10 +268,26 @@ def compute_sdq(
     vehicle_treatment: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    SDQ = |PI_Male − PI_Female| / max(|PI_Male|, |PI_Female|, ε)
-    0 = equal; 1 = complete dimorphism.
+    SDQ = |PI_Male − PI_Female| / 200      (PI spans 200 points, [−100, +100])
 
-    Bug fix: direction ternary previously missing closing ")".
+    0 = equal; 1 = the largest difference the scale allows (one sex at +100,
+    the other at −100). SDQ is genuinely on [0, 1].
+
+    SCALE FIX (audit S3 finding 3.1). The previous denominator was
+    max(|PI_M|, |PI_F|, eps), which was NOT bounded by 1 — its range is [0, 2] —
+    and it collapsed near PI = 0 because PI is a signed index that crosses zero.
+    Measured consequences of the old definition:
+
+        PI_M = 100, PI_F =  50  ->  SDQ 0.50   "Strong dimorphism"
+        PI_M =   1, PI_F =  -1  ->  SDQ 2.00   "Strong dimorphism"
+        PI_M = 0.5, PI_F = -0.5 ->  SDQ 2.00   "Strong dimorphism"
+
+    i.e. a 2-point difference on a 200-point scale scored four times higher than
+    a 50-point difference. Normalising by the scale rather than by the values
+    is stable everywhere, including at PI = 0.
+
+    The label thresholds below are re-tuned to the new scale: an SDQ of 0.25 is
+    now a 50-point PI gap between the sexes, which is a large biological effect.
     """
     if pi_summary is None or pi_summary.empty:
         return pd.DataFrame()
@@ -272,9 +309,7 @@ def compute_sdq(
 
         pi_m  = float(male.mean())
         pi_f  = float(female.mean())
-        eps   = 1e-6
-        denom = max(abs(pi_m), abs(pi_f), eps)
-        sdq   = abs(pi_m - pi_f) / denom
+        sdq   = abs(pi_m - pi_f) / PI_SCALE_SPAN
 
         # FIX: closing ")" was missing in previous version
         direction = (
@@ -301,11 +336,19 @@ def compute_sdq(
 
 
 def _sdq_label(sdq: float) -> str:
+    """
+    Labels on the [0, 1] scale where SDQ = |dPI| / 200, so the cut-offs are:
+      0.25 -> a 50-point PI gap between the sexes
+      0.10 -> a 20-point gap
+      0.05 -> a 10-point gap
+    These are descriptive bands, not tested claims — pair them with
+    stats_engine.sdq_permutation_test for a p-value.
+    """
     if pd.isna(sdq):  return "Unknown"
-    if sdq >= 0.5:    return "Strong dimorphism"
-    if sdq >= 0.25:   return "Moderate dimorphism"
-    if sdq >= 0.1:    return "Mild dimorphism"
-    return                   "No significant dimorphism"
+    if sdq >= 0.25:   return "Strong dimorphism (>=50 PI points)"
+    if sdq >= 0.10:   return "Moderate dimorphism (>=20 PI points)"
+    if sdq >= 0.05:   return "Mild dimorphism (>=10 PI points)"
+    return                   "No appreciable dimorphism (<10 PI points)"
 
 
 # ─── TSW — Therapeutic Selectivity Window ─────────────────────────────────────
@@ -340,51 +383,94 @@ def compute_tsw(
     if vehicle_treatment is None:
         return pd.DataFrame()
 
+    sem_col = _resolve_col(pi_summary, ["PI_sem", "PI_SEM", "pi_sem"], "")
+
+    def _sem_of(mask) -> float:
+        """SEM of a group mean, when the summary carries one."""
+        if not sem_col:
+            return np.nan
+        v = pd.to_numeric(pi_summary.loc[mask, sem_col], errors="coerce").dropna()
+        return float(v.mean()) if len(v) else np.nan
+
     rows = []
     for sex in pi_summary["Sex"].dropna().unique():
         for trt in pi_summary["Treatment"].dropna().unique():
             if trt == vehicle_treatment:
                 continue
 
-            wt_veh = pi_summary.loc[
-                (pi_summary["Genotype"] == wt_genotype) &
-                (pi_summary["Treatment"] == vehicle_treatment) &
-                (pi_summary["Sex"] == sex), pi_col]
-            wt_trt = pi_summary.loc[
-                (pi_summary["Genotype"] == wt_genotype) &
-                (pi_summary["Treatment"] == trt) &
-                (pi_summary["Sex"] == sex), pi_col]
+            m_wt_veh = ((pi_summary["Genotype"] == wt_genotype) &
+                        (pi_summary["Treatment"] == vehicle_treatment) &
+                        (pi_summary["Sex"] == sex))
+            m_wt_trt = ((pi_summary["Genotype"] == wt_genotype) &
+                        (pi_summary["Treatment"] == trt) &
+                        (pi_summary["Sex"] == sex))
+            wt_veh = pi_summary.loc[m_wt_veh, pi_col]
+            wt_trt = pi_summary.loc[m_wt_trt, pi_col]
             if wt_veh.empty or wt_trt.empty:
                 continue
 
             delta_wt = float(wt_trt.mean()) - float(wt_veh.mean())
+            se_wt = float(np.sqrt(_sem_of(m_wt_trt) ** 2 + _sem_of(m_wt_veh) ** 2))
 
             for geno in pi_summary["Genotype"].dropna().unique():
                 if geno == wt_genotype:
                     continue
-                dis_veh = pi_summary.loc[
-                    (pi_summary["Genotype"] == geno) &
-                    (pi_summary["Treatment"] == vehicle_treatment) &
-                    (pi_summary["Sex"] == sex), pi_col]
-                dis_trt = pi_summary.loc[
-                    (pi_summary["Genotype"] == geno) &
-                    (pi_summary["Treatment"] == trt) &
-                    (pi_summary["Sex"] == sex), pi_col]
+                m_d_veh = ((pi_summary["Genotype"] == geno) &
+                           (pi_summary["Treatment"] == vehicle_treatment) &
+                           (pi_summary["Sex"] == sex))
+                m_d_trt = ((pi_summary["Genotype"] == geno) &
+                           (pi_summary["Treatment"] == trt) &
+                           (pi_summary["Sex"] == sex))
+                dis_veh = pi_summary.loc[m_d_veh, pi_col]
+                dis_trt = pi_summary.loc[m_d_trt, pi_col]
                 if dis_veh.empty or dis_trt.empty:
                     continue
 
                 delta_dis = float(dis_trt.mean()) - float(dis_veh.mean())
+                se_dis = float(np.sqrt(_sem_of(m_d_trt) ** 2 + _sem_of(m_d_veh) ** 2))
+
                 denom = abs(delta_wt) if abs(delta_wt) > 1e-6 else np.nan
                 tsw   = _safe_div(delta_dis, denom, fallback=np.nan)
 
+                # ── Stability of the ratio (audit S3 finding 3.2) ────────────
+                # TSW divides by |dPI_WT|, which is near zero exactly when the
+                # drug is MOST selective — the desirable case. A ratio with a
+                # denominator that is not distinguishable from zero is
+                # heavy-tailed (Cauchy-like) and must not be read as a number.
+                stable = (pd.notna(se_wt) and se_wt > 0
+                          and abs(delta_wt) >= 2.0 * se_wt)
+                if pd.isna(se_wt):
+                    stable_note = ("WT effect precision unknown (no PI_sem in the "
+                                   "summary); ratio stability not assessed")
+                elif stable:
+                    stable_note = "WT effect is distinguishable from zero"
+                else:
+                    stable_note = (f"UNSTABLE: |dPI_WT| = {abs(delta_wt):.2f} is within "
+                                   f"2 SE ({2 * se_wt:.2f}) of zero, so the ratio is not "
+                                   f"interpretable. Use Delta_difference instead.")
+
+                # The interaction contrast: always defined, no division, and it
+                # is the quantity a reviewer will ask for.
+                diff = delta_dis - delta_wt
+                se_diff = float(np.sqrt(se_dis ** 2 + se_wt ** 2))
+
                 rows.append({
-                    "Treatment":       trt,
-                    "Sex":             sex,
-                    "Genotype":        geno,
+                    "Treatment":        trt,
+                    "Sex":              sex,
+                    "Genotype":         geno,
                     "Delta_PI_disease": round(delta_dis, 2),
+                    "Delta_PI_disease_se": round(se_dis, 2) if pd.notna(se_dis) else np.nan,
                     "Delta_PI_WT":      round(delta_wt, 2),
+                    "Delta_PI_WT_se":   round(se_wt, 2) if pd.notna(se_wt) else np.nan,
+                    "Delta_difference": round(diff, 2),
+                    "Delta_difference_se": round(se_diff, 2) if pd.notna(se_diff) else np.nan,
+                    "Delta_difference_CI_lower": round(diff - 1.96 * se_diff, 2) if pd.notna(se_diff) else np.nan,
+                    "Delta_difference_CI_upper": round(diff + 1.96 * se_diff, 2) if pd.notna(se_diff) else np.nan,
                     "TSW":              round(float(tsw), 3) if pd.notna(tsw) else np.nan,
-                    "TSW_label":        _tsw_label(tsw),
+                    "TSW_stable":       bool(stable) if pd.notna(se_wt) else None,
+                    "TSW_label":        (_tsw_label(tsw) if (stable or pd.isna(se_wt))
+                                         else "Not interpretable (unstable denominator)"),
+                    "TSW_note":         stable_note,
                 })
 
     return (pd.DataFrame(rows)

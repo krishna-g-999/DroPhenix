@@ -104,6 +104,61 @@ def main() -> int:
     # ── Report ────────────────────────────────────────────────────────────────
     print("=" * 80)
     print("DroPhenix ymaze.py validation (algorithmic + published de Bivort/Kim anchors)")
+    # ── Handedness confound in the two derived scores (2026-09-07) ───────────
+    # The established Drosophila Y-maze read-outs are turn bias and switchiness
+    # (Buchanan, Kain & de Bivort 2015, PNAS 112:6700). Under this module's
+    # geometry an alternation triad is two consecutive turns in the SAME
+    # direction, so for i.i.d. turns with P(right) = b a MEMORYLESS fly
+    # alternates at b^2 + (1-b)^2 and switches at 2b(1-b). Both raw scores
+    # therefore move with handedness alone. The corrected columns must sit at
+    # zero for memoryless flies at EVERY bias, and must still detect a fly with
+    # genuine sequential dependence regardless of its handedness.
+    _rng = np.random.default_rng(1)
+
+    def _memoryless(b, n_fly=120, n_turn=60):
+        alt, sw = [], []
+        for i in range(n_fly):
+            turns = _rng.choice(["R", "L"], size=n_turn, p=[b, 1 - b])
+            arms = Y.turns_to_arm_sequence(turns)
+            d = pd.DataFrame({"Genotype": "WT", "Treatment": "V", "Sex": "M",
+                              "FlyID": f"f{i}", "Order": range(len(arms)), "Arm": arms})
+            r = Y.per_fly_metrics(Y.load_ymaze(d)).iloc[0]
+            alt.append(r["alternation_vs_chance"]); sw.append(r["switch_rate_vs_chance"])
+        return float(np.mean(alt)), float(np.mean(sw))
+
+    raw_spread = []
+    for b in (0.5, 0.7, 0.9):
+        a_res, s_res = _memoryless(b)
+        _check(f"memoryless b={b}: alternation_vs_chance ~ 0", a_res, 0.0, 3.0, results)
+        _check(f"memoryless b={b}: switch_rate_vs_chance ~ 0", s_res, 0.0, 0.03, results)
+        turns = _rng.choice(["R", "L"], size=2000, p=[b, 1 - b])
+        arms = Y.turns_to_arm_sequence(turns)
+        d = pd.DataFrame({"Genotype": "WT", "Treatment": "V", "Sex": "M", "FlyID": "x",
+                          "Order": range(len(arms)), "Arm": arms})
+        raw_spread.append(float(Y.per_fly_metrics(Y.load_ymaze(d)).iloc[0]["alternation_pct"]))
+    results.append(("raw alternation_pct DOES move with handedness (the confound)",
+                    ">25 pts", f"{max(raw_spread)-min(raw_spread):.0f} pts",
+                    (max(raw_spread) - min(raw_spread)) > 25))
+
+    def _switchy(b, p_repeat=0.2, n_fly=120, n_turn=60):
+        out = []
+        for i in range(n_fly):
+            t = ["R"]
+            for _ in range(n_turn - 1):
+                t.append(t[-1] if _rng.random() < p_repeat else ("L" if t[-1] == "R" else "R"))
+            arms = Y.turns_to_arm_sequence(t)
+            d = pd.DataFrame({"Genotype": "WT", "Treatment": "V", "Sex": "M",
+                              "FlyID": f"f{i}", "Order": range(len(arms)), "Arm": arms})
+            out.append(Y.per_fly_metrics(Y.load_ymaze(d)).iloc[0]["switch_rate_vs_chance"])
+        return float(np.mean(out))
+
+    s_unbiased, s_handed = _switchy(0.5), _switchy(0.9)
+    results.append(("real sequential dependence IS detected (unbiased fly)",
+                    ">0.2", round(s_unbiased, 3), s_unbiased > 0.2))
+    results.append(("...and equally in a strongly handed fly",
+                    "same +-0.05", f"{s_unbiased:.3f} vs {s_handed:.3f}",
+                    abs(s_unbiased - s_handed) < 0.05))
+
     print("=" * 80)
     print(f"{'Check':<46}{'Expected':>14}{'Engine':>12}{'Pass':>7}")
     print("-" * 80)

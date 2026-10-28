@@ -1,0 +1,5 @@
+video,Genotype,Treatment,Sex,Age,TimeOfDay,ExperimentID,n_per_vial
+IMG_6030.MOV,GMR-GAL4;UAS-hH,Withaferin,Female,3,10:30,LAB2026_03,20
+IMG_6034.MOV,GMR-GAL4;UAS-hH,Vehicle,Female,3,10:45,LAB2026_03,20
+IMG_6042.MOV,Oregon-WT,Vehicle,Female,3,11:00,LAB2026_03,20
+IMG_6046.MOV,Oregon-WT,Withaferin,Female,3,11:15,LAB2026_03,20

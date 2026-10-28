@@ -15,6 +15,7 @@ Run:  python validation/validate_stats.py   (exit 0 = all passed)
 import sys
 from pathlib import Path
 
+import warnings
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -70,14 +71,87 @@ def main() -> int:
     adj2 = SE.bh_correction(np.array([0.001, 0.5, 0.5, 0.5]))
     _check("BH-FDR smallest (0.001*4=0.004)", adj2[0], 0.004, 1e-9, results)
 
-    # ── auto_test routing: 3 normal equal-variance groups -> parametric ───────
+    # ── Test choice is A PRIORI, not read off the data (audit S3 finding 3.4) ─
+    # PlantGrowth is 3 normal, equal-variance groups, so the old data-dependent
+    # router sent it to ANOVA. That is no longer what decides: the default is the
+    # rank test, chosen in advance, and a parametric analysis is available only
+    # by declaring it. These checks pin the POLICY, not the branch.
     res = SE.auto_test(data)
-    routed_param = "ANOVA" in res["method"]
-    results.append(("auto_test routes PlantGrowth to ANOVA", "ANOVA path", res["method"], routed_param))
+    results.append(("default is the rank test, chosen a priori",
+                    "Kruskal-Wallis", res["method"][:15],
+                    res["method"].startswith("Kruskal-Wallis")))
+    results.append(("...and the choice is recorded as a priori",
+                    "a priori (rank)", res["test_choice"],
+                    res["test_choice"] == "a priori (rank)"))
+    res_p = SE.auto_test(data, method="parametric")
+    results.append(("declared parametric still gives the published ANOVA path",
+                    "ANOVA path", res_p["method"][:15], "ANOVA" in res_p["method"]))
+    _check("declared parametric reproduces published F (=4.846)",
+           res_p["main_result"]["F_statistic"], 4.846, 0.01, results)
+    # Normality/Levene are still computed and reported -- they just no longer route.
+    results.append(("Shapiro/Levene still reported as diagnostics", "both present",
+                    f"{len(res['normality'])} rows, levene={'p_value' in res['levene']}",
+                    len(res["normality"]) == 3 and "p_value" in res["levene"]))
+    with warnings.catch_warnings(record=True) as _w:
+        warnings.simplefilter("always")
+        SE.auto_test(data, method="auto")
+        results.append(("method='auto' is deprecated and warns", "warns",
+                        "warned" if _w else "SILENT", bool(_w)))
 
     # ── Report ────────────────────────────────────────────────────────────────
     print("=" * 78)
     print("DroPhenix stats_engine.py validation vs published PlantGrowth (Dobson 1983)")
+    # ── 2026-09-07 cross-checks against reference implementations ────────────
+    import itertools as _it
+    from math import comb as _comb
+    from scipy import stats as _sps
+
+    _rng = np.random.default_rng(0)
+
+    # rank_biserial_r against the Kerby (2014) definition r = f - u computed
+    # from first principles over every (a, b) pair.
+    _worst = 0.0
+    for _ in range(200):
+        _a = _rng.normal(0, 1, int(_rng.integers(3, 9)))
+        _b = _rng.normal(0.5, 1, int(_rng.integers(3, 9)))
+        _pairs = [(x, y) for x in _a for y in _b]
+        _f = np.mean([x > y for x, y in _pairs])
+        _u = np.mean([x < y for x, y in _pairs])
+        _worst = max(_worst, abs(SE.rank_biserial_r(_a, _b) - (_f - _u)))
+    _check("rank_biserial_r == Kerby (2014) f - u", _worst, 0.0, 1e-12, results)
+    _hi, _lo = np.array([10., 11, 12, 13]), np.array([1., 2, 3, 4])
+    results.append(("rank_biserial_r sign agrees with Cohen's d", "both +",
+                    f"r={SE.rank_biserial_r(_hi,_lo):+.1f} d={SE.cohens_d(_hi,_lo):+.1f}",
+                    SE.rank_biserial_r(_hi, _lo) > 0 and SE.cohens_d(_hi, _lo) > 0))
+
+    # permutation_test_means against scipy's EXACT enumeration.
+    _worst = 0.0
+    for _ in range(60):
+        _a = _rng.normal(0, 1, int(_rng.integers(3, 8)))
+        _b = _rng.normal(0.6, 1, int(_rng.integers(3, 8)))
+        _mine = SE.permutation_test_means(_a, _b, n_perm=10 ** 9)["p_value"]
+        _ref = _sps.permutation_test(
+            (_a, _b), lambda x, y: np.mean(x) - np.mean(y),
+            permutation_type="independent", alternative="two-sided",
+            n_resamples=np.inf).pvalue
+        _worst = max(_worst, abs(_mine - _ref))
+    _check("permutation p == scipy.stats.permutation_test (exact)", _worst, 0.0, 1e-12, results)
+
+    # min_attainable_p against brute force on the most extreme possible data.
+    _bad = []
+    for _n1, _n2 in [(3, 3), (3, 4), (4, 4), (5, 5), (4, 6)]:
+        _brute = _sps.mannwhitneyu(np.arange(_n1) + 100.0, np.arange(_n2) * 1.0,
+                                   alternative="two-sided").pvalue
+        if abs(_brute - SE.min_attainable_p(_n1, _n2)) > 1e-12:
+            _bad.append((_n1, _n2))
+    results.append(("min_attainable_p == brute-force MWU floor (5 designs)",
+                    "all match", _bad or "all match", not _bad))
+    _check("3-vial design floor is 0.100", SE.min_attainable_p(3, 3), 0.1, 1e-12, results)
+    _sig = SE.auto_test({"A": np.array([90., 92, 95]),
+                         "B": np.array([-90., -92, -95])})["main_result"]["Significant"]
+    results.append(("underpowered design is labelled, not called 'ns'",
+                    "underpowered by design", _sig, _sig == "underpowered by design"))
+
     print("=" * 78)
     print(f"{'Check':<44}{'Expected':>14}{'Engine':>12}{'Pass':>7}")
     print("-" * 78)

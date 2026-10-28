@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DroPhenix  |  requirements-validation.txt
+#
+# EXTRA packages needed ONLY to run validation/ and the cross-package comparison
+# study. The Streamlit application itself does NOT import any of these, so they
+# are deliberately kept OUT of requirements.txt — a deployment that only serves
+# the app should not have to install them.
+#
+# Install on top of the main requirements:
+#     pip install -r requirements.txt
+#     pip install -r requirements-validation.txt
+#
+# Then:
+#     python validation/run_all.py
+#     python validation/comparison_study.py
+#
+# Every package here is an INDEPENDENT REFERENCE IMPLEMENTATION. The validation
+# suite exists to check DroPhenix's own numbers against software written by
+# other people, so these are not interchangeable with the modules they check.
+# Where one is missing, the corresponding comparison is SKIPPED and reported as
+# skipped — it is never silently treated as a pass.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Survival analysis reference ──────────────────────────────────────────────
+# validation/comparison_study.py checks Kaplan-Meier estimates, log-rank tests
+# and Cox proportional-hazards fits from modules/survival.py against lifelines.
+lifelines>=0.27.0,<1.0.0
+
+# ── Periodogram / rhythm references ──────────────────────────────────────────
+# Lomb-Scargle periodograms, used to cross-check the circadian period and
+# amplitude machinery in modules/circadian_climbing.py and modules/dams.py.
+#   validation/validate_circadian_climbing.py
+#   validation/comparison_study.py
+astropy>=5.3.0
+
+# Continuous-wavelet rhythm analysis (Monetti/Granada pyBOAT), an independent
+# check on the DAMS chi-square periodogram in modules/dams.py.
+#   validation/comparison_study.py
+pyboat>=0.9.0
+
+# ── Already in requirements.txt, listed here so this file documents the full
+#    validation dependency set:
+#      numpy, pandas, scipy, statsmodels, matplotlib, pingouin
+# ─────────────────────────────────────────────────────────────────────────────

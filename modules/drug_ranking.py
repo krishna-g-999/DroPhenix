@@ -39,6 +39,22 @@ Statistical / actuarial approach
 
 All pooling math is validated against statsmodels.stats.meta_analysis in
 validation/validate_drug_ranking.py.
+
+KNOWN LIMITATION — small-k confidence intervals
+-----------------------------------------------
+The DerSimonian-Laird interval uses a normal 1.96 multiplier on the
+random-effects SE. That interval is known to UNDERCOVER when the number of
+pooled units k is small (IntHout, Ioannidis & Borm 2014, BMC Med Res Methodol
+14:25), which is the usual case here: a compound is typically tested in 2-4
+strains. The Hartung-Knapp-Sidik-Jonkman adjustment (a t multiplier on df = k-1
+with a variance-corrected SE) is the recommended interval in that regime and is
+what `metafor` would apply. It is NOT implemented here; the reported CIs should
+be read as somewhat too narrow when n_strata is below about 5, and that is
+stated rather than hidden. See docs/MODULE_AUDIT_2026-09.md finding 3.8.
+
+Note also that `drug_ranking.hedges_g(control, treated)` and
+`stats_engine.hedges_g(a, b)` take their arguments in OPPOSITE orders. Both are
+internally consistent and correctly called; do not mix them up.
 """
 
 from __future__ import annotations
@@ -294,6 +310,14 @@ def rank_compounds(data: Dict[str, pd.DataFrame], vehicle: str = "Vehicle",
                 # fold weights in by inflating variance inversely (lower weight -> higher var)
                 var = var / np.clip(wmul, 1e-9, None)
             pooled = inverse_variance_pool(g, var)
+            # Heterogeneity ACROSS ASSAYS is reported here, not only across
+            # strains (audit S3 finding 3.8). Climbing, lifespan, Y-maze and
+            # circadian period measure different constructs, so a fixed-effect
+            # composite assumes they share one underlying effect — the
+            # assumption most likely to fail, and previously the one place I2
+            # was not shown. A high I2_assay_pct means the assays disagree and
+            # the single Therapeutic_Score is hiding that; read
+            # Score_equal_assay and the per-assay rows instead.
             comp_rows.append({
                 "drug": drug, "n_assays": int(len(sub)),
                 "assays": ", ".join(sorted(sub["assay"])),
@@ -303,6 +327,11 @@ def rank_compounds(data: Dict[str, pd.DataFrame], vehicle: str = "Vehicle",
                 "ci_lo": round(pooled["fixed"] - 1.96 * pooled["se_fixed"], 4),
                 "ci_hi": round(pooled["fixed"] + 1.96 * pooled["se_fixed"], 4),
                 "z": round(pooled["fixed"] / pooled["se_fixed"], 3) if pooled["se_fixed"] > 0 else np.nan,
+                "Q_assay": round(pooled.get("Q", np.nan), 3),
+                "I2_assay_pct": round(pooled.get("I2", np.nan), 1),
+                "tau2_assay": round(pooled.get("tau2", np.nan), 4),
+                "assays_consistent": (pooled.get("I2", 0.0) < 50.0
+                                      if pd.notna(pooled.get("I2", np.nan)) else None),
                 # Secondary: each assay counts equally (mean of per-assay g),
                 # so no single low-noise assay dominates the score.
                 "Score_equal_assay": round(float(np.mean(g)), 4),

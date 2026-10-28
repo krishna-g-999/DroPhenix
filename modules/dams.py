@@ -108,6 +108,11 @@ def load_dams(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(
             "Unrecognised DAMS format. Provide long-format columns "
             "Genotype, Treatment, Sex, FlyID, Time_min, Activity.")
+    # Preserve the light channel when the caller has one: it is the only way to
+    # place ZT0 at lights-on rather than at the first row of the file.
+    for extra in ("Light", "Monitor", "Channel"):
+        if extra in df.columns:
+            out[extra] = df[extra].to_numpy()
     out = out.dropna(subset=["Time_min"]).sort_values(
         ["Genotype", "Treatment", "Sex", "FlyID", "Time_min"]).reset_index(drop=True)
     return out
@@ -152,19 +157,76 @@ def _zero_run_bouts(activity: np.ndarray, bin_min: float, sleep_min: float) -> L
     return bouts
 
 
+def _latency_per_cycle(zt_abs: np.ndarray, sleep_mask: np.ndarray, bin_min: float,
+                       phase_start_zt: float, day_length_min: float,
+                       photoperiod_min: float) -> float:
+    """
+    Sleep latency: minutes from a light transition to the first sleep bout that
+    follows it, averaged over the cycles in the recording.
+
+    `phase_start_zt` is 0.0 for the light phase (latency after lights-ON) and
+    `photoperiod_min` for the dark phase (latency after lights-OFF). This is the
+    standard definition used with DAM data (Pfeiffenberger et al. 2010, Cold
+    Spring Harb Protoc 2010:pdb.prot5520; Cichewicz & Hirsh 2018, Commun Biol
+    1:25): the flies' delay in falling asleep once the lights change.
+
+    A fly already asleep when the lights change has a latency of 0, which is the
+    convention in both references. Returns NaN when no complete phase in the
+    recording contains a sleep bout, which is the honest answer -- a fly that
+    never slept in the dark has no latency, and imputing the phase length would
+    report a number the data never showed.
+
+    `zt_abs` must be UNWRAPPED time relative to lights-on (t - day_start_min),
+    not the modulo-1440 zeitgeber hour. Using the wrapped value collapses every
+    cycle in the recording onto one index and returns the same constant for
+    every fly.
+    """
+    phase_len = photoperiod_min if phase_start_zt == 0.0 else (day_length_min - photoperiod_min)
+    shifted = np.asarray(zt_abs, dtype=float) - phase_start_zt
+    cyc = np.floor(shifted / day_length_min).astype(int)
+    within = shifted - cyc * day_length_min          # 0 .. day_length_min
+    in_phase = within < phase_len
+    lat = []
+    for c in np.unique(cyc[in_phase]):
+        sel = in_phase & (cyc == c)
+        # A partial phase at the head or tail of the recording cannot give a
+        # latency: the transition itself was never recorded.
+        if sel.sum() * bin_min < 0.9 * phase_len:
+            continue
+        asleep = sleep_mask[sel]
+        if not asleep.any():
+            continue
+        lat.append(float(within[sel][np.argmax(asleep)]))
+    return float(np.mean(lat)) if lat else np.nan
+
+
 def sleep_per_fly(long_df: pd.DataFrame,
                   sleep_min: float = SLEEP_MIN_DEFAULT,
-                  day_start_min: float = 0.0,
+                  day_start_min: Optional[float] = None,
                   photoperiod_min: float = 720.0,
                   day_length_min: float = DAY_MINUTES) -> pd.DataFrame:
     """
     Per-fly sleep metrics using the >=5-min inactivity rule.
 
     day_start_min   : minutes from record start at which lights-on (ZT0) occurs.
+                      Leave as None to DERIVE it from the recording's own Light
+                      channel; falls back to 0.0 only when there is none.
     photoperiod_min : light-phase duration (default 12 h = 720 min).
     day_length_min  : full cycle length (default 24 h = 1440 min).
     Sleep totals are normalised to minutes per 24 h.
+
+    ZT0 IS LIGHTS-ON. This used to default to 0.0, i.e. ZT0 = the first row of
+    the file, which silently mis-assigns the day/night split by however many
+    hours separate the two. Measured on the lab's 25th-day recording (starts
+    00:00, lights-on 07:04, offset 424 min): the default reported day 518 /
+    night 405 min per day when the truth is day 355 / night 579 — it reversed
+    which phase the flies sleep in, and flipped the sign of the male-female
+    daytime difference from -50 to +25 min. TOTAL sleep is unaffected.
     """
+    if day_start_min is None:
+        off = lights_on_offset(long_df)
+        day_start_min = float(off) if off is not None else 0.0
+
     rows = []
     keys = GROUP_KEYS + ["FlyID"]
     for kv, sub in long_df.groupby(keys, sort=False):
@@ -192,7 +254,36 @@ def sleep_per_fly(long_df: pd.DataFrame,
         night_sleep = sleep_mask[~is_day].sum() * bin_min
 
         bout_lengths = np.array([l * bin_min for _, l in bouts], dtype=float)
+
+        # Day/night bout split. A bout is assigned to the phase in which it
+        # BEGINS -- the convention of the DAM Counting Macro (Pfeiffenberger
+        # et al. 2010) and ShinyR-DAM (Cichewicz & Hirsh 2018). Bouts that
+        # straddle a light transition are counted and reported, so the size of
+        # that ambiguity is visible instead of buried in the convention.
+        if bouts:
+            starts = np.array([s for s, _ in bouts], dtype=int)
+            ends = np.minimum(starts + np.array([l for _, l in bouts]) - 1, len(is_day) - 1)
+            b_day = is_day[starts]
+            n_cross = int(np.count_nonzero(is_day[starts] != is_day[ends]))
+        else:
+            b_day = np.zeros(0, dtype=bool)
+            n_cross = 0
+        day_bl = bout_lengths[b_day]
+        night_bl = bout_lengths[~b_day]
+        # Activity may legitimately contain NaN: a raw monitor writes zeros for
+        # minutes it did not read (status != OK), and `dam_reader` converts those
+        # to NaN precisely so they are not mistaken for stillness. Plain mean/sum
+        # would then return NaN for the whole fly -- which is how every
+        # waking-activity value in a real 62-fly dataset came back empty.
+        #
+        # NaN handling is asymmetric on purpose. A missing minute must NOT extend
+        # a sleep bout, and it does not: `_zero_run_bouts` tests `act == 0`,
+        # which is False for NaN, so a gap breaks the run. But a missing minute
+        # must also not destroy the fly's totals, so the summaries below are
+        # nan-aware.
         waking = act[~sleep_mask]
+        waking = waking[np.isfinite(waking)]
+        n_missing = int(np.count_nonzero(~np.isfinite(act)))
         rec = dict(zip(keys, kv if isinstance(kv, tuple) else (kv,)))
         rec.update({
             "n_bins": len(act),
@@ -202,9 +293,32 @@ def sleep_per_fly(long_df: pd.DataFrame,
             "Night_sleep_min_per_day": round(night_sleep / n_days, 1),
             "N_bouts_per_day": round(len(bouts) / n_days, 2),
             "Mean_bout_min": round(float(np.mean(bout_lengths)), 1) if len(bout_lengths) else 0.0,
+            "Day_bouts_per_day": round(len(day_bl) / n_days, 2),
+            "Night_bouts_per_day": round(len(night_bl) / n_days, 2),
+            "Day_mean_bout_min": round(float(np.mean(day_bl)), 1) if len(day_bl) else np.nan,
+            "Night_mean_bout_min": round(float(np.mean(night_bl)), 1) if len(night_bl) else np.nan,
+            "Longest_bout_min": round(float(np.max(bout_lengths)), 1) if len(bout_lengths) else 0.0,
+            "N_bouts_crossing_transition": n_cross,
+            "Sleep_latency_night_min": round(_latency_per_cycle(
+                t - day_start_min, sleep_mask, bin_min, photoperiod_min,
+                day_length_min, photoperiod_min), 1),
+            "Sleep_latency_day_min": round(_latency_per_cycle(
+                t - day_start_min, sleep_mask, bin_min, 0.0,
+                day_length_min, photoperiod_min), 1),
             "Sleep_pct": round(100.0 * sleep_mask.mean(), 1),
             "Waking_activity": round(float(np.mean(waking)), 3) if len(waking) else 0.0,
-            "Total_activity_per_day": round(float(act.sum()) / n_days, 1),
+            "Total_activity_per_day": round(float(np.nansum(act)) / n_days, 1),
+            "Day_activity_per_day": round(float(np.nansum(act[is_day])) / n_days, 1),
+            "Night_activity_per_day": round(float(np.nansum(act[~is_day])) / n_days, 1),
+            "Minutes_missing": n_missing,
+            # A bin wider than the sleep criterion cannot resolve the rule: a
+            # single zero 60-min bin is scored as a 60-min sleep bout whatever
+            # happened inside it. Activity sums stay exact (addition is
+            # associative); sleep does not. Measured on this laboratory's own
+            # 25th-day recording, degrading 1-min to 60-min bins loses 85% of
+            # the sleep (median 928 -> 142 min/day). The flag lets a caller
+            # drop the sleep columns rather than quietly believe them.
+            "Sleep_scoreable": bool(bin_min <= sleep_min),
         })
         rows.append(rec)
     return pd.DataFrame(rows)
@@ -233,14 +347,162 @@ def sleep_summary(per_fly: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def light_channel_report(long_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per monitor describing what its light channel actually recorded:
+    the fraction of the record it called 'lit' and how many times it changed
+    state. A working channel on a 24-h schedule changes state about twice a
+    day; a stuck sensor changes state once or not at all.
+
+    Run this before trusting ZT. On the laboratory's 11-15 Aug recording
+    Monitor 1 logged 7 transitions and 14.1 h light per 24 h (a 15L:9D
+    schedule) while Monitor 2 logged 1 transition and 21.5 h -- its sensor was
+    stuck on, and the two monitors agreed on only 69% of timestamps. On the
+    22 Aug - 1 Sep recording the two agreed on 100% of 14,729 timestamps.
+    """
+    if "Light" not in long_df.columns or "Time_min" not in long_df.columns:
+        return pd.DataFrame()
+    key = "Monitor" if "Monitor" in long_df.columns else None
+    rows = []
+    src = long_df.groupby(key) if key else [("(all)", long_df)]
+    for name, g in src:
+        d = (g[["Time_min", "Light"]].dropna()
+             .drop_duplicates("Time_min").sort_values("Time_min"))
+        if d.empty:
+            continue
+        L = d["Light"].to_numpy(float)
+        t = d["Time_min"].to_numpy(float)
+        span_days = max((t[-1] - t[0]) / DAY_MINUTES, 1e-9)
+        rows.append({"Monitor": name, "n_samples": len(d),
+                     "light_h_per_24h": round(24.0 * float(L.mean()), 2),
+                     "n_transitions": int(np.count_nonzero(np.diff(L) != 0)),
+                     "transitions_per_day": round(
+                         float(np.count_nonzero(np.diff(L) != 0)) / span_days, 2)})
+    return pd.DataFrame(rows)
+
+
+def _light_series(long_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """
+    The recording's light trace as (Time_min, Light), one row per timestamp.
+
+    Where several monitors are present their light channels are NOT averaged or
+    silently deduplicated: the channel that actually cycles is used, i.e. the
+    monitor with the most state changes. Deduplicating by timestamp -- what
+    this module used to do -- kept whichever monitor happened to sort first,
+    so on the 11-15 Aug recording it returned Monitor 2's stuck-on sensor and
+    reported the 15L:9D schedule as 12L:12D, silently moving three hours of the
+    light phase into 'night'. Call `light_channel_report` to see the evidence.
+    """
+    if "Light" not in long_df.columns or "Time_min" not in long_df.columns:
+        return None
+    df = long_df
+    if "Monitor" in long_df.columns and long_df["Monitor"].nunique() > 1:
+        rep = light_channel_report(long_df)
+        if rep.empty:
+            return None
+        best = rep.sort_values(["n_transitions", "Monitor"],
+                               ascending=[False, True]).iloc[0]["Monitor"]
+        df = long_df[long_df["Monitor"] == best]
+    d = (df[["Time_min", "Light"]].dropna()
+         .drop_duplicates("Time_min").sort_values("Time_min"))
+    return d if (not d.empty and d["Light"].nunique() >= 2) else None
+
+
+MIN_LIGHT_SPAN_MIN = 60.0     # no real photoperiod is shorter than an hour
+
+
+def _light_spans(long_df: pd.DataFrame):
+    """
+    Complete lights-on -> lights-off intervals of at least MIN_LIGHT_SPAN_MIN,
+    as (t_on, t_off) pairs, plus the recording's first timestamp.
+
+    Spans shorter than an hour are NOT light phases; they are the light
+    channel flickering. On the laboratory's raw 11-15 Aug recording the sensor
+    toggled six times between 21:03 and 22:57 on the set-up evening, producing
+    1-2 minute "spans" that, left in, dragged the median photoperiod from 842
+    minutes to 2, and put ZT0 at the moment the monitor came back from a gap
+    with the lamp already on rather than at lights-on. Both functions below
+    therefore ignore them.
+    """
+    d = _light_series(long_df)
+    if d is None:
+        return None, None
+    L = d["Light"].to_numpy(float)
+    t = d["Time_min"].to_numpy(float)
+    dL = np.diff(L)
+    on = np.where(dL > 0)[0] + 1
+    off = np.where(dL < 0)[0] + 1
+    spans = []
+    for i in on:
+        nxt = off[off > i]
+        if len(nxt) and (t[nxt[0]] - t[i]) >= MIN_LIGHT_SPAN_MIN:
+            spans.append((float(t[i]), float(t[nxt[0]])))
+    return spans, float(t[0])
+
+
+def lights_on_offset(long_df: pd.DataFrame) -> Optional[float]:
+    """
+    Minutes from the first sample to the first genuine lights-ON transition --
+    the start of the first light span of at least an hour -- i.e. the
+    `day_start_min` that makes `sleep_profile`'s output genuinely Zeitgeber time.
+
+    Returns None when the frame carries no usable Light column or no complete
+    light phase.
+    """
+    spans, t0 = _light_spans(long_df)
+    if not spans:
+        return None
+    return spans[0][0] - t0
+
+
+def photoperiod_minutes(long_df: pd.DataFrame) -> Optional[float]:
+    """
+    Length of the light phase, in minutes, MEASURED from the recording's own
+    Light channel rather than assumed to be 12 h.
+
+    Uses only complete lights-on -> lights-off intervals of at least an hour, so
+    a partial day at either end of the file cannot shorten the answer and a
+    flickering sensor cannot fabricate short "days"; takes the median so a
+    single failed cycle cannot move it. Returns None when the frame carries no
+    usable Light column or no complete light phase.
+
+    This matters: the two recordings analysed here were run on DIFFERENT
+    schedules (14L:10D on 11-15 Aug, 12L:12D on 22 Aug - 1 Sep). Scoring the
+    first with the 12 h default puts two hours of its light phase into "night".
+    """
+    spans, _ = _light_spans(long_df)
+    if not spans:
+        return None
+    return float(np.median([b - a for a, b in spans]))
+
+
 def sleep_profile(long_df: pd.DataFrame, epoch_min: float = 30.0,
-                  day_start_min: float = 0.0,
+                  day_start_min: Optional[float] = None,
                   day_length_min: float = DAY_MINUTES,
                   sleep_min: float = SLEEP_MIN_DEFAULT) -> pd.DataFrame:
     """
     Average sleep (minutes per epoch) as a function of zeitgeber time, per group
     — the data behind the bimodal sleep/activity profile plot.
+
+    ZT0 IS LIGHTS-ON, NOT THE START OF THE FILE.
+    `day_start_min` is the offset from the first sample to lights-on. When it is
+    left as None it is DERIVED from the recording's own Light channel via
+    `lights_on_offset`; only if there is no usable Light column does it fall
+    back to 0, and then the axis is hours-since-recording-start and is labelled
+    as such in the returned column name.
+
+    This used to default to 0.0 while still naming its output "ZT_hour", so a
+    recording that began at 09:54 produced a profile whose "ZT0" was 09:54 —
+    the dark phase then fell in the wrong place on every plot drawn from it, by
+    however many hours separated the start of the file from lights-on.
     """
+    derived = False
+    if day_start_min is None:
+        off = lights_on_offset(long_df)
+        derived = off is not None
+        day_start_min = float(off) if derived else 0.0
+    zt_col = "ZT_hour" if (derived or day_start_min) else "Hours_since_start"
+
     keys = GROUP_KEYS + ["FlyID"]
     per_fly_zt = []
     for kv, sub in long_df.groupby(keys, sort=False):
@@ -262,12 +524,16 @@ def sleep_profile(long_df: pd.DataFrame, epoch_min: float = 30.0,
         dff = pd.DataFrame({"epoch": epoch, "asleep": sleep_mask.astype(float)})
         frac = dff.groupby("epoch")["asleep"].mean()
         for ep, fr in frac.items():
-            per_fly_zt.append({**g, "ZT_hour": round(ep * epoch_min / 60.0, 2),
+            per_fly_zt.append({**g, zt_col: round(ep * epoch_min / 60.0, 2),
                                "sleep_min": float(fr) * epoch_min})
     if not per_fly_zt:
         return pd.DataFrame()
     prof = pd.DataFrame(per_fly_zt)
-    return (prof.groupby(GROUP_KEYS + ["ZT_hour"])["sleep_min"].mean().reset_index())
+    out = prof.groupby(GROUP_KEYS + [zt_col])["sleep_min"].mean().reset_index()
+    out.attrs["zt_reference"] = ("lights-on derived from the Light channel" if derived
+                                 else "start of recording (no usable Light column)")
+    out.attrs["day_start_min"] = float(day_start_min)
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────────

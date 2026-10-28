@@ -85,11 +85,38 @@ def main() -> int:
             "refused", "empty+flag" if refused.empty else "fit anyway")
 
     # ── SDQ: exact analytic value ─────────────────────────────────────────────
-    # PI_Male=80, PI_Female=40 -> SDQ = |80-40|/max(80,40) = 0.5
+    # PI_Male=80, PI_Female=40 -> SDQ = |80-40| / 200 = 0.2
+    #
+    # DEFINITION CHANGE 2026-09 (audit S3 finding 3.1). The denominator was
+    # max(|PI_M|, |PI_F|), which gave 0.5 here but was NOT bounded by 1 (its
+    # range is [0, 2]) and blew up near PI = 0: PI_M = 1 vs PI_F = -1, a 2-point
+    # difference on a 200-point scale, scored 2.0 "Strong dimorphism" — four
+    # times the score of the 50-point difference below. Normalising by the scale
+    # span puts SDQ genuinely on [0, 1] and makes it stable at PI = 0.
     pi_sdq = pd.DataFrame({"Genotype": ["G", "G"], "Treatment": ["Vehicle", "Vehicle"],
                            "Sex": ["Male", "Female"], "PI_mean": [80.0, 40.0]})
     sdq = compute_sdq(pi_sdq)
-    chk("SDQ exact (=0.5)", float(sdq["SDQ"].iloc[0]), 0.5, 1e-9)
+    chk("SDQ exact (=|80-40|/200=0.2)", float(sdq["SDQ"].iloc[0]), 0.2, 1e-9)
+    # The pathology the old scale had: a tiny difference must NOT outscore a
+    # large one.
+    small = compute_sdq(pd.DataFrame({"Genotype": ["G", "G"],
+                                      "Treatment": ["Vehicle", "Vehicle"],
+                                      "Sex": ["Male", "Female"],
+                                      "PI_mean": [1.0, -1.0]}))
+    boolchk("SDQ: 2-point gap scores below a 40-point gap",
+            float(small["SDQ"].iloc[0]) < float(sdq["SDQ"].iloc[0]),
+            "small < large",
+            f"{float(small['SDQ'].iloc[0]):.3f} < {float(sdq['SDQ'].iloc[0]):.3f}")
+    boolchk("SDQ is bounded by 1 at the scale extremes",
+            float(compute_sdq(pd.DataFrame({"Genotype": ["G", "G"],
+                                            "Treatment": ["Vehicle", "Vehicle"],
+                                            "Sex": ["Male", "Female"],
+                                            "PI_mean": [100.0, -100.0]}))["SDQ"].iloc[0]) == 1.0,
+            "= 1.0",
+            float(compute_sdq(pd.DataFrame({"Genotype": ["G", "G"],
+                                            "Treatment": ["Vehicle", "Vehicle"],
+                                            "Sex": ["Male", "Female"],
+                                            "PI_mean": [100.0, -100.0]}))["SDQ"].iloc[0]))
 
     # ── TSW: exact analytic value ─────────────────────────────────────────────
     # WT: Veh 70 -> Drug 72 (dWT=+2). Disease: Veh -30 -> Drug 10 (dDis=+40).

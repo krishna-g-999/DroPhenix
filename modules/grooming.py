@@ -23,6 +23,20 @@ NOTE: automated grooming *detection* from raw video is a supervised-ML problem
 (pose/behaviour classification) and is out of scope here; this module analyses
 the scored/classified grooming intervals, which is the standard quantification
 output of both manual and automated pipelines.
+
+CLUSTERING CAVEAT (audit S3 finding 3.9)
+-----------------------------------------
+`compare_groups` passes one row per ANIMAL straight to stats_engine.auto_test,
+which treats every animal as an independent observation. Animals from the same
+vial share a food batch, a rearing density and a handling event, so they are
+correlated. The 2026-08 simulation measured what that costs: a naive
+fly-as-independent test rejects 25.9% of the time under a TRUE NULL at
+ICC = 0.10 — a 5.2x inflation of the nominal 5% error rate.
+
+If the input carries a vial identifier, route the comparison through
+`modules/hierarchical.py` instead, or at minimum report the design effect
+DEFF = 1 + (m - 1) * ICC alongside the p-value. The p-values from this helper
+are only valid when each animal really is an independent experimental unit.
 """
 
 from __future__ import annotations
@@ -84,32 +98,73 @@ def per_fly_metrics(df: pd.DataFrame, observation_s: Optional[float] = None) -> 
     elif "Bout_start_s" in col and "Bout_end_s" in col:
         keys = [col["Genotype"], col["Treatment"], col["Sex"], col["FlyID"]]
         for kv, sub in df.groupby(keys):
-            dur = (pd.to_numeric(sub[col["Bout_end_s"]], errors="coerce")
-                   - pd.to_numeric(sub[col["Bout_start_s"]], errors="coerce")).dropna()
-            dur = dur[dur > 0]
+            starts = pd.to_numeric(sub[col["Bout_start_s"]], errors="coerce")
+            ends = pd.to_numeric(sub[col["Bout_end_s"]], errors="coerce")
+            iv = pd.DataFrame({"s": starts, "e": ends}).dropna()
+            iv = iv[iv["e"] > iv["s"]]
+            merged = _merge_intervals(iv["s"].tolist(), iv["e"].tolist())
+            dur = np.array([e - s for s, e in merged], dtype=float)
             tot = float(dur.sum())
             nb = int(len(dur))
             obs = float(sub[col["Observation_s"]].iloc[0]) if "Observation_s" in col else (observation_s or np.nan)
             g, t, s, fid = kv
-            rows.append(_rec(g, t, s, fid, tot, obs, nb, mean_bout=float(dur.mean()) if nb else np.nan))
+            rows.append(_rec(g, t, s, fid, tot, obs, nb,
+                             mean_bout=float(dur.mean()) if nb else np.nan,
+                             n_raw_bouts=int(len(iv))))
     else:
         raise ValueError("Grooming input needs either Total_grooming_s (summary) "
                          "or Bout_start_s/Bout_end_s (bout-level) columns.")
     return pd.DataFrame(rows)
 
 
-def _rec(g, t, s, fid, tot, obs, nb, mean_bout=None):
+def _merge_intervals(starts, ends):
+    """
+    Merge overlapping/touching [start, end) intervals into disjoint ones.
+
+    Audit S2 finding 2.9: bout durations were summed without merging, so three
+    overlapping scored bouts on one fly over a 600 s observation reported
+    1100 s of grooming = 183.33% of the time, unflagged. The true union of those
+    intervals is 600 s = 100%. Overlapping intervals are routine in manual
+    ethogram scoring and in the output of the kNN classifier the module cites.
+    """
+    iv = sorted(zip(starts, ends))
+    out = []
+    for s, e in iv:
+        if out and s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def _rec(g, t, s, fid, tot, obs, nb, mean_bout=None, n_raw_bouts=None):
     pct = 100.0 * tot / obs if obs and obs > 0 else np.nan
     if mean_bout is None:
         mean_bout = tot / nb if (isinstance(nb, (int, float)) and nb and nb > 0) else np.nan
     rate = nb / (obs / 60.0) if (obs and obs > 0 and isinstance(nb, (int, float)) and np.isfinite(nb)) else np.nan
+
+    # Grooming time cannot exceed observation time. After interval merging this
+    # can only happen if the scored bouts run past the stated observation
+    # window, which is a data-entry error the caller must see.
+    flag = ""
+    if np.isfinite(pct) and pct > 100.0 + 1e-9:
+        flag = (f"IMPLAUSIBLE: {tot:.1f} s of grooming in a {obs:.1f} s "
+                f"observation ({pct:.1f}%). Bouts extend past the stated "
+                f"Observation_s — check the scoring window.")
+    if n_raw_bouts is not None and nb is not None and n_raw_bouts > nb:
+        flag = (flag + " " if flag else "") + (
+            f"{n_raw_bouts - nb} of {n_raw_bouts} scored bouts overlapped and "
+            f"were merged into {nb} disjoint bouts.")
+
     return {"Genotype": str(g), "Treatment": str(t), "Sex": str(s), "FlyID": str(fid),
             "Observation_s": round(obs, 1) if obs and np.isfinite(obs) else np.nan,
             "Total_grooming_s": round(tot, 2),
             "Pct_time_grooming": round(pct, 2) if np.isfinite(pct) else np.nan,
             "N_bouts": int(nb) if isinstance(nb, (int, float)) and np.isfinite(nb) else np.nan,
+            "N_bouts_scored": int(n_raw_bouts) if n_raw_bouts is not None else np.nan,
             "Mean_bout_s": round(mean_bout, 2) if np.isfinite(mean_bout) else np.nan,
-            "Grooming_rate_per_min": round(rate, 2) if np.isfinite(rate) else np.nan}
+            "Grooming_rate_per_min": round(rate, 2) if np.isfinite(rate) else np.nan,
+            "QC_flag": flag}
 
 
 def group_summary(per_fly: pd.DataFrame) -> pd.DataFrame:

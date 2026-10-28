@@ -1,6 +1,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # DroPhenix  |  requirements.txt  (v2.0  –  April 2026)
 # Install:  pip install -r requirements.txt
+#
+# This file covers the Streamlit APPLICATION only. The validation and
+# cross-package comparison suites under validation/ additionally import
+# lifelines, astropy and pyboat as independent reference implementations; those
+# are listed separately in requirements-validation.txt and are deliberately not
+# required to run the app.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Core data science ────────────────────────────────────────────────────────
@@ -63,3 +69,8 @@ statsmodels>=0.14.0,<1.0.0
 matplotlib>=3.8.0 
 seaborn>=0.13.0 
 pingouin>=0.5.4 
+Pillow>=10.0.0                 # PIL.Image -- the Draw Vials canvas background.
+                               # Was imported unguarded by app.py while absent from
+                               # this file, so a clean install crashed on that page.
+streamlit-drawable-canvas>=0.9.0
+ffmpeg-python>=0.2.0

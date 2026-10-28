@@ -74,6 +74,31 @@ def _sig(p: float) -> str:
     return "ns"
 
 
+def _p(v) -> float:
+    """
+    Report a p-value at 3 significant figures, not 6 decimal places.
+
+    Rounding to 6 dp turns any p below 5e-7 into exactly 0.0, and a p-value of
+    zero is not attainable. Measured on real data: the sex log-rank over 39,581
+    flies (Freireich-scale chi-square = 10625) printed as "p_value: 0.0".
+    Same defect class as motor_decline._sigfig (audit 1.1).
+    """
+    import math
+    if v is None:
+        return float("nan")
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+    if not math.isfinite(v):
+        return float("nan")
+    if v == 0.0:
+        # Genuine underflow: report the smallest representable positive double
+        # rather than claiming zero.
+        return 5e-324
+    return float(f"{v:.3g}")
+
+
 def _bh_correction(p_values: np.ndarray) -> np.ndarray:
     """Benjamini-Hochberg FDR. NaNs left as NaN. (Mirrors stats_engine.)"""
     pv = np.asarray(p_values, dtype=float)
@@ -142,6 +167,31 @@ def to_event_table(df: pd.DataFrame) -> pd.DataFrame:
                 raise ValueError(f"Required column '{k}' not found in lifespan data.")
 
     g, t, s = col["Genotype"], col["Treatment"], col["Sex"]
+
+    # ── Layout disambiguation (audit S2 finding 2.5) ─────────────────────────
+    # The alias lists overlap: a column literally named "Dead" matches BOTH
+    # Event (["event","status","dead",...]) and Dead_count (["dead_count",
+    # "dead",...]). Layout A used to win that tie, so a daily-cohort file with a
+    # "Dead" column was read as event-level and each ROW became one fly: a
+    # 100-fly cohort collapsed to 5 "flies", silently, and every CI, log-rank
+    # p-value, Cox hazard ratio and RMST was then computed on n = 5.
+    #
+    # `Total_start` is the discriminator: an event-level table (one row per fly)
+    # has no cohort-size column, so its presence means the file is daily-cohort
+    # counts whatever the deaths column happens to be called.
+    daily_cohort = ("Day" in col and "Dead_count" in col and "Total_start" in col)
+    if daily_cohort and "Event" in col:
+        import warnings
+        warnings.warn(
+            f"Lifespan file has a cohort-size column "
+            f"('{col['Total_start']}'), so it is being read as DAILY COHORT "
+            f"COUNTS. The column '{col['Event']}' also matched the event-status "
+            f"aliases; it is being used as the per-day death count, not as a "
+            f"per-fly event flag. Rename it to 'Dead_count' to remove the "
+            f"ambiguity.",
+            RuntimeWarning, stacklevel=2,
+        )
+        col.pop("Event", None)
 
     # ── Layout A: event-level ────────────────────────────────────────────────
     if "Time" in col and "Event" in col:
@@ -366,7 +416,7 @@ def logrank_overall(event_df: pd.DataFrame, weight_type: Optional[str] = None) -
                         grp, weight_type=weight_type)
     return {
         "chisq": round(float(chisq), 4),
-        "p_value": round(float(p), 6),
+        "p_value": _p(p),
         "df": int(len(np.unique(grp)) - 1),
         "Sig": _sig(p),
         "test": "Log-rank" if weight_type is None else f"Weighted log-rank ({weight_type})",
@@ -401,8 +451,8 @@ def logrank_pairwise(event_df: pd.DataFrame, weight_type: Optional[str] = None) 
         rows.append({
             "Group A": ga, "Group B": gb,
             "Chisq": round(float(chisq), 4) if pd.notna(chisq) else np.nan,
-            "p_raw": round(float(p), 6) if pd.notna(p) else np.nan,
-            "p_adj_BH": round(float(padj), 6) if pd.notna(padj) else np.nan,
+            "p_raw": _p(p) if pd.notna(p) else np.nan,
+            "p_adj_BH": _p(padj) if pd.notna(padj) else np.nan,
             "Sig": _sig(padj),
             "Events A": na, "Events B": nb,
             "Method": "Log-rank + BH-FDR" if weight_type is None
@@ -477,7 +527,7 @@ def cox_ph(event_df: pd.DataFrame,
             "HR": round(float(np.exp(coef)), 4),
             "HR_CI_lower": round(float(np.exp(lo)), 4),
             "HR_CI_upper": round(float(np.exp(hi)), 4),
-            "p_value": round(p, 6),
+            "p_value": _p(p),
             "Sig": _sig(p),
         })
 

@@ -31,4 +31,6 @@ All reference tools were installed and executed on identical data (Freireich 196
 | Circadian     | Dominant period (h)                                                                                                               | 24.0        | pyBOAT wavelet          | 23.9598     | 0.0402     | yes     |
 | Survival      | scikit-survival not installable here (no C toolchain / no py3.13 wheel); survival already cross-checked vs R survival + lifelines | -           | scikit-survival         | -           | -          | info    |
 
-**Agreement: 24/24 metrics within tolerance.**
+**Agreement: 24 of 26 comparisons agree within tolerance; 0 disagree; 2 are documented method differences or unavailable comparators.**
+
+Every row is counted in the denominator. Rows tagged `info` are method differences (for example, Breslow versus Efron handling of tied event times, where both answers are correct for their respective conventions) or comparators that could not be installed in this environment. They are reported here rather than excluded, because a benchmark whose denominator cannot express a disagreement is not a benchmark.

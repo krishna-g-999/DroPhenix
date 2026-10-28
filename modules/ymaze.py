@@ -41,6 +41,43 @@ RIGHT turn; i -> (i+2) mod 3 is a LEFT turn. Under this mapping an alternation
 triad occurs exactly when two consecutive turns share direction, so an
 unbiased fly with independent turns alternates at b^2+(1-b)^2 = 50% — matching
 the published chance level. Provide an explicit Turn column to override.
+
+WHICH READ-OUT IS THE ESTABLISHED ONE (verified 2026-09-07)
+------------------------------------------------------------
+For the *Drosophila* Y-maze the established individual-level metrics are
+TURN BIAS (the fraction of centre crossings taken to the right) and TURN
+SWITCHINESS (the fraction of consecutive turns that change direction), as used
+by Buchanan, Kain & de Bivort (2015) PNAS 112:6700, "Neuronal control of
+locomotor handedness in Drosophila", where individual flies make hundreds of
+left/right choices in a symmetric, evenly lit maze. Both are computed here as
+`turn_bias` and `switch_rate`, and they are the columns to report.
+
+`alternation_pct` (the all-three-arms-different triad score) is a RODENT
+working-memory convention imported into the fly assay. It is retained because
+some fly papers report it, but under this maze's geometry it is a deterministic
+function of handedness for a memoryless animal, so it is NOT a clean memory
+read-out — see the derivation at the point of computation.
+
+`alternation_vs_chance`, `chance_alternation_pct`, `switch_rate_vs_chance` and
+`chance_switch_rate` are DroPhenix-defined bias corrections, not published
+indices. They are derived in closed form from the module's own geometry
+convention and verified against simulation of memoryless flies (residual ~0 at
+every turn bias). Report them as corrections, and say so, rather than citing
+them to a source.
+
+CLUSTERING CAVEAT (audit S3 finding 3.9)
+-----------------------------------------
+`compare_groups` passes one row per ANIMAL straight to stats_engine.auto_test,
+which treats every animal as an independent observation. Animals from the same
+vial share a food batch, a rearing density and a handling event, so they are
+correlated. The 2026-08 simulation measured what that costs: a naive
+fly-as-independent test rejects 25.9% of the time under a TRUE NULL at
+ICC = 0.10 — a 5.2x inflation of the nominal 5% error rate.
+
+If the input carries a vial identifier, route the comparison through
+`modules/hierarchical.py` instead, or at minimum report the design effect
+DEFF = 1 + (m - 1) * ICC alongside the p-value. The p-values from this helper
+are only valid when each animal really is an independent experimental unit.
 """
 
 from __future__ import annotations
@@ -233,17 +270,54 @@ def per_fly_metrics(long_df: pd.DataFrame,
         n_switch = sum(1 for a, b in zip(turn_vals[:-1], turn_vals[1:]) if a != b)
         switch_rate = n_switch / (len(turn_vals) - 1) if len(turn_vals) >= 2 else np.nan
 
+        # ── Turn-bias-corrected alternation (audit S2 finding 2.6) ───────────
+        # Under the module's geometry convention an alternation triad occurs
+        # exactly when two consecutive turns share direction, so a fly with NO
+        # memory at all whose turns are i.i.d. with P(right) = b alternates at
+        # chance = b^2 + (1-b)^2. That is 50% only for an unbiased fly, and it
+        # rises steeply with bias: simulation of 200 memoryless flies per point
+        # gives 50.6 / 51.9 / 58.8 / 67.6 / 82.2 % at b = 0.5 / .6 / .7 / .8 / .9,
+        # matching the closed form to Monte-Carlo error.
+        #
+        # Werkhoven et al. report individual Canton-S flies with bias above 70%
+        # or below 30%, so raw alternation_pct confounds working memory with
+        # turn handedness: a memoryless fly at b = 0.9 scores 82%, which reads
+        # as excellent spatial memory. alternation_vs_chance subtracts each
+        # fly's OWN bias-expected baseline, so 0 means "no better than this
+        # fly's handedness predicts" and positive means genuine alternation.
+        chance_alt = (100.0 * (turn_bias ** 2 + (1.0 - turn_bias) ** 2)
+                      if pd.notna(turn_bias) else np.nan)
+        alt_vs_chance = (alt_pct - chance_alt
+                         if pd.notna(alt_pct) and pd.notna(chance_alt) else np.nan)
+
+        # Switchiness carries the SAME handedness confound. For i.i.d. turns
+        # with P(right) = b, consecutive turns differ with probability
+        # 2*b*(1-b), which falls from 0.5 at b = 0.5 to 0.18 at b = 0.9. A
+        # strongly handed fly therefore looks "less switchy" with no change in
+        # sequential dependence. Reporting the residual against each fly's own
+        # baseline separates the two, which matters because turn bias and
+        # switchiness are the two established Drosophila Y-maze read-outs
+        # (Buchanan et al. 2015, PNAS 112:6700) and are not independent.
+        chance_switch = (2.0 * turn_bias * (1.0 - turn_bias)
+                         if pd.notna(turn_bias) else np.nan)
+        switch_vs_chance = (switch_rate - chance_switch
+                            if pd.notna(switch_rate) and pd.notna(chance_switch) else np.nan)
+
         rec = dict(zip(keys, kv if isinstance(kv, tuple) else (kv,)))
         rec.update({
             "n_entries": int(n_entries),
             "n_triads": int(n_triads),
             "n_alternations": int(n_alt),
             "alternation_pct": round(alt_pct, 2) if pd.notna(alt_pct) else np.nan,
+            "chance_alternation_pct": round(chance_alt, 2) if pd.notna(chance_alt) else np.nan,
+            "alternation_vs_chance": round(alt_vs_chance, 2) if pd.notna(alt_vs_chance) else np.nan,
             "n_turns": int(n_turns),
             "n_right": int(n_right),
             "n_left": int(n_left),
             "turn_bias": round(turn_bias, 4) if pd.notna(turn_bias) else np.nan,
             "switch_rate": round(switch_rate, 4) if pd.notna(switch_rate) else np.nan,
+            "chance_switch_rate": round(chance_switch, 4) if pd.notna(chance_switch) else np.nan,
+            "switch_rate_vs_chance": round(switch_vs_chance, 4) if pd.notna(switch_vs_chance) else np.nan,
         })
         rows.append(rec)
     return pd.DataFrame(rows)

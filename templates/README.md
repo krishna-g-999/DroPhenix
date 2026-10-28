@@ -19,5 +19,59 @@ statistics handle that.
 **Drug Ranking** does not need its own template — it combines the four assay
 files above (climbing, lifespan, ymaze, dams) by Genotype × Treatment × Sex.
 
+## Design-aware templates (longitudinal, time-of-day, toxin, historical controls)
+
+These add the optional columns that unlock the hierarchical, trajectory,
+circadian, dose-response and control-borrowing analyses. They are backwards
+compatible: a file without them parses exactly as before.
+
+| File | Use | Key added columns |
+|------|-----|-------------------|
+| `climbing_longitudinal_template.csv` | Same vials followed across ages and times of day | `VialID`, `Age`, `TimeOfDay`, `SessionIndex`, `TrialIndex`, `DeathAge`, `ExperimentID` |
+| `toxin_dose_response_template.csv` | Toxin or drug dose series | `Compound`, `Dose`, `DoseUnit`, `n_dead` |
+
+**A trap in the toxin template worth stating explicitly.** `n_total_flies` and
+`n_dead` can be read two ways, and the numbers alone cannot say which you meant:
+
+- `n_total_flies` = flies **scored** (survivors), so flies exposed = `n_total_flies + n_dead`
+- `n_total_flies` = flies **exposed** at the start, so survivors = `n_total_flies - n_dead`
+
+The shipped template uses the **first** reading: `n_total_flies` falls with dose
+because dead flies are no longer scored. The Dose-Response page asks which
+convention your file uses rather than guessing. Whichever you adopt, use it
+consistently — mixing the two silently changes every mortality rate and hence
+the LC50.
+| `historical_controls_template.csv` | Past control arms, for borrowing | `ExperimentID`, `Batch`, `Date` |
+
+Five columns carry most of the value, and none can be reconstructed after the
+fact:
+
+- **`VialID`** — the experimental unit. Flies in a vial are not independent, so
+  without this the intraclass correlation cannot be estimated and every p-value
+  is anticonservative. Use a unique string per physical vial, stable across the
+  whole experiment.
+- **`DeathAge`** — the age at which the flies in that vial died. This is the
+  single highest-value optional column: without it, survivor bias in an ageing
+  trajectory cannot be measured, only assumed to be zero, and time-to-death
+  alignment is unavailable.
+- **`TimeOfDay`** — record the **actual clock time** (`09:15`), not the category
+  "Morning". Categories are mapped to conventional Zeitgeber midpoints, and the
+  estimated circadian phase then inherits the width of the whole testing window.
+- **`SessionIndex`** — how many times this vial has been tested before. Converts
+  an assumption about fatigue and habituation into a testable covariate.
+- **`ExperimentID`** — which experiment each row belongs to. This is what makes
+  between-experiment heterogeneity estimable, and therefore what turns a pile of
+  past control arms into a usable prior.
+
+`n_total_flies` should be the number **alive in that vial at that timepoint**,
+not the number originally set up. Density affects climbing, and attrition changes
+density differentially between groups.
+
+Two design rules that no software can repair afterwards: use **at least two
+vials per treatment arm** (with one, the treatment and vial effects are a single
+parameter and cannot be separated), and **counterbalance testing order against
+time of day** (otherwise the two are completely confounded). See
+`docs/UPLIFT_PLAN.md` §3 for the full specification.
+
 Example rows in each file are illustrative synthetic values, not measured data —
 replace them with your own.

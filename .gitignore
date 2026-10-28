@@ -76,3 +76,42 @@ _archive/
 *.pyc
 *.tmp
 .streamlit/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UNPUBLISHED LABORATORY RESULTS — deliberately NOT published to this public
+# repository. The tool is here; the laboratory's own experimental results stay
+# local until they are published. Added 2026-10-28.
+# ─────────────────────────────────────────────────────────────────────────────
+# Analysis outputs: per-fly data, contrast tables, figures of unpublished runs
+results/
+# The unpublished results report itself, and the two documents that quote it
+docs/DAM_RESULTS_REPORT.docx
+docs/DAM_RESULTS_REPORT.md
+docs/MODULE_AUDIT_2026-09.md
+docs/METHODS_PROVENANCE.md
+# Scripts that build the laboratory's unpublished report and its deliverables
+scripts/report_dam_full.py
+scripts/report_dam_25thday.py
+scripts/report_dam_15v25.py
+scripts/report_dam_paper_figs.py
+scripts/report_dam_headline_fig.py
+scripts/build_dam_docx.js
+scripts/build_dam_docx_data.py
+scripts/docx_to_md.py
+scripts/package_hd_results.py
+scripts/dam2_bout_number_contrasts.py
+scripts/dam2_charts.py
+scripts/dam2_figures.py
+scripts/dam2_profiles.py
+scripts/dam2_trend_package.py
+scripts/dam2_trend_report.py
+scripts/dam_final_folder.py
+# Validation suites built on those unpublished recordings (they SKIP when the
+# data is absent, but they quote the run's own facts, so they stay local too)
+validation/validate_dam_25thday.py
+validation/validate_dam_15v25.py
+validation/validate_dam_parameters.py
+validation/verify_dam_docx.py
+
+# Node dependencies for the document builder
+node_modules/
