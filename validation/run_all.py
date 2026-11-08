@@ -237,6 +237,10 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           # The two Layer-3 calibration rows the plan names, re-derived every
           # run rather than left as numbers in a document.
           "validate_statistical_calibration",
+          # The N95 remedy: binomial maximum likelihood, a profile interval on
+          # the LC50 itself, and the resolvable-slope rule. Written before the
+          # implementation and recorded raising on its first call.
+          "validate_binomial_ml",
           "demo_unequal_n",
           # Regression guard for P0 Block A of the 2026-11 audit: the four
           # safeguards that existed and were bypassed (register N1, N2, N6, N7,
