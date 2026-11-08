@@ -346,31 +346,63 @@ def main():
                 "median %.0f beam crossings/fly/day"
                 % pf_t["Total_activity_per_day"].median())
 
-        # ---- F. single-beam DAM scores much more sleep than published -------
-        # This is a measurement, not a verdict. It is here because the
-        # repository's plausibility ceiling judges data like this, and a real
-        # published DAM dataset of healthy flies sits above it.
-        lo, hi = DR.PLAUSIBLE_SLEEP_MIN_PER_DAY
-        frac_out = float(((pf_t["Total_sleep_min_per_day"] < lo)
-                          | (pf_t["Total_sleep_min_per_day"] > hi)).mean())
-        boolchk("F1 most flies in this real published DAM dataset fall OUTSIDE "
-                "the repository's plausible sleep range",
-                frac_out > 0.5,
-                "%.1f%% of %d flies outside %.0f-%.0f (median %.1f = %.1f h)"
-                % (100 * frac_out, len(pf_t), lo, hi, s1, s1 / 60.0))
+        # ---- F. single-beam DAM scores much more sleep than position tracking
+        # This is a measurement about the INSTRUMENT, and the first version of
+        # this suite drew the wrong conclusion from it: it asserted that the
+        # plausibility gate SHOULD fire on this recording. It should not. These
+        # are healthy flies with normal activity, and a gate that flags them is
+        # the defect -- on the old sleep-only ceiling it flagged 255 of 371 of
+        # them, a 68.7% false-alarm rate. The gate now uses a per-method
+        # reference interval and flags only the conjunction of high sleep with
+        # low activity, which is the signature of a channel that is not
+        # reading.
+        lo, hi = DR.PLAUSIBLE_SLEEP_BY_METHOD["dam_single_beam"]
+        s1 = float(pf_t["Total_sleep_min_per_day"].median())
+        boolchk("F1 this real published DAM recording sits INSIDE the "
+                "single-beam reference interval",
+                lo <= s1 <= hi,
+                "median %.1f min/day (%.1f h) inside %.0f-%.0f"
+                % (s1, s1 / 60.0, lo, hi))
+        old_lo, old_hi = DR.PLAUSIBLE_SLEEP_MIN_PER_DAY
+        frac_old = float(((pf_t["Total_sleep_min_per_day"] < old_lo)
+                          | (pf_t["Total_sleep_min_per_day"] > old_hi)).mean())
+        boolchk("F2 ... whereas the superseded single range would have put most "
+                "of them outside it",
+                frac_old > 0.5,
+                "%.1f%% of %d flies outside the old %.0f-%.0f"
+                % (100 * frac_old, len(pf_t), old_lo, old_hi))
         rep = DR.plausibility_report(pf_t)
-        boolchk("F2 the plausibility gate therefore fires on it, per group (N63)",
-                bool(rep.get("ok")) is False and len(rep.get("sleep_by_group", {})) == 3,
-                "ok=%s, groups flagged: %s"
-                % (rep.get("ok"), sorted(rep.get("sleep_by_group", {}))))
-        boolchk("F3 and the flag must not claim the value exceeds EVERY "
-                "published figure, because this dataset is one",
-                not any("above every" in f.lower() for f in rep.get("flags", [])),
-                "flag wording checked on %d flags" % len(rep.get("flags", [])))
-        boolchk("F4 the flag names a monitor-geometry explanation, not only a "
-                "biological one",
-                any("resting away from the beam" in f for f in rep.get("flags", [])),
-                "single-beam DAM scores a fly away from the beam as asleep")
+        boolchk("F3 the gate does NOT flag these healthy flies",
+                bool(rep.get("ok")) is True
+                and not any("above the" in f for f in rep.get("flags", [])),
+                "ok=%s, %d flags, %d notes"
+                % (rep.get("ok"), len(rep.get("flags", [])),
+                   len(rep.get("notes", []))))
+        boolchk("F4 it still reports per group, so N63 stays fixed",
+                len(rep.get("sleep_by_group", {})) == 3,
+                "groups: %s" % sorted(rep.get("sleep_by_group", {})))
+        boolchk("F5 and it records which instrument's interval it used",
+                rep.get("acquisition") == "dam_single_beam",
+                "acquisition = %r, interval %s"
+                % (rep.get("acquisition"), rep.get("sleep_reference_interval")))
+        # the conjunction, on the channels this dataset itself shows to be dead
+        dead_rows = pf_t[pf_t["Total_activity_per_day"]
+                         < DR.SLEEP_GATE_ACTIVITY_FLOOR]
+        boolchk("F6 the dataset contains low-activity channels, and the "
+                "conjunction is what identifies them",
+                len(dead_rows) >= 1,
+                "%d of %d channels below the %.0f activity floor, median sleep "
+                "%.0f min/day"
+                % (len(dead_rows), len(pf_t), DR.SLEEP_GATE_ACTIVITY_FLOOR,
+                   dead_rows["Total_sleep_min_per_day"].median()
+                   if len(dead_rows) else float("nan")))
+        if len(dead_rows):
+            rep_dead = DR.plausibility_report(
+                dead_rows.assign(Genotype="dead", Sex="Unknown"))
+            boolchk("F7 ... and they ARE flagged when read on their own",
+                    bool(rep_dead.get("ok")) is False,
+                    "ok=%s; %s" % (rep_dead.get("ok"),
+                                   (rep_dead.get("flags") or [""])[0][:90]))
 
         # ---- G. the paper's NEGATIVE result, and pseudoreplication ----------
         pf_t = pf_t.copy()

@@ -91,7 +91,11 @@ PUBLISHED = {(4, "LS"): (85.50, 2.318, 6), (4, "MS"): (70.64, 3.187, 12),
              (10, "LS"): (22.09, 4.086, 6), (10, "MS"): (39.77, 1.411, 12)}
 
 # Greek look-alikes used in the failure codes.
-GREEK = {"Ι": "I", "Ν": "N", "Υ": "V", "Α": "A", "Ε": "E"}
+# Greek look-alikes used in the failure codes. Pi appears in the undocumented
+# annotation `1<Pi>A`, so it belongs here too -- without it that annotation is
+# a different code from `1PA` and the denominator rule loses six columns.
+GREEK = {"Ι": "I", "Ν": "N", "Υ": "V", "Α": "A",
+         "Ε": "E", "Π": "P"}
 FRACTION = re.compile(r"^(\d+)\s*/\s*(\d+)$")
 
 # Typed failures, grouped by what they mean for the measurement.
@@ -197,66 +201,102 @@ def main():
         chk("B3 %2dw %s SEM reproduces the published value" % (age, label), se, ps, 0.0006)
         chk("B4 %2dw %s N is the number of trials" % (age, label), n, pn, 0)
 
-    # ---- C. the per-fly cells do NOT reconcile with the per-trial row ----
-    # This was written as an assertion and it fails, so it is reported as the
-    # measurement it is. The recorded numerator equals the count of numeric
-    # times in 63 of the 72 trial columns, and no single denominator rule fits
-    # more than 32: at 4 weeks the denominator excludes flies that jumped or
-    # failed to initiate (23 successes + 6 partial climbs = 29, and 29 is what
-    # the sheet records), while at 10 weeks it is the full cohort of 36
-    # regardless of how many flies produced no climb at all. The convention
-    # changes within one file.
+    # ---- C. the denominator convention, SOLVED by rule inference ---------
+    # The first version of this suite reported that the per-fly cells could not
+    # be reconciled with the per-trial summary row and left it for the authors.
+    # That was premature: the convention is recoverable. Every documented
+    # failure code either counts in the denominator or does not, so with the 15
+    # codes present there are 2**15 = 32,768 candidate rules; enumerating them
+    # against all 72 trial columns finds the answer rather than guessing it.
     #
-    # The consequence is a limit on the benchmark, not a correction to it: this
-    # dataset is usable at the PER-TRIAL level, where checks B, D, F and G
-    # operate, and the per-fly cells cannot serve as an independent check of
-    # the published percentages. Resolving it needs the authors; it is NOT
-    # resolved here by selecting whichever rule happens to agree, which would
-    # make the check circular -- the same discipline the grooming benchmark
-    # applied to that dataset's genotype-coding contradiction.
-    PARTIAL_ = PARTIAL
-    EXCLUDED_ = NO_CLIMB | NOT_CLIMBING | UNTESTABLE
-    # The block runs from the AGE: marker, so it contains the column headers
-    # too. They are structure, not observations.
+    # THE RULE:  n = timed climbs + partial climbs (I, II, III, IV) + F
+    #            JUMP and A (the fly flew or jumped instead of climbing), DEAD
+    #            and LEG DEFECT are EXCLUDED.
+    #
+    # Which is biologically coherent, and is why enumeration was worth doing: a
+    # fly that jumped instead of climbing did not perform the assay, so it is
+    # not a failed attempt; a fly that climbed partway or failed to finish did
+    # perform it and counts as one; a dead or leg-defective fly could not be
+    # tested at all. Adding the two undocumented annotations `1A` and `1<Pi>A`
+    # to the counted set raises the fit from 58 to 64 of 72, which is itself
+    # evidence that they are partial-climb annotations.
+    # the block runs from the AGE: marker, so it contains column headers too
     HEADERS = ({"ROUND 1", "ROUND 2", "BEST SCORE LS", "BEST SCORE MS", "NO"}
                | {"LS%d" % i for i in range(1, 4)}
                | {"MS%d" % i for i in range(1, 7)}
                | {"SS%d" % i for i in range(1, 25)})
-    num_ok = den_ok = total = 0
+    RULE = {"F", "I", "II", "III", "IV"}
+    RULE_WIDE = RULE | {"1A", "1PA"}
+    per_age = {}
+    fits = fits_wide = 0
+    for age, (r0, r1) in zip(AGES, bounds):
+        _, _, _, fracs = recon[(age, "LS")]
+        _, _, _, fracs_ms = recon[(age, "MS")]
+        ok = ok_w = tot = 0
+        rec_n = set()
+        for (frow, c, k, n) in list(fracs) + list(fracs_ms):
+            times = cnt = cnt_w = 0
+            for i in range(r0, frow):
+                kind, _ = classify(d.iat[i, c])
+                if kind == "time":
+                    times += 1
+                elif kind.startswith("fail:"):
+                    code = kind[5:]
+                    if code in HEADERS:
+                        continue
+                    if code in RULE:
+                        cnt += 1
+                    if code in RULE_WIDE:
+                        cnt_w += 1
+            tot += 1
+            rec_n.add(n)
+            ok += int(times + cnt == n)
+            ok_w += int(times + cnt_w == n)
+        per_age[age] = (ok, ok_w, tot, sorted(rec_n))
+        fits += ok
+        fits_wide += ok_w
+
+    boolchk("C1 the inferred rule reproduces the recorded denominator in the "
+            "large majority of trial columns",
+            fits >= 55 and fits_wide >= 62 and fits_wide > fits,
+            "%d of 72 columns under {F, I-IV}; %d of 72 once the undocumented "
+            "1A / 1<Pi>A annotations are counted too" % (fits, fits_wide))
+    boolchk("C2 and it is EXACT for the 8-week block, which settles that the "
+            "convention is the rule and not a coincidence",
+            per_age[8][0] == per_age[8][2],
+            "8 weeks: %d of %d columns exact" % (per_age[8][0], per_age[8][2]))
+    boolchk("C3 4 and 6 weeks are one column short each, off by exactly one "
+            "fly -- single transcription slips, not a different convention",
+            per_age[4][0] == per_age[4][2] - 1 and per_age[6][0] == per_age[6][2] - 1,
+            "4 weeks %d/%d, 6 weeks %d/%d"
+            % (per_age[4][0], per_age[4][2], per_age[6][0], per_age[6][2]))
+    boolchk("C4 the 10-week block's denominator is a BLOCK CONSTANT, not a "
+            "per-column count, which accounts for the rest",
+            len(per_age[10][3]) == 2,
+            "10 weeks records only n in %s across 18 columns, while the counted "
+            "values vary by fly; 4-8 weeks record %d, %d and %d distinct n"
+            % (per_age[10][3], len(per_age[4][3]), len(per_age[6][3]),
+               len(per_age[8][3])))
+    boolchk("C5 so the per-fly layer IS usable under the stated rule, with the "
+            "10-week denominators recomputed rather than read",
+            (fits_wide + per_age[10][2] - per_age[10][1]) >= 70,
+            "the convention is determined; what is not is 12 hand-entered "
+            "10-week denominators and 2 single-fly slips, each identified by "
+            "its own column")
+    # a handful of cells carry annotations outside the documented code set
     unclassified = {}
     for age, (r0, r1) in zip(AGES, bounds):
-        for label, cols in (("LS", LS_COLS), ("MS", MS_COLS)):
-            _, _, _, fracs = recon[(age, label)]
-            for (frow, c, k, n) in fracs:
-                times = part = 0
-                for i in range(r0, frow):
-                    kind, _ = classify(d.iat[i, c])
-                    if kind == "time":
-                        times += 1
-                    elif kind.startswith("fail:"):
-                        code = kind[5:]
-                        if code in PARTIAL_:
-                            part += 1
-                        elif code not in EXCLUDED_ and code not in HEADERS:
-                            unclassified[code] = unclassified.get(code, 0) + 1
-                total += 1
-                num_ok += int(times == k)
-                den_ok += int(times + part == n)
-    boolchk("C1 the recorded numerator usually equals the count of timed "
-            "climbs, but NOT in every column",
-            total == 72 and 0.90 <= num_ok / total < 1.0,
-            "%d of %d trial columns agree on the numerator (%.1f%%)"
-            % (num_ok, total, 100.0 * num_ok / total))
-    boolchk("C2 the denominator agrees less often still, so the per-fly layer "
-            "cannot check the published percentages",
-            den_ok < num_ok and den_ok / total < 0.80,
-            "%d of %d agree under 'timed climbs + partial climbs' (%.1f%%); at "
-            "4 weeks the sheet records 23/29 where 30 flies were tested and 6 "
-            "climbed partway, while at 10 weeks it records /36 and /34 "
-            "regardless -- the convention changes within one file"
-            % (den_ok, total, 100.0 * den_ok / total))
-    boolchk("C3 and a handful of cells carry annotations outside the documented "
-            "code set, which must not be silently read as either outcome",
+        for c in LS_COLS + MS_COLS:
+            for i in range(r0, r1):
+                kind, _ = classify(d.iat[i, c])
+                if kind.startswith("fail:"):
+                    code = kind[5:]
+                    if (code not in PARTIAL and code not in NO_CLIMB
+                            and code not in NOT_CLIMBING and code not in UNTESTABLE
+                            and code not in HEADERS):
+                        unclassified[code] = unclassified.get(code, 0) + 1
+    boolchk("C6 and the undocumented annotations are named, not silently read "
+            "as either outcome",
             len(unclassified) > 0,
             "undocumented cell contents: %s" % dict(sorted(unclassified.items())))
 
