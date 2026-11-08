@@ -241,6 +241,10 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           # the LC50 itself, and the resolvable-slope rule. Written before the
           # implementation and recorded raising on its first call.
           "validate_binomial_ml",
+          # Owner decision 10: at k = 2 tau^2 is not estimable, so the interval
+          # is a credible interval under a stated prior rather than HKSJ with a
+          # t(1) quantile four to six times too wide.
+          "validate_bayes_pool",
           "demo_unequal_n",
           # Regression guard for P0 Block A of the 2026-11 audit: the four
           # safeguards that existed and were bypassed (register N1, N2, N6, N7,

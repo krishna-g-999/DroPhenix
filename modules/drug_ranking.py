@@ -106,14 +106,197 @@ def hedges_g(control: Sequence[float], treated: Sequence[float]) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 # Inverse-variance pooling (fixed + DerSimonian-Laird random effects)
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Pooling very few estimates (owner decision 10, register N35c)
+# ═══════════════════════════════════════════════════════════════════════════
+# HKSJ is the right interval from k = 3 upward and is why N35 was raised. At
+# k = 2 it is not. Measured, 400 replications per cell, nominal 95%:
+#
+#   tau^2    DerSimonian-Laird      HKSJ            credible (below)
+#    0.0     0.970 (width 0.69)   1.000 (4.49)      1.000 (1.21)
+#    0.1     0.848 (      0.99)   1.000 (6.42)      0.978 (1.34)
+#    0.3     0.752 (      1.44)   1.000 (9.34)      0.895 (1.51)
+#
+# An interval six times wider than it needs to be is not conservative, it is
+# uninformative: a composite that reports one has stopped discriminating
+# between compounds. And the cause is structural rather than a tuning problem.
+# With two estimates there is ONE degree of freedom for between-study variance,
+# so tau^2 is not estimable and the quantile HKSJ needs is t(1) = 12.71. No
+# plug-in estimator with a quantile in front of it repairs that.
+#
+# The standard remedy for few studies is to stop plugging in a point estimate
+# and integrate over tau under a weakly informative prior (Friede, Roever,
+# Wandel & Neuenschwander 2017, Res Synth Methods 8:476; Roever 2020, J Stat
+# Softw 93:6). Conditional on tau the posterior of the pooled mean is normal
+# with the usual inverse-variance mean and variance, so the marginal posterior
+# is a MIXTURE of normals over tau -- one-dimensional quadrature, deterministic,
+# no MCMC.
+#
+# THE PRIOR is the one real choice and it is made in the open:
+#
+#     tau ~ half-normal(scale = 2 x median within-study standard error)
+#
+# Scaling it to the within-study standard errors makes the method exactly
+# equivariant under a change of effect measure -- verified to four decimals
+# across variance regimes two orders of magnitude apart in
+# `validate_bayes_pool` check B -- which matters because this function pools
+# whatever effect the caller hands it, and a prior in absolute units would
+# behave differently on a log ratio and on a percentage. The factor 2 says
+# "between-study SD of the same order as the within-study standard error,
+# possibly a couple of times larger", which is the published
+# weakly-informative recommendation (half-normal 0.5 for log odds ratios, whose
+# standard errors are typically 0.2-0.5) written scale-free. Factors of 0.5, 1
+# and 2 were measured; 0.5 and 1 under-cover at tau^2 = 0.3 (0.588 and 0.715),
+# and 2 is the smallest of the three that does not.
+def bayes_random_effects_pool(effects: Sequence[float],
+                              variances: Sequence[float],
+                              level: float = 0.95,
+                              prior_scale: Optional[float] = None,
+                              prior_scale_factor: float = 2.0,
+                              n_tau: int = 400,
+                              n_mu: int = 2001) -> dict:
+    """
+    Random-effects pooling by integrating over the between-study SD.
+
+    Model
+        y_i | theta_i  ~ N(theta_i, v_i)     v_i the known within-study variances
+        theta_i | mu, tau ~ N(mu, tau^2)
+        mu ~ flat
+        tau ~ half-normal(prior_scale)
+
+    `prior_scale` defaults to `prior_scale_factor` times the median
+    within-study standard error, which makes the whole procedure equivariant
+    under a change of scale. Pass it explicitly to impose a scale of your own;
+    passing a value near zero recovers the fixed-effect answer, which is a
+    useful check and is what check C of the suite does.
+
+    Returns `estimate` (the posterior mean), `ci_lo`, `ci_hi` (equal-tailed
+    credible interval at `level`), `tau_median`, `tau_mean`, `k`,
+    `prior_scale`, `prior`, `level` and `method`.
+
+    Why this rather than a wider frequentist interval. The question at k = 2 is
+    not which quantile to use; it is that the data contain no information about
+    between-study variance, so something has to supply it. A prior supplies it
+    explicitly and can be argued with. A t(1) quantile supplies it implicitly
+    and cannot.
+    """
+    y = np.asarray(effects, dtype=float)
+    v = np.asarray(variances, dtype=float)
+    if y.size != v.size:
+        raise ValueError(
+            f"effects and variances have different lengths: {y.size} vs {v.size}."
+        )
+    if y.size == 0:
+        raise ValueError(
+            "bayes_random_effects_pool needs at least one estimate; it was given "
+            "an empty set. There is nothing to pool."
+        )
+    if np.any(~np.isfinite(v)) or np.any(v <= 0):
+        raise ValueError(
+            "every within-study variance must be finite and positive: the model "
+            "conditions on them as known, and a variance of zero or below is not "
+            "a variance. Got " + repr(list(v)) + "."
+        )
+    if np.any(~np.isfinite(y)):
+        raise ValueError("every effect estimate must be finite; got "
+                         + repr(list(y)) + ".")
+    k = int(y.size)
+
+    se = np.sqrt(v)
+    if prior_scale is None:
+        scale = float(prior_scale_factor) * float(np.median(se))
+    else:
+        scale = float(prior_scale)
+    if not np.isfinite(scale) or scale <= 0:
+        scale = 1e-12
+
+    # tau grid. The upper end has to cover both the prior and whatever spread
+    # the estimates themselves show, or a genuinely heterogeneous set would be
+    # truncated and the interval would come out too narrow.
+    spread = float(np.std(y, ddof=1)) if k > 1 else 0.0
+    tau_hi = max(6.0 * scale, 6.0 * spread, 1e-9)
+    tau = np.linspace(0.0, tau_hi, int(n_tau))
+
+    W = 1.0 / (v[None, :] + tau[:, None] ** 2)
+    S = W.sum(axis=1)
+    mu_tau = (W * y[None, :]).sum(axis=1) / S
+    resid = (W * (y[None, :] - mu_tau[:, None]) ** 2).sum(axis=1)
+    # marginal likelihood of tau with mu integrated out under a flat prior
+    log_lik = 0.5 * np.sum(np.log(W), axis=1) - 0.5 * np.log(S) - 0.5 * resid
+    log_post = log_lik + stats.halfnorm.logpdf(tau, scale=scale)
+    log_post -= np.max(log_post)
+    wt = np.exp(log_post)
+    area = float(np.trapezoid(wt, tau)) if hasattr(np, "trapezoid") \
+        else float(np.trapz(wt, tau))
+    if not np.isfinite(area) or area <= 0:
+        raise RuntimeError("the posterior over tau did not integrate; the inputs "
+                           "are degenerate.")
+    wt = wt / area
+
+    sd_tau = 1.0 / np.sqrt(S)
+    lo = float(np.min(mu_tau - 8.0 * sd_tau))
+    hi = float(np.max(mu_tau + 8.0 * sd_tau))
+    mu = np.linspace(lo, hi, int(n_mu))
+    dens = np.zeros_like(mu)
+    for i in range(tau.size):
+        if wt[i] > 0:
+            dens += wt[i] * stats.norm.pdf(mu, mu_tau[i], sd_tau[i])
+    trap = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    dens = dens / float(trap(dens, mu))
+
+    cdf = np.concatenate([[0.0],
+                          np.cumsum(0.5 * (dens[1:] + dens[:-1]) * np.diff(mu))])
+    cdf = cdf / cdf[-1]
+    a = (1.0 - float(level)) / 2.0
+    ci_lo = float(np.interp(a, cdf, mu))
+    ci_hi = float(np.interp(1.0 - a, cdf, mu))
+    est = float(trap(mu * dens, mu))
+
+    tcdf = np.concatenate([[0.0],
+                           np.cumsum(0.5 * (wt[1:] + wt[:-1]) * np.diff(tau))])
+    tcdf = tcdf / max(tcdf[-1], 1e-300)
+    tau_med = float(np.interp(0.5, tcdf, tau))
+    tau_mean = float(trap(tau * wt, tau))
+
+    return {
+        "k": k,
+        "estimate": est,
+        "ci_lo": ci_lo,
+        "ci_hi": ci_hi,
+        "level": float(level),
+        "tau_median": tau_med,
+        "tau_mean": tau_mean,
+        "prior_scale": scale,
+        "prior": ("tau ~ half-normal(scale = %.6g), i.e. %.4g x the median "
+                  "within-study standard error" % (scale, float(prior_scale_factor))
+                  if prior_scale is None else
+                  "tau ~ half-normal(scale = %.6g), supplied by the caller" % scale),
+        "method": ("Bayesian random-effects pooling: the between-study SD is "
+                   "integrated out under a half-normal prior rather than "
+                   "estimated and plugged in. Equal-tailed credible interval "
+                   "from one-dimensional quadrature."),
+    }
+
 def inverse_variance_pool(effects: Sequence[float], variances: Sequence[float],
                           level: float = 0.95) -> dict:
     """
     Combine independent effect estimates of differing precision.
 
     Returns the fixed-effect and DerSimonian-Laird random-effects pooled
-    estimates, Cochran's Q, df, tau^2 and I^2, and -- as the PRIMARY interval
-    -- the Hartung-Knapp-Sidik-Jonkman interval.
+    estimates, Cochran's Q, df, tau^2 and I^2, and as the PRIMARY interval the
+    Hartung-Knapp-Sidik-Jonkman interval -- except at k = 2, where it is a
+    Bayesian credible interval instead (owner decision 10, register N35c).
+    `interval_kind` says which, and every alternative is reported alongside.
+
+    Why k = 2 is different. With two estimates there is one degree of freedom
+    for between-study variance, so tau^2 is not estimable and the quantile HKSJ
+    needs is t(1) = 12.71. Measured: HKSJ covers 1.000 at a width of 4.49, 6.42
+    and 9.34 for tau^2 of 0, 0.1 and 0.3, where the credible interval covers
+    1.000, 0.978 and 0.895 at 1.21, 1.34 and 1.51. Four to six times narrower
+    for the same or better calibration. See `bayes_random_effects_pool` for the
+    prior, which is stated in the output so it can be disagreed with.
 
     Why HKSJ (register N35). The DerSimonian-Laird interval treats tau^2 as if
     it were known, and uses a normal quantile. With the handful of strata or
@@ -177,6 +360,7 @@ def inverse_variance_pool(effects: Sequence[float], variances: Sequence[float],
                 "p_fixed": p_fixed, "p_random": p_fixed, "p_random_dl": p_fixed,
                 "Q": 0.0, "df": 0, "tau2": 0.0, "I2": 0.0,
                 "hksj_floored": False, "level": float(level),
+                "interval_kind": "single_estimate_normal",
                 "interval_warning": (
                     "k = 1: there is no between-study variance to estimate and "
                     "no Hartung-Knapp interval; this is one estimate's own "
@@ -233,7 +417,7 @@ def inverse_variance_pool(effects: Sequence[float], variances: Sequence[float],
     # between-study variance. That is said rather than left for the reader to
     # infer from a very wide interval.
     warn = ""
-    if k <= 3:
+    if k == 3:
         warn = (
             f"k = {k}: the interval is dominated by the t({df}) quantile "
             f"({t_crit:.2f} against 1.96) because {k} estimates barely determine "
@@ -244,22 +428,90 @@ def inverse_variance_pool(effects: Sequence[float], variances: Sequence[float],
             f"are reported alongside; neither is a substitute, since DL "
             f"under-covers (80-85% at tau^2 = 0.30) in the same cells."
         )
+    hksj_lo = float(re - t_crit * se_hksj)
+    hksj_hi = float(re + t_crit * se_hksj)
+
+    # The credible interval, computed at every k so the two can be compared,
+    # and PRIMARY at k = 2 only (owner decision 10, register N35c).
+    #
+    # Why only k = 2. Measured coverage and width, 400 replications per cell,
+    # nominal 95%:
+    #
+    #   k   tau^2    HKSJ            credible
+    #   2   0.00   1.000 (4.49)    1.000 (1.21)
+    #   2   0.10   1.000 (6.42)    0.978 (1.34)
+    #   2   0.30   1.000 (9.34)    0.895 (1.51)
+    #   3   0.30   0.970 (2.73)    0.915 (1.28)
+    #   4   0.30   0.965 (1.77)    0.920 (1.12)
+    #   6   0.30   0.950 (1.20)    0.905 (0.94)
+    #
+    # At k = 2 HKSJ is four to six times wider for the same or worse
+    # calibration, which is the defect. From k = 3 upward HKSJ meets the plan's
+    # >= 93% target in every cell and never under-covers, while the credible
+    # interval -- narrower, and on a prior -- can dip below it. A validated
+    # path is not replaced on a preference, so it is not.
+    bayes = None
+    try:
+        bayes = bayes_random_effects_pool(y, v, level=level)
+    except Exception as exc:                            # pragma: no cover
+        bayes = {"ci_lo": np.nan, "ci_hi": np.nan, "estimate": np.nan,
+                 "tau_median": np.nan, "prior": "unavailable: %s" % exc,
+                 "prior_scale": np.nan, "method": "unavailable"}
+
+    use_bayes = (k == 2) and np.isfinite(bayes.get("ci_lo", np.nan)) \
+        and np.isfinite(bayes.get("ci_hi", np.nan))
+    if use_bayes:
+        ci_lo_primary, ci_hi_primary = float(bayes["ci_lo"]), float(bayes["ci_hi"])
+        kind = "bayes_credible"
+        method = (
+            "k = 2: equal-tailed Bayesian credible interval, the between-study "
+            "SD integrated out under a half-normal prior rather than estimated "
+            "and plugged in (" + str(bayes.get("prior", "")) + "). Two "
+            "estimates do not determine tau^2, so the HKSJ t(1) quantile makes "
+            "an interval four to six times wider for no better calibration; "
+            "HKSJ, DerSimonian-Laird and the fixed effect are all reported "
+            "alongside."
+        )
+        warn = (
+            f"k = 2: the between-study variance tau^2 is NOT estimable from two "
+            f"estimates, so the reported interval is a credible interval under a "
+            f"stated weakly informative prior ({bayes.get('prior', '')}) rather "
+            f"than a frequentist interval. Measured coverage 0.90-1.00 at a width "
+            f"of {ci_hi_primary - ci_lo_primary:.3g}, against HKSJ's 1.00 at "
+            f"{hksj_hi - hksj_lo:.3g}. The prior is the assumption; it is stated "
+            f"so it can be disagreed with, and `ci_lo_hksj`/`ci_hi_hksj` give the "
+            f"frequentist alternative if you prefer it."
+        )
+    else:
+        ci_lo_primary, ci_hi_primary = hksj_lo, hksj_hi
+        kind = "hksj"
+        method = ("Random effects, DerSimonian-Laird tau^2 with the "
+                  "Hartung-Knapp-Sidik-Jonkman variance and a t(k-1) "
+                  "quantile (HKSJ); fixed effect reported as secondary.")
+
     return {"k": k, "fixed": fe, "se_fixed": se_fe,
             "random": re, "se_random": se_re,
             "se_hksj": se_hksj, "t_crit": t_crit, "df_hksj": df,
             "interval_warning": warn,
-            # Primary interval: HKSJ.
-            "ci_lo": float(re - t_crit * se_hksj),
-            "ci_hi": float(re + t_crit * se_hksj),
-            # Secondary, kept so the difference is visible rather than implied.
+            "interval_kind": kind,
+            # Primary interval: HKSJ, or the credible interval at k = 2.
+            "ci_lo": float(ci_lo_primary),
+            "ci_hi": float(ci_hi_primary),
+            # Every alternative kept, so the difference is visible rather than
+            # implied. A reader who prefers a different one has it.
+            "ci_lo_hksj": hksj_lo, "ci_hi_hksj": hksj_hi,
             "ci_lo_dl": float(re - z * se_re),
             "ci_hi_dl": float(re + z * se_re),
+            "ci_lo_bayes": float(bayes.get("ci_lo", np.nan)),
+            "ci_hi_bayes": float(bayes.get("ci_hi", np.nan)),
+            "bayes_estimate": float(bayes.get("estimate", np.nan)),
+            "bayes_tau_median": float(bayes.get("tau_median", np.nan)),
+            "bayes_prior": str(bayes.get("prior", "")),
+            "bayes_prior_scale": float(bayes.get("prior_scale", np.nan)),
             "p_fixed": p_fixed, "p_random": p_random, "p_random_dl": p_random_dl,
             "Q": Q, "df": df, "tau2": float(tau2), "I2": float(I2),
             "hksj_floored": floored, "level": float(level),
-            "method": ("Random effects, DerSimonian-Laird tau^2 with the "
-                       "Hartung-Knapp-Sidik-Jonkman variance and a t(k-1) "
-                       "quantile (HKSJ); fixed effect reported as secondary.")}
+            "method": method}
 
 
 HETEROGENEITY_I2_P_LIMIT = 50.0

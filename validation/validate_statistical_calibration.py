@@ -413,8 +413,8 @@ def main():
                (mad["width_hksj"] / mad["width_dl"]).max(),
                mad.loc[(mad["width_hksj"] / mad["width_dl"]).idxmax(), "k"]))
     k2 = mad[mad["k"] == 2]
-    boolchk("R2.6 at k = 2 HKSJ OVER-covers, so the module must warn there "
-            "(N35b, owner decision 10)",
+    boolchk("R2.6 at k = 2 HKSJ OVER-covers, which is why it is no longer the "
+            "interval reported there (N35b/N35c, owner decision 10 closed)",
             float(k2["cov_hksj"].min()) > 0.98,
             "k=2 HKSJ coverage %s vs DL %s"
             % ([round(x, 3) for x in k2["cov_hksj"]],
@@ -431,10 +431,15 @@ def main():
             "keys present: %s"
             % sorted(k for k in pooled
                      if "hksj" in k or k.startswith("ci_") or k.startswith("p_")))
-    boolchk("R2.8 ... and warns at k = 2, where the simulation shows "
-            "over-coverage",
-            bool(pooled.get("interval_warning")),
-            str(pooled.get("interval_warning"))[:110])
+    boolchk("R2.8 ... and at k = 2 the module reports a credible interval "
+            "instead, with HKSJ kept alongside",
+            pooled.get("interval_kind") == "bayes_credible"
+            and bool(pooled.get("interval_warning"))
+            and "ci_lo_hksj" in pooled,
+            "interval_kind = %r; credible width %.3f against HKSJ %.3f"
+            % (pooled.get("interval_kind"),
+               pooled["ci_hi"] - pooled["ci_lo"],
+               pooled["ci_hi_hksj"] - pooled["ci_lo_hksj"]))
 
     print()
     print("validate_statistical_calibration -- L3 calibration, simulation only")
