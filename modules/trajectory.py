@@ -1091,6 +1091,7 @@ def derive_endpoints(
     prediction: dict,
     threshold: float = 0.5,
     comparator_draws: Optional[np.ndarray] = None,
+    _include_refused: bool = False,
 ) -> dict:
     """
     Convert a predicted trajectory into quantities an experimenter acts on.
@@ -1105,15 +1106,55 @@ def derive_endpoints(
     Every quantity is computed WITHIN each posterior draw and then summarised,
     so the reported interval propagates trajectory uncertainty rather than
     being read off the median curve.
+
+    REFUSED DAYS ARE EXCLUDED (register N29). `predict_trajectory` refuses any
+    target further than `max_horizon` times the observed span beyond the last
+    observation, and reports NaN for it with a stated reason -- the module's
+    central promise that predictions beyond the horizon are refused rather than
+    flagged. The raw `draws` matrix, however, still contains a column for every
+    target day including the refused ones, and this function read it directly:
+    so the onset age and the healthspan were computed partly from extrapolated
+    curve values the engine had already declined to issue. Measured effect: the
+    onset-age interval was 1.99x too wide and the healthspan interval 8.0x. The
+    refusal is honoured here now, the number of excluded days is reported, and
+    `window_days` describes the window actually used.
+
+    `_include_refused` exists only to reproduce the old behaviour in the
+    regression test that measures the difference. It is not part of the API.
     """
     draws = prediction["draws"]
     days = np.asarray(prediction["target_days"], dtype=float)
     if draws.size == 0:
         return {"available": False, "reason": "No predictive draws."}
 
+    preds = prediction.get("predictions", []) or []
+    refused_days = {float(p["day"]) for p in preds if p.get("refused")}
+    n_refused_total = len(refused_days)
+
     order = np.argsort(days)
     days = days[order]
     draws = draws[:, order]
+
+    n_excluded = 0
+    if refused_days and not _include_refused:
+        keep = np.array([float(d) not in refused_days for d in days], dtype=bool)
+        n_excluded = int((~keep).sum())
+        if not keep.any():
+            reasons = sorted({str(p.get("refusal_reason", "")) for p in preds
+                              if p.get("refused")})
+            return {
+                "available": False,
+                "n_refused_excluded": n_excluded,
+                "reason": (
+                    f"Every one of the {n_excluded} requested target days was "
+                    f"refused by the prediction engine, so there is no issued "
+                    f"prediction from which to derive an onset age or a "
+                    f"healthspan. "
+                    + (reasons[0] if reasons else "")
+                ),
+            }
+        days = days[keep]
+        draws = draws[:, keep]
 
     def _onset(row: np.ndarray) -> float:
         below = np.where(row < threshold)[0]
@@ -1158,7 +1199,17 @@ def derive_endpoints(
         }
 
     out: dict = {"available": True, "threshold": float(threshold),
-                 "window_days": [float(days.min()), float(days.max())]}
+                 "window_days": [float(days.min()), float(days.max())],
+                 "n_refused_excluded": int(n_excluded),
+                 "n_refused_total": int(n_refused_total),
+                 "n_days_used": int(len(days)),
+                 "refusal_note": (
+                     f"{n_excluded} of {n_excluded + len(days)} requested target "
+                     f"days lay beyond the prediction horizon and were refused by "
+                     f"the engine; they are excluded from every endpoint here, so "
+                     f"the onset age and healthspan describe the window "
+                     f"[{float(days.min()):g}, {float(days.max()):g}] days only."
+                 ) if n_excluded else ""}
     out.update(_summarise(onsets, "onset_age_days"))
     out.update(_summarise(healthspans, "healthspan_days"))
 

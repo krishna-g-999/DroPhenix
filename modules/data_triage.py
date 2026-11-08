@@ -433,6 +433,14 @@ def triage_dam(long: pd.DataFrame, channel_map: Optional[pd.DataFrame] = None,
         pr = DR.plausibility_report(per_fly)
         for f in pr.get("flags", []):
             findings.append(Finding(WARNING, "implausible", message=f))
+        # The report also returns `notes`: the per-group breakdown behind a
+        # pooled verdict (N63), and the statement that the sleep check was
+        # DECLINED because the values were scored under a criterion the
+        # published range was not measured under. Reading only `flags` would
+        # drop both, and a declined check that looks like a passed one is the
+        # failure mode the gate exists to prevent.
+        for nmsg in pr.get("notes", []):
+            findings.append(Finding(NOTE, "plausibility_note", message=nmsg))
         findings += _check_saturation(per_fly)
 
     answerable: Dict[str, str] = {}

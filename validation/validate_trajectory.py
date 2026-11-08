@@ -58,7 +58,14 @@ def main() -> int:
     results = []
     purities, kvals = [], []
     for seed in range(4):
-        res = cluster_trajectories(_make_traj_df(seed), k_range=(2, 6), seed=seed)
+        # This suite tests the DTW clustering MECHANICS -- determinism, chosen
+        # k, cluster purity -- on a table whose only axis is the within-assay
+        # `Time`. Register N31 makes the clustering axis explicit and defaults
+        # it to `Age`, because the archetype names are longitudinal claims, so
+        # the seconds axis is now asked for by name. Nothing this suite asserts
+        # changes; what changes is that the axis is declared instead of assumed.
+        res = cluster_trajectories(_make_traj_df(seed), k_range=(2, 6), seed=seed,
+                                   time_col="Time")
         labels = res["labels"]
         clabels = res["cluster_labels"]
         if len(clabels) == 0:

@@ -51,6 +51,8 @@ except ImportError:
         counts_to_dataframe,
     )
 
+from modules import missingness as _MS
+
 DEFAULT_TIMEPOINTS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 120]
 BG_WARMUP_FRAMES = 30           # frames discarded before background is locked
 BG_STABLE_FRAMES = 10           # frames averaged for stable background
@@ -199,8 +201,13 @@ class VideoAnalyzer:
         -------
         pd.DataFrame with DroPhenix long-format columns:
             Video, SessionID, Replicate, Time, VialID, Label,
-            Genotype, Sex, Treatment, n_above, n_below, Total,
-            Pct, PI, QC_flag, Confidence
+            Genotype, Sex, Treatment, n_above, n_below, Total, N_detected,
+            N_start, Pct, PI, QC_flag, Confidence, Missingness, unusable_reason
+
+        `N_start` is the loading-record count carried from `VialROI.expected_n`;
+        `N_detected` is what the detector found. Pct and PI are computed on
+        `N_start` only (register N5), and are NaN — never 0.0 — wherever no
+        usable measurement exists (register N8).
         """
         if sample_timepoints is None:
             sample_timepoints = DEFAULT_TIMEPOINTS
@@ -290,6 +297,63 @@ class VideoAnalyzer:
                 UserWarning,
             )
 
+        # ── N7: a requested timepoint that produced nothing must still appear ──
+        #
+        # The sampling loop above breaks at end-of-stream, so a timepoint beyond
+        # the end of the clip simply vanished: no row, no warning, nothing in the
+        # output to say it had been asked for. Late timepoints are where a slow
+        # climber's signal lives, so the set of timepoints actually analysed
+        # ended up differing BY GENOTYPE, which is a confound rather than a gap.
+        # `climbing_video.py` has emitted an explicit unusable row all along;
+        # this is that behaviour, back-ported.
+        #
+        # The row carries NaN counts and a QC_flag, never a zero and never a
+        # percentage: a timepoint that was not observed is not 0% climbed.
+        observed_tps = {r["Time"] for r in rows}
+        duration_s = info.get("duration_sec")
+        if not duration_s:
+            fc = info.get("frame_count", 0)
+            duration_s = (fc / fps) if (fps and fc) else None
+        for tp in sample_timepoints:
+            if tp in observed_tps:
+                continue
+            if tp in skipped_tps:
+                flag = "unusable:bg_warmup_skip"
+                why = (f"background not ready at t={tp}s "
+                       f"(first {bg_warmup_frames} frames reserved)")
+            elif duration_s is not None and tp > duration_s:
+                flag = "unusable:video_end_before_timepoint"
+                why = f"requested t={tp}s but the video ends at {duration_s:.1f}s"
+            else:
+                flag = "unusable:frame_not_decoded"
+                why = f"frame for t={tp}s could not be decoded"
+            for v in vials:
+                rows.append({
+                    "Video": Path(video_path).name,
+                    "SessionID": session_id,
+                    "Replicate": replicate,
+                    "Time": tp,
+                    "VialID": v.vial_id,
+                    "Label": (label_map or {}).get(v.vial_id, v.label),
+                    "Genotype": v.genotype,
+                    "Sex": v.sex,
+                    "Treatment": v.treatment,
+                    "n_above": np.nan,
+                    "n_below": np.nan,
+                    "Total": np.nan,
+                    "N_detected": np.nan,
+                    "N_start": int(getattr(v, "expected_n", 0) or 0),
+                    "Pct": np.nan,
+                    "PI": np.nan,
+                    "QC_flag": flag,
+                    "Confidence": 0.0,
+                    # The timepoint was requested and never observed: missing by
+                    # design of what the clip contains, not a failed attempt to
+                    # score a frame that existed.
+                    _MS.COLUMN: _MS.NOT_MEASURED,
+                    "unusable_reason": why,
+                })
+
         if not rows:
             return pd.DataFrame()
 
@@ -299,11 +363,15 @@ class VideoAnalyzer:
         preferred = [
             "Video", "SessionID", "Replicate", "Time",
             "VialID", "Label", "Genotype", "Sex", "Treatment",
-            "n_above", "n_below", "Total", "Pct", "PI",
-            "QC_flag", "Confidence",
+            "n_above", "n_below", "Total", "N_detected", "N_start", "Pct", "PI",
+            "QC_flag", "Confidence", _MS.COLUMN, "unusable_reason",
         ]
         extra = [c for c in df.columns if c not in preferred]
         df = df[[c for c in preferred if c in df.columns] + extra]
+        # Unusable rows are appended after the loop, so re-sort: a reader
+        # scanning the time course must see the gap in place, not at the end.
+        if "Time" in df.columns and "VialID" in df.columns:
+            df = df.sort_values(["Time", "VialID"], kind="stable")
         return df.reset_index(drop=True)
 
     def analyze_with_n(
@@ -316,8 +384,12 @@ class VideoAnalyzer:
     ) -> pd.DataFrame:
         """
         Analyze video and convert to DroPhenix count schema.
-        Uses VialROI.expected_n as 'n' for normalization.
-        Returns DroPhenix long-format DataFrame with Count and n columns.
+
+        `n` is `VialROI.expected_n` — N_start from the loading record — and
+        nothing else. It was `max(expected_n, detected_total)`, which raised the
+        denominator to the detected count whenever the detector over-segmented,
+        so an over-counted vial read as a tidy 100% instead of the >100% that
+        would have shown the operator the ROI was wrong (register N5).
         """
         df_raw = self.analyze(
             video_path=video_path,
@@ -330,20 +402,77 @@ class VideoAnalyzer:
         if df_raw.empty:
             return df_raw
 
-        # Build expected_n lookup from vials
-        n_map = {v.vial_id: v.expected_n for v in vials}
+        # Build N_start lookup from the loading record.
+        n_map = {v.vial_id: int(v.expected_n or 0) for v in vials}
+        no_record = sorted(vid for vid, n in n_map.items() if n <= 0)
+        if no_record:
+            raise ValueError(
+                f"VideoAnalyzer.analyze_with_n: vials {no_record} have no "
+                f"N_start (VialROI.expected_n). The number of flies loaded is "
+                f"the only legitimate denominator for a climbing rate, so this "
+                f"conversion is refused rather than computed against the "
+                f"detected total. Use .analyze() if you want raw counts only."
+            )
 
         df_out = df_raw.copy()
-        df_out["Count"] = df_out["n_above"]
-        df_out["n"] = df_out["VialID"].map(n_map).fillna(df_out["Total"])
-        df_out["n"] = df_out[["n", "Total"]].max(axis=1).astype(int)
+        # Count keeps its NaN where no measurement was made: `.astype(int)` here
+        # would either raise or, worse, turn a failed vial into a zero.
+        df_out["Count"] = pd.to_numeric(df_out["n_above"], errors="coerce")
+        df_out["n"] = df_out["VialID"].map(n_map).astype("Int64")
 
         return df_out
 
 
+def _resolve_replicate_map(video_paths, replicate_map) -> Dict[str, int]:
+    """Match each video path to its declared replicate number, or refuse.
+
+    A mapping may be keyed by full path or by file name — both are convenient
+    and neither is ambiguous unless two paths share a basename, which is
+    reported rather than resolved by guessing.
+    """
+    by_name: Dict[str, List[str]] = {}
+    for vp in video_paths:
+        by_name.setdefault(Path(str(vp)).name, []).append(str(vp))
+
+    out: Dict[str, int] = {}
+    unmapped = []
+    for vp in video_paths:
+        key_full, key_name = str(vp), Path(str(vp)).name
+        if key_full in replicate_map:
+            val = replicate_map[key_full]
+        elif key_name in replicate_map:
+            if len(by_name[key_name]) > 1:
+                raise ValueError(
+                    f"_resolve_replicate_map: {key_name!r} is the file name of "
+                    f"{len(by_name[key_name])} different paths in this batch, "
+                    f"so a name-keyed replicate_map is ambiguous. Key the "
+                    f"mapping by full path instead."
+                )
+            val = replicate_map[key_name]
+        else:
+            unmapped.append(key_name)
+            continue
+        try:
+            out[key_full] = int(val)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"_resolve_replicate_map: replicate for {key_name!r} is "
+                f"{val!r}, which is not an integer replicate number."
+            )
+    if unmapped:
+        raise ValueError(
+            f"_resolve_replicate_map: no replicate declared for {unmapped}. "
+            f"Every recording must be assigned to a biological replicate "
+            f"explicitly; a recording with no declared replicate is refused "
+            f"rather than given the next free number."
+        )
+    return out
+
+
 class BatchVideoAnalyzer:
     """
-    Process multiple video files as sequential biological replicates.
+    Process multiple video files as biological replicates **declared by the
+    experimenter**, not numbered by file order (register N10).
     Errors on individual files are isolated and reported in output.
     """
 
@@ -356,10 +485,10 @@ class BatchVideoAnalyzer:
         vials: List[VialROI],
         sample_timepoints: Optional[List[int]] = None,
         session_prefix: str = "batch",
-        start_replicate: int = 1,
+        replicate_map: Optional[Dict[str, int]] = None,
     ) -> Tuple[pd.DataFrame, List[dict]]:
         """
-        Analyze a list of video files.
+        Analyze a list of video files as biological replicates.
 
         Parameters
         ----------
@@ -367,17 +496,41 @@ class BatchVideoAnalyzer:
         vials            : VialROI list (same for all videos)
         sample_timepoints: timepoints in seconds
         session_prefix   : prefix for session IDs
-        start_replicate  : starting replicate number
+        replicate_map    : **required.** {file name or path: replicate number}
+
+        Why `replicate_map` is required (register N10)
+        ----------------------------------------------
+        This used to number the files 1, 2, 3... in the order they arrived, so
+        the replicate index was a property of the file list rather than of the
+        experiment. Two camera angles of the same vial, two clips of one cohort
+        split by a dropped frame, or a re-recording after a failed tap all
+        became independent biological replicates — pseudoreplication by
+        construction, which narrows every confidence interval and inflates
+        every test. Only the experimenter knows which recordings share a
+        cohort, so the mapping is supplied, not inferred. Giving two files the
+        same number is the correct way to declare them one replicate.
 
         Returns
         -------
         combined_df : concatenated results with Replicate column
         error_log   : list of {video, replicate, error} for failed files
         """
+        if not replicate_map:
+            raise ValueError(
+                "BatchVideoAnalyzer.analyze_batch: replicate_map is required. "
+                "Replicate numbers are no longer assigned from file order — "
+                "two recordings of one cohort are not two biological "
+                "replicates, and auto-numbering made them so. Pass "
+                "{file name: replicate number}; repeat a number to declare two "
+                "files the same replicate."
+            )
+        resolved = _resolve_replicate_map(video_paths, replicate_map)
+
         frames = []
         error_log = []
 
-        for i, vp in enumerate(video_paths, start=start_replicate):
+        for vp in video_paths:
+            i = resolved[str(vp)]
             sid = f"{session_prefix}_R{i:02d}"
             try:
                 df = self.analyzer.analyze_with_n(
@@ -432,14 +585,34 @@ def video_counts_to_drophenix(
 ) -> pd.DataFrame:
     """
     Convert VideoAnalyzer output to DroPhenix canonical long-format.
-    Maps n_above → Count, Total → n.
-    Merges genotype/sex/treatment from vial_registry if provided.
+
+    Maps `n_above` → `Count` and **`N_start` → `n`**. It previously mapped
+    `max(Total, Count)` → `n`, i.e. the detected total (register N5): a detector
+    that missed five non-climbing flies in a vial of 30 reported 48.0% against a
+    truth of 40.0%, and PI −4.0 against −20.0.
+
+    The QC fields travel with the data or the conversion is refused (register
+    N8). `QC_flag` and `Confidence` were emitted by the detector on every failed
+    vial and then dropped here, one function downstream of the code that
+    produced them — so the platform computed on `PI = 0.0` rows it had itself
+    marked unusable.
 
     Returns DroPhenix-schema DataFrame with:
-        Genotype, Sex, Treatment, Replicate, Time, Count, n
+        Genotype, Sex, Treatment, Replicate, Time, Count, n,
+        N_start, N_detected, QC_flag, Confidence, Missingness
     """
     if df_raw.empty:
         return pd.DataFrame()
+
+    missing_qc = [c for c in ("QC_flag", "Confidence") if c not in df_raw.columns]
+    if missing_qc:
+        raise ValueError(
+            f"video_counts_to_drophenix: {missing_qc} absent from the input. "
+            f"The detector emits QC_flag and Confidence on every row, including "
+            f"the rows it could not score; a frame that has lost them cannot be "
+            f"converted safely, because a failed vial is indistinguishable from "
+            f"a vial with no flies above the line. Refused."
+        )
 
     df = df_raw.copy()
 
@@ -450,11 +623,64 @@ def video_counts_to_drophenix(
                     {vid: meta.get(col, "") for vid, meta in vial_registry.items()}
                 )
 
-    df["Count"] = df["n_above"].astype(int)
-    df["n"] = df[["Total", "Count"]].max(axis=1).astype(int)
+    # NaN survives: a vial the detector could not score has no Count, and
+    # `.astype(int)` here used to raise on it (or silently floor it to 0 once
+    # the value had already been defaulted upstream).
+    df["Count"] = pd.to_numeric(df["n_above"], errors="coerce")
+
+    # Belt and braces at the boundary: whatever a producer put in `n_above`,
+    # a row typed as a failed or absent measurement cannot carry a count. A
+    # zero here against n = N_start computes PI = -100, a maximally impaired
+    # vial, out of a vial that was never scored.
+    if _MS.COLUMN in df.columns:
+        not_obs = ~df[_MS.COLUMN].map(_MS.is_observed).fillna(False)
+        # REFUSED keeps its counts: only the rate was withheld, so a row that
+        # has since acquired an N_start is still usable.
+        not_obs &= df[_MS.COLUMN].astype(str) != _MS.REFUSED
+        df.loc[not_obs, "Count"] = np.nan
+
+    # ── the denominator ──────────────────────────────────────────────────────
+    n_start = None
+    if "N_start" in df.columns:
+        n_start = pd.to_numeric(df["N_start"], errors="coerce")
+    if (n_start is None or n_start.isna().all() or (n_start.fillna(0) <= 0).all()) \
+            and vial_registry is not None:
+        reg_n = {}
+        for vid, meta in vial_registry.items():
+            for k in ("N_start", "n_start", "expected_n", "N", "n"):
+                if isinstance(meta, dict) and k in meta:
+                    try:
+                        reg_n[vid] = int(meta[k])
+                    except (TypeError, ValueError):
+                        continue
+                    break
+        if reg_n:
+            n_start = pd.to_numeric(df["VialID"].map(reg_n), errors="coerce")
+    if n_start is None or n_start.isna().all() or (n_start.fillna(0) <= 0).all():
+        raise ValueError(
+            "video_counts_to_drophenix: no N_start (flies loaded) is available, "
+            "either as an N_start column or from vial_registry. The detected "
+            "total is not a substitute — using it shrinks the denominator by "
+            "exactly the flies the detector missed, and a missed fly in a "
+            "negative-geotaxis assay is usually one that did not climb, so "
+            "every miss moves the vial toward the healthy phenotype. Refused."
+        )
+
+    df["N_start"] = n_start
+    df["n"] = n_start
+    if "N_detected" not in df.columns:
+        df["N_detected"] = pd.to_numeric(df.get("Total"), errors="coerce")
+    if _MS.COLUMN not in df.columns:
+        # Derive the code rather than assume the row is a measurement.
+        qc = df["QC_flag"].astype(str)
+        df[_MS.COLUMN] = np.where(
+            df["Count"].notna(), _MS.OBSERVED,
+            np.where(qc.str.startswith("unusable") | qc.eq("not_measured"),
+                     _MS.NOT_MEASURED, _MS.MEASUREMENT_FAILED))
     df["Replicate"] = df.get("Replicate", replicate)
 
-    required = ["Genotype", "Sex", "Treatment", "Replicate", "Time", "Count", "n"]
+    required = ["Genotype", "Sex", "Treatment", "Replicate", "Time", "Count", "n",
+                "N_start", "N_detected", "QC_flag", "Confidence", _MS.COLUMN]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"video_counts_to_drophenix: missing columns after conversion: {missing}")

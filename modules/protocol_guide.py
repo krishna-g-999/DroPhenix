@@ -26,6 +26,43 @@ def _img_bytes(path: Path) -> bytes | None:
         return None
 
 
+def _pdf_bytes(path: Path) -> bytes | None:
+    """
+    The protocol diagram as a real PDF, one page, at the image's own size.
+
+    Register N84. A button labelled "Download Protocol PDF" served the PNG
+    bytes under a .png filename with an image/png MIME type. Nobody is harmed
+    by it, but a bench protocol is a thing people print and pin up, and a label
+    that does not describe what it hands over is the same class of defect as a
+    column name that does not describe its contents -- it is just the cheapest
+    one in the register to fix.
+
+    Returns None when the image is missing or Pillow is unavailable, and the
+    caller then offers the PNG under a PNG label. It never serves one format
+    under another's name.
+    """
+    try:
+        from PIL import Image
+    except Exception:                               # pragma: no cover
+        return None
+    try:
+        with Image.open(path) as im:
+            # PDF has no alpha channel; flatten onto white so a transparent
+            # diagram does not print as a black rectangle.
+            if im.mode in ("RGBA", "LA", "P"):
+                im = im.convert("RGBA")
+                flat = Image.new("RGB", im.size, (255, 255, 255))
+                flat.paste(im, mask=im.split()[-1])
+                im = flat
+            else:
+                im = im.convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, format="PDF", resolution=150.0)
+            return buf.getvalue()
+    except Exception:
+        return None
+
+
 def _csv_bytes(path: Path) -> bytes | None:
     try:
         return path.read_bytes()
@@ -63,13 +100,34 @@ def show_data_template() -> None:
         )
 
         img_b = _img_bytes(_PROTOCOL_IMG)
-        if img_b:
+        pdf_b = _pdf_bytes(_PROTOCOL_IMG) if img_b else None
+        if pdf_b:
             dl3.download_button(
                 "⬇ Download Protocol PDF",
+                pdf_b,
+                "vial_setup_protocol.pdf",
+                "application/pdf",
+                key="tmpl_img_dl",
+                help="One page, for printing and pinning at the bench.",
+            )
+        elif img_b:
+            # No Pillow, or the image would not convert: serve what there is,
+            # under its own name (N84).
+            dl3.download_button(
+                "⬇ Download Protocol Diagram (PNG)",
                 img_b,
                 "vial_setup_protocol.png",
                 "image/png",
                 key="tmpl_img_dl",
+            )
+        else:
+            # The diagram is not in the repository (see N84b): say so, with the
+            # path, rather than leaving a blank column that looks like a
+            # feature that failed to load.
+            dl3.warning(
+                f"Protocol diagram not available. Place the vial-setup figure "
+                f"at {_PROTOCOL_IMG.relative_to(_ASSETS.parent)} to enable the "
+                f"image and the printable PDF."
             )
 
         st.divider()
@@ -198,6 +256,16 @@ def show_vial_protocol() -> None:
                 "vial_setup_protocol.png",
                 "image/png",
                 key="vial_proto_dl",
+            )
+        proto_pdf = _pdf_bytes(_PROTOCOL_IMG) if img_b else None
+        if proto_pdf:
+            st.download_button(
+                "⬇ Download Protocol PDF",
+                proto_pdf,
+                "vial_setup_protocol.pdf",
+                "application/pdf",
+                key="vial_proto_pdf",
+                help="One page, for printing and pinning at the bench.",
             )
         csv_b = _csv_bytes(_TEMPLATE_CSV)
         if csv_b:

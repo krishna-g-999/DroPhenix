@@ -214,6 +214,16 @@ class BetaBinomialFit:
     design_info: List[str]
     converged: bool
     message: str = ""
+    # Register N16. `converged` is the OPTIMISER flag and is not evidence that
+    # inference is possible: the measured failure had converged = True with an
+    # indefinite Hessian. `inference_valid` is the gate every consumer must
+    # honour; it is True only when the numerical Hessian is positive definite
+    # and every standard error is finite.
+    inference_valid: bool = True
+    hessian_min_eigenvalue: float = float("nan")
+    hessian_cond: float = float("nan")
+    n_negative_variance: int = 0
+    fit_warnings: List[str] = field(default_factory=list)
     _design_columns: List[str] = field(default_factory=list)
 
     def summary_frame(self) -> pd.DataFrame:
@@ -228,6 +238,8 @@ class BetaBinomialFit:
         out["odds_ratio"] = np.exp(out["coef"])
         out["OR_lower"] = np.exp(out["ci_lower"])
         out["OR_upper"] = np.exp(out["ci_upper"])
+        out.attrs["inference_valid"] = bool(self.inference_valid)
+        out.attrs["fit_warnings"] = list(self.fit_warnings)
         return out
 
 
@@ -336,14 +348,21 @@ def fit_betabinomial(
     theta = res.x
     loglike = -float(res.fun)
 
-    # Standard errors from the numerical Hessian of the negative log-likelihood
+    # Standard errors from the numerical Hessian of the negative log-likelihood.
+    # Register N16: the variance is NOT clipped at zero, and inference is gated
+    # on the conditioning of the Hessian rather than on the optimiser flag.
     try:
         H = _numerical_hessian(
             lambda t: _betabinom_negloglike(t, X, y, n), theta
         )
-        cov = np.linalg.inv(H)
-        se = np.sqrt(np.clip(np.diag(cov), 0.0, np.inf))
-    except Exception:
+        hinfo = _ses_from_hessian(H)
+    except Exception as exc:
+        hinfo = {"se": np.full(theta.shape, np.nan), "inference_valid": False,
+                 "min_eigenvalue": np.nan, "cond": np.nan,
+                 "n_negative_variance": 0,
+                 "reason": f"The Hessian could not be formed: {exc}"}
+    se = np.asarray(hinfo["se"], dtype=float)
+    if se.shape != theta.shape:                         # pragma: no cover
         se = np.full(theta.shape, np.nan)
 
     k = X.shape[1]
@@ -386,8 +405,103 @@ def fit_betabinomial(
         design_info=colnames,
         converged=bool(res.success),
         message=str(res.message),
+        inference_valid=bool(hinfo["inference_valid"]),
+        hessian_min_eigenvalue=float(hinfo["min_eigenvalue"]),
+        hessian_cond=float(hinfo["cond"]),
+        n_negative_variance=int(hinfo["n_negative_variance"]),
+        fit_warnings=([str(hinfo["reason"])] if hinfo["reason"] else []),
         _design_columns=colnames,
     )
+
+
+def _ses_from_hessian(H: np.ndarray) -> dict:
+    """
+    Standard errors from a numerical Hessian, with the conditioning reported.
+
+    Register N16. This used to be
+
+        se = np.sqrt(np.clip(np.diag(cov), 0.0, np.inf))
+
+    and the clip is the defect. A NEGATIVE diagonal entry of inv(H) is not a
+    rounding artefact to be tidied away: it is the only evidence available that
+    the numerical Hessian is INDEFINITE, i.e. that the optimiser stopped at a
+    point which is not a maximum of the likelihood. Clipping it to 0 produces a
+    standard error of exactly 0.0, hence z = +/-inf and p = 0.0, with an
+    odds-ratio interval of zero width -- while the optimiser still reports
+    convergence, so nothing in the output reveals the failure. The measured
+    case in the register is diag(inv H) = [-44831, 191336, -833622], which
+    yielded bse = [0.0, 437.4] and p = 0.0 with converged = True.
+
+    What is done instead. A negative variance propagates as NaN, so every
+    quantity derived from it is NaN rather than infinitely precise, and the
+    conditioning of H is reported separately. Inference is gated on that
+    conditioning -- on whether the Hessian is positive definite -- NOT on the
+    optimiser success flag, which is the thing already known to be unreliable
+    here. The external reviewer proposed checking convergence; that safeguard
+    would not have caught this.
+
+    Returns a dict with `se`, `cov`, `inference_valid`, `min_eigenvalue`,
+    `cond`, `n_negative_variance` and `reason`.
+    """
+    H = np.asarray(H, dtype=float)
+    p = H.shape[0]
+    nan = np.full(p, np.nan)
+    out = {"se": nan, "cov": None, "inference_valid": False,
+           "min_eigenvalue": np.nan, "cond": np.nan,
+           "n_negative_variance": 0, "reason": ""}
+
+    if not np.all(np.isfinite(H)):
+        out["reason"] = ("The numerical Hessian contains non-finite entries, so no "
+                         "standard error can be computed. Inference is withheld.")
+        return out
+
+    try:
+        eig = np.linalg.eigvalsh(0.5 * (H + H.T))
+        out["min_eigenvalue"] = float(np.min(eig))
+        amax = float(np.max(np.abs(eig)))
+        amin = float(np.min(np.abs(eig)))
+        out["cond"] = float(amax / amin) if amin > 0 else np.inf
+    except Exception:                                   # pragma: no cover
+        out["reason"] = "The numerical Hessian could not be decomposed."
+        return out
+
+    try:
+        cov = np.linalg.inv(H)
+    except np.linalg.LinAlgError:
+        out["reason"] = ("The numerical Hessian is singular, so the parameters are "
+                         "not identified by these data. Inference is withheld.")
+        return out
+
+    out["cov"] = cov
+    var = np.diag(cov)
+    neg = int(np.sum(var < 0))
+    out["n_negative_variance"] = neg
+    # No clip. A negative variance has no square root, and saying so is the
+    # whole point of this function.
+    se = np.where(var >= 0, np.sqrt(np.where(var >= 0, var, 0.0)), np.nan)
+    out["se"] = se
+
+    pos_def = bool(out["min_eigenvalue"] > 0) and neg == 0
+    out["inference_valid"] = pos_def and bool(np.all(np.isfinite(se)))
+    if not out["inference_valid"]:
+        bits = []
+        if neg:
+            bits.append(f"{neg} of {p} parameter variances are negative")
+        if not (out["min_eigenvalue"] > 0):
+            bits.append(f"the smallest Hessian eigenvalue is "
+                        f"{out['min_eigenvalue']:.4g}, so the Hessian is not "
+                        f"positive definite")
+        if np.isfinite(out["cond"]) and out["cond"] > 1e10:
+            bits.append(f"the Hessian condition number is {out['cond']:.3g}")
+        out["reason"] = (
+            "The numerical Hessian does not support inference: "
+            + "; ".join(bits) + ". The optimiser may still report success -- it "
+            "does in the measured case -- so the convergence flag is not "
+            "evidence. Standard errors, z-values, p-values and intervals for "
+            "the affected parameters are NaN rather than zero-width. Simplify "
+            "the model, add replicates, or rescale the predictors."
+        )
+    return out
 
 
 def _numerical_hessian(f, x: np.ndarray, eps: float = 1e-5) -> np.ndarray:

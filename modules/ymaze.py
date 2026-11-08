@@ -89,6 +89,8 @@ import pandas as pd
 
 GROUP_KEYS = ["Genotype", "Treatment", "Sex"]
 ARM_ORDER_DEFAULT = ("A", "B", "C")
+
+_FLYID_ALIASES = ("flyid", "fly_id", "fly", "id", "animal", "subject")
 DEFAULT_CHANCE = 0.50
 MIN_ENTRIES = 3   # need >=3 entries to score one alternation triad
 
@@ -149,7 +151,7 @@ def _resolve_columns(df: pd.DataFrame) -> Dict[str, str]:
         "Genotype": ["genotype", "strain", "line"],
         "Treatment": ["treatment", "drug", "compound", "condition"],
         "Sex": ["sex"],
-        "FlyID": ["flyid", "fly_id", "fly", "id", "animal", "subject"],
+        "FlyID": list(_FLYID_ALIASES),
         "Order": ["order", "entry", "entry_order", "step", "index", "time", "t"],
         "Arm": ["arm", "arm_entered", "choice", "position"],
         "Turn": ["turn", "direction", "lr"],
@@ -164,16 +166,56 @@ def _resolve_columns(df: pd.DataFrame) -> Dict[str, str]:
     return found
 
 
-def load_ymaze(df: pd.DataFrame) -> pd.DataFrame:
+def _validate_arms(values, order, where: str) -> None:
+    """
+    Every arm label must be one of the maze's actual arms.
+
+    Register N20. Arm labels were never checked, and the alternation triad test
+    is `arms[i] != arms[i-1] and arms[i] != arms[i-2] and arms[i-1] != arms[i-2]`
+    -- three mutually different labels. A file whose arms are labelled W, X, Y, Z
+    therefore scores 100% alternation, because consecutive entries are always
+    three different strings. A three-arm maze has three arms; a fourth label is
+    a data-entry error, a different apparatus, or a column that is not an arm
+    column, and in none of those cases is the alternation score meaningful.
+    """
+    allowed = {str(a).strip().upper() for a in order}
+    seen = {str(v).strip().upper() for v in values
+            if v is not None and str(v).strip() != "" and str(v).lower() != "nan"}
+    bad = sorted(seen - allowed)
+    if bad:
+        raise ValueError(
+            f"Unrecognised Y-maze arm label(s) {bad} in {where}; the maze arms are "
+            f"{sorted(allowed)}. Arm labels were previously used unchecked, and "
+            f"because an alternation triad is scored whenever three consecutive "
+            f"labels differ, {len(bad)} extra label(s) make a fly alternate "
+            f"perfectly by construction -- four distinct invalid labels score "
+            f"100% alternation. Relabel the arms, or pass `arm_order` if this "
+            f"apparatus really uses different names."
+        )
+
+
+def load_ymaze(df: pd.DataFrame,
+               arm_order: Sequence = ARM_ORDER_DEFAULT) -> pd.DataFrame:
     """
     Normalise input to a canonical long table:
         Genotype, Treatment, Sex, FlyID, Order, Arm, Turn
 
     Accepts:
       (A) Long per-entry rows: one row per arm entry, with an Arm column
-          (and/or a Turn column), ordered by Order if present.
+          (and/or a Turn column), ordered by Order if present. A FlyID is
+          REQUIRED for this layout (register N20): without one, each row was
+          given its own index as a fly identifier, so six arm entries by one
+          fly became six flies with one entry each. That destroys the sequence
+          -- and in a Y-maze the sequence IS the datum, since alternation is a
+          property of consecutive triads, not of individual entries. It also
+          multiplies N by the number of entries per fly, so every interval
+          narrows and every test inflates.
       (B) Per-fly sequence string: a Sequence column like "ABCACB" or
-          "A,B,C,A,C,B" (one row per fly).
+          "A,B,C,A,C,B" (one row per fly). Here one row really is one fly, so a
+          row index is a label rather than a fabrication and FlyID stays
+          optional.
+
+    Arm labels are validated against `arm_order` in both layouts.
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=["Genotype", "Treatment", "Sex", "FlyID", "Order", "Arm", "Turn"])
@@ -188,16 +230,19 @@ def load_ymaze(df: pd.DataFrame) -> pd.DataFrame:
     if "Genotype" not in col:
         df["Genotype"] = "Genotype1"
         col["Genotype"] = "Genotype"
-    if "FlyID" not in col:
-        df["FlyID"] = np.arange(len(df))
-        col["FlyID"] = "FlyID"
-
     # ── Layout B: per-fly sequence string ────────────────────────────────────
     if "Sequence" in col and "Arm" not in col:
+        # One row is one fly here, so an index is a label, not an invention.
+        if "FlyID" not in col:
+            df["FlyID"] = [f"row{i}" for i in range(len(df))]
+            col["FlyID"] = "FlyID"
         rows = []
         for _, r in df.iterrows():
             seq = str(r[col["Sequence"]]).strip()
             arms = [s for s in (seq.split(",") if "," in seq else list(seq)) if s.strip()]
+            _validate_arms(arms, arm_order,
+                           f"the Sequence string {seq!r} for fly {r[col['FlyID']]!r}")
+            arms = [a.strip().upper() for a in arms]
             for o, a in enumerate(arms):
                 rows.append({
                     "Genotype": r[col["Genotype"]], "Treatment": r[col["Treatment"]],
@@ -208,11 +253,27 @@ def load_ymaze(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Layout A: long per-entry rows ─────────────────────────────────────────
     elif "Arm" in col or "Turn" in col:
+        if "FlyID" not in col:
+            raise ValueError(
+                f"Long-format Y-maze input (one row per arm entry) has no FlyID "
+                f"column; the aliases searched were {_FLYID_ALIASES}. Each row "
+                f"was previously given its own identifier, so {len(df)} arm "
+                f"entries became {len(df)} flies with one entry each: the "
+                f"sequence -- which is the datum a Y-maze measures, since "
+                f"alternation is a property of consecutive triads -- was "
+                f"destroyed, and N was inflated by the number of entries per "
+                f"fly. Add a FlyID column, or supply one row per fly with a "
+                f"Sequence string instead."
+            )
+        if "Arm" in col:
+            _validate_arms(df[col["Arm"]].tolist(), arm_order,
+                           f"column {col['Arm']!r}")
         out = pd.DataFrame({
             "Genotype": df[col["Genotype"]], "Treatment": df[col["Treatment"]],
             "Sex": df[col["Sex"]], "FlyID": df[col["FlyID"]],
             "Order": df[col["Order"]] if "Order" in col else np.arange(len(df)),
-            "Arm": df[col["Arm"]].astype(str) if "Arm" in col else np.nan,
+            "Arm": df[col["Arm"]].astype(str).str.strip().str.upper()
+            if "Arm" in col else np.nan,
             "Turn": df[col["Turn"]].astype(str).str.upper().str[0] if "Turn" in col else np.nan,
         })
         out = out.sort_values(["Genotype", "Treatment", "Sex", "FlyID", "Order"])

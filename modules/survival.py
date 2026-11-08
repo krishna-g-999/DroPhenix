@@ -144,6 +144,54 @@ def _resolve_columns(df: pd.DataFrame) -> Dict[str, str]:
     return found
 
 
+_EVENT_DEATH_WORDS = {"1", "1.0", "true", "dead", "death", "died", "event"}
+_EVENT_CENSOR_WORDS = {"0", "0.0", "false", "alive", "censored", "censor",
+                       "escaped", "lost", "survived"}
+
+
+def _coerce_event(raw: "pd.Series") -> "pd.Series":
+    """
+    Map a recorded status onto {0, 1}, refusing anything that is not one.
+
+    Register N19. This used to be `(pd.to_numeric(x) >= 1).astype(int)`, which
+    turns a MISSING status into 0 = right-censored and silently coerces any
+    code at or above 1 into a death. Neither is defensible: a missing status is
+    not evidence that the fly survived to the end of the experiment, and a
+    status of 2 or "maybe" is not evidence of anything. Both now stop the
+    expansion with a row-level error, because the alternative is a survival
+    curve built partly out of guesses about which flies died.
+
+    Accepted: 0/1, False/True, and the documented words in
+    `_EVENT_DEATH_WORDS` / `_EVENT_CENSOR_WORDS` (case-insensitive).
+    """
+    txt = raw.astype(str).str.strip().str.lower()
+    missing = raw.isna() | txt.isin(["", "nan", "none", "na", "n/a", "<na>"])
+    if bool(missing.any()):
+        idx = list(raw.index[missing])[:8]
+        raise ValueError(
+            f"{int(missing.sum())} of {len(raw)} lifespan rows have no event "
+            f"status (first offending row labels: {idx}). A missing status was "
+            f"previously read as 0 = right-censored, i.e. as evidence that the "
+            f"fly was still alive at its recorded time; it is not. Record 1 for "
+            f"an observed death and 0 for a censored observation, or remove the "
+            f"row with a stated reason."
+        )
+    out = pd.Series(np.nan, index=raw.index, dtype=float)
+    out[txt.isin(_EVENT_DEATH_WORDS)] = 1.0
+    out[txt.isin(_EVENT_CENSOR_WORDS)] = 0.0
+    bad = out.isna()
+    if bool(bad.any()):
+        vals = sorted({str(v) for v in raw[bad].unique()})[:8]
+        raise ValueError(
+            f"{int(bad.sum())} lifespan rows carry an event status that is "
+            f"neither a death nor a censoring: {vals}. Non-binary codes used to "
+            f"be coerced (anything >= 1 became a death), which invents the "
+            f"status rather than reading it. Use 1/0, True/False, or one of "
+            f"{sorted(_EVENT_DEATH_WORDS)} / {sorted(_EVENT_CENSOR_WORDS)}."
+        )
+    return out.astype(int)
+
+
 def to_event_table(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalise either supported layout to a canonical event-level table.
@@ -200,32 +248,92 @@ def to_event_table(df: pd.DataFrame) -> pd.DataFrame:
             "Treatment": df[t].astype(str),
             "Sex": df[s].astype(str),
             "Time": pd.to_numeric(df[col["Time"]], errors="coerce"),
-            "Event": pd.to_numeric(df[col["Event"]], errors="coerce"),
+            # Register N19: validated, not coerced. See _coerce_event.
+            "Event": _coerce_event(df[col["Event"]]),
         })
-        # Coerce event to {0,1}; treat anything >=1 as event.
-        out["Event"] = (out["Event"] >= 1).astype(int)
-        out = out.dropna(subset=["Time"])
+        bad_time = out["Time"].isna()
+        if bool(bad_time.any()):
+            raise ValueError(
+                f"{int(bad_time.sum())} lifespan rows have no usable Time. A row "
+                f"with an event status but no time cannot enter a survival "
+                f"analysis, and dropping it silently changes the risk set; it is "
+                f"refused instead."
+            )
 
     # ── Layout B: daily cohort counts ────────────────────────────────────────
     elif "Day" in col and "Dead_count" in col and "Total_start" in col:
+        # Register N17/N18. `alive = start - deaths` did not subtract the flies
+        # recorded as CENSORED, so every explicitly censored fly was expanded
+        # twice: once at its censoring day and again, as a different fly, at the
+        # last scored day. A cohort of 10 with 1 death and 1 censor became 11
+        # flies and S(5) = 0.9091 against a truth of 0.9000, and the error
+        # scales with the censor count -- 10 escapers in 100 inflated every risk
+        # set by up to 10%. Escapes and handling losses are routine in a
+        # lifespan experiment, so this was not an edge case. Nothing checked
+        # that deaths + censored stayed within the cohort either, so the
+        # arithmetic could be wrong in both directions unnoticed.
         rows = []
         day, dead, total = col["Day"], col["Dead_count"], col["Total_start"]
         cens = col.get("Censored_count")
+
+        def _count(value, what, gg, tt, ss, d):
+            """A daily count must be a non-negative integer, or the expansion stops."""
+            v = pd.to_numeric(value, errors="coerce")
+            if pd.isna(v):
+                raise ValueError(
+                    f"{what} is missing for {gg} | {tt} | {ss} on day {d:g}. A "
+                    f"missing daily count used to be read as 0, which asserts "
+                    f"that nobody died or was lost that day; that is an "
+                    f"observation, not a default. Record the count or remove the "
+                    f"day with a stated reason."
+                )
+            if float(v) < 0 or float(v) != int(float(v)):
+                raise ValueError(
+                    f"{what} for {gg} | {tt} | {ss} on day {d:g} is {v}, which is "
+                    f"not a count of flies."
+                )
+            return int(float(v))
+
         for (gg, tt, ss), grp in df.groupby([g, t, s]):
             grp = grp.sort_values(day)
-            start_n = int(pd.to_numeric(grp[total], errors="coerce").iloc[0])
+            start_raw = pd.to_numeric(grp[total], errors="coerce").dropna()
+            if start_raw.empty:
+                raise ValueError(
+                    f"Cohort {gg} | {tt} | {ss} has no usable Total_start, so the "
+                    f"number of flies at risk is unknown and the expansion is refused."
+                )
+            start_n = int(start_raw.iloc[0])
+            if start_n <= 0:
+                raise ValueError(
+                    f"Cohort {gg} | {tt} | {ss} declares Total_start = {start_n}."
+                )
             last_day = float(pd.to_numeric(grp[day], errors="coerce").max())
             n_dead_total = 0
+            n_cens_total = 0
             for _, r in grp.iterrows():
                 d = float(r[day])
-                nd = int(pd.to_numeric(r[dead], errors="coerce") or 0)
+                nd = _count(r[dead], "Dead_count", gg, tt, ss, d)
+                nc = _count(r[cens], "Censored_count", gg, tt, ss, d) \
+                    if cens is not None else 0
                 n_dead_total += nd
+                n_cens_total += nc
+                # Conservation, checked as the cohort is consumed (N18): the
+                # flies accounted for so far may never exceed the flies loaded.
+                if n_dead_total + n_cens_total > start_n:
+                    raise ValueError(
+                        f"Cohort conservation violated for {gg} | {tt} | {ss}: by "
+                        f"day {d:g} the file records {n_dead_total} deaths and "
+                        f"{n_cens_total} censored observations, which is "
+                        f"{n_dead_total + n_cens_total} flies out of a cohort of "
+                        f"{start_n}. Either Total_start is wrong or a daily count "
+                        f"is. The expansion is refused rather than producing a "
+                        f"risk set larger than the experiment."
+                    )
                 rows += [(gg, tt, ss, d, 1)] * nd
-                if cens is not None:
-                    nc = int(pd.to_numeric(r[cens], errors="coerce") or 0)
-                    rows += [(gg, tt, ss, d, 0)] * nc
-            # Any flies never recorded as dead -> censored at last scored day.
-            alive = start_n - n_dead_total
+                rows += [(gg, tt, ss, d, 0)] * nc
+            # Flies neither recorded dead NOR recorded censored are censored at
+            # the last scored day. Subtracting the censors is the N17 fix.
+            alive = start_n - n_dead_total - n_cens_total
             if alive > 0:
                 rows += [(gg, tt, ss, last_day, 0)] * alive
         out = pd.DataFrame(rows, columns=["Genotype", "Treatment", "Sex", "Time", "Event"])

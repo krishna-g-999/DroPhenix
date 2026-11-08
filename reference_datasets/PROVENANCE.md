@@ -22,3 +22,31 @@ REAL = verified raw data or exact published parameters. simulated = generated fr
 | Grooming | sample1_dCREB2 | simulated | Qiao B et al. 2018 eLife 7:e34497 | WT ~13% time grooming |
 | Grooming | sample2_FoxP | simulated | Qiao B et al. 2018 eLife 7:e34497 | WT ~13% time grooming |
 | Grooming | sample3_Cul3 | simulated | Qiao B et al. 2018 eLife 7:e34497 | WT ~13% time grooming |
+
+## Added 2026-11-08 — real raw and real scored sleep recordings
+
+Both entries below are REAL published data, not simulated from parameters, and
+both close a gap that `docs/SCIENTIFIC_VALIDATION_PLAN.md` named explicitly.
+
+| Module | Dataset | Type | Citation | What it establishes |
+|---|---|---|---|---|
+| `dams.py` — the **>=5-min bout rule itself** | `dam_microbiome/RawData.zip` → `RawData/Figure5/Monitor{26,27,36,37,46,47,81,82,83,84,85,86}.txt` | **REAL raw beam counts** (CC-BY 4.0) | Selkrig J, Mohammad F, Ng SH, et al. (2018) *Sci Rep* 8:10646, doi:10.1038/s41598-018-28764-5; data doi:10.5281/zenodo.3403481 | Twelve raw DAMSystem monitors, 10,030 one-minute rows each, 32 channels, 14–21 Sep 2017, 12:12 LD. The dataset's own channel map assigns 379 of the 384 channels to germ-free, conventionalised or conventionally reared. Suite `validate_sleep_homeostasis`'s sibling `validate_dam_raw_microbiome`: the rule reproduces an independent implementation of the published definition on all 379 flies to within the module's own 1-decimal rounding (max 0.0500 min/day). The paper's conclusion is **negative** — a limited influence of the microbiome on sleep — which makes it a benchmark for *not* manufacturing an effect. |
+| `dams.py` / `dam_reader.py` — per-day summary, rebound direction, definition sensitivity | `sleep_homeostasis/dataset.zip` (35 `.txt`) | **REAL scored sleep** (CC0) | Jagannath A, Sengupta T, et al. (2024) *eLife* 13:RP91355, doi:10.7554/eLife.91355; data doi:10.5061/dryad.qnk98sfpp, Zenodo 10069769 | 33 sleep files. Figure 1: DAM-style, 6 h / 12 h (60-min bins) and 24 h (30-min bins) deprivation, 3 days. Figures 2–5: ethoscope, the **same flies scored under both a 5-min and a 25-min sleep definition** — six paired files, 0 violating cells out of ~35,000, the 25-min criterion recovering 36–48% of 5-min-rule sleep. Suite `validate_sleep_homeostasis`. |
+
+**Two corrections these datasets forced, recorded so the record is not read as it was written.**
+
+1. `docs/REFERENCE_DATASETS.md` §2a cautioned that the eLife dataset is "not an
+   absolute sleep-amount anchor" at 1,083–1,297 min/day. That is true of the
+   **Figure 1** files (pooled median 1,145.0 min/day over 331 control flies,
+   48.6% above the repository's 1,150 ceiling) and **false of the ethoscope
+   files**, where all 128 undisturbed flies at the 5-min criterion sit inside
+   (300, 1150) with a pooled median of 776.3. The ethoscope files are a usable
+   absolute anchor; the Figure 1 files are not.
+2. The ceiling itself is **method-dependent, and 1,150 is not an upper bound on
+   published values**. Same criterion, same species: single-beam DAM
+   (Selkrig 2018) gives a median of 1,188 min/day with healthy activity and
+   almost nothing lost to death truncation, while position tracking
+   (eLife 2024 ethoscope) gives 730–847. A fly awake but not crossing the beam
+   scores as asleep. The flag text in `dam_reader.py` was corrected to stop
+   claiming the value exceeds every published figure; the numeric bound is
+   **not** changed, because that is a calibration decision for the owner.

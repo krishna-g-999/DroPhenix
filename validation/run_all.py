@@ -220,7 +220,40 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           "validate_real_lifespan_benchmark", "validate_larval_powerlaw",
           "validate_grooming_nf1", "validate_dam_25thday", "validate_dam_15v25",
           "validate_dam_parameters", "verify_dam_docx", "validate_dam_pipeline",
-          "demo_unequal_n"]
+          # Real published sleep-deprivation recordings (eLife 2024). The
+          # validation plan named this dataset as unblocked and ready to wire
+          # in; until this suite existed the characterisation lived only in a
+          # document, which the governance rules do not accept as evidence.
+          "validate_sleep_homeostasis",
+          # Raw Trikinetics beam counts (Selkrig et al. 2018). This is the
+          # dataset the validation plan named as the only way to validate the
+          # >=5-min bout rule itself, every other sleep dataset in the
+          # repository being already-scored sleep.
+          "validate_dam_raw_microbiome",
+          # Real published per-fly escape-climbing records (Thiem et al. 2024),
+          # usable now that the data guide from the same Zenodo record has been
+          # downloaded and the figure panels are labelled.
+          "validate_climbing_thiem",
+          # The two Layer-3 calibration rows the plan names, re-derived every
+          # run rather than left as numbers in a document.
+          "validate_statistical_calibration",
+          "demo_unequal_n",
+          # Regression guard for P0 Block A of the 2026-11 audit: the four
+          # safeguards that existed and were bypassed (register N1, N2, N6, N7,
+          # N9, N73, N74). Every check in it failed on commit 633c3f4.
+          "validate_p0_block_a",
+          # Regression guard for P0 Block B: the denominator and the
+          # representation of a missing measurement (register N5, N8, N10,
+          # N70, N79). Every check in it failed before the Block B fixes.
+          "validate_p0_block_b",
+          # Regression guard for P0 Block C: the fourteen numerical corrections
+          # (register N3, N11, N12, N14-N22, N29, N31, N32a/b, N34, N35, N43,
+          # N44). 56 of its 73 checks failed before the Block C fixes.
+          "validate_p0_block_c",
+          # Regression guard for P0 Block D: the eleven P3-sized crashes and
+          # unread safeguards (register N68, N71, N72, N76, N77, N80, N81, N82,
+          # N84, N85, N86). 36 of its 56 checks failed before the Block D fixes.
+          "validate_p0_block_d"]
 
 
 def main() -> int:

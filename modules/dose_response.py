@@ -933,6 +933,247 @@ def _delta_interval(fit: LogLogisticFit, level: float, x_pct: float) -> dict:
     }
 
 
+def lethal_dose_absolute(fit: LogLogisticFit, target: float = 0.5,
+                         level: float = 0.95, profile: bool = True) -> dict:
+    """
+    The dose at which the fitted curve reaches an ABSOLUTE response value --
+    for a survival curve with `target = 0.5`, the LC50.
+
+    Register N14. `e` is the curve's inflection point, the dose at which the
+    response is half way between the asymptotes `c` and `d`. That equals the
+    LC50 only when the curve runs from 1 to 0. The default mortality model here
+    is LL.3, whose upper asymptote d is FREE -- precisely so that control
+    survival can be below 1, which is Abbott's (1925) correction expressed as a
+    parameter -- so `e` is the dose at which survival is (c + d)/2, not 0.5.
+    With c = 0 and d = 0.90 that is survival 0.45, and the dose at which it is
+    reached is 11.9% above the real LC50. At d = 0.80 the error is +67%.
+
+    The general definition, solved in closed form:
+
+        target = c + (d - c) / (1 + exp(b * (log x - log e)))
+        =>  x = e * ((d - target) / (target - c)) ** (1 / b)
+
+    which is `e` exactly when target = (c + d)/2, and reduces to `e` for LL.2
+    (c = 0, d = 1, target = 0.5) -- so nothing changes for a curve that really
+    does run from 1 to 0.
+
+    Interval. The reported interval is a DELTA-METHOD interval on log-dose,
+    because log LC50 depends on b, c and d as well as on log e and all four
+    covary:
+
+        log LC50 = log e + (1/b) * [log(d - target) - log(target - c)]
+
+    The profile-likelihood interval for the equivalent RELATIVE level is
+    returned alongside as `profile`, but it is conditional on the fitted
+    asymptotes (the relative level is itself computed from c and d), so it is
+    secondary here. For LL.2 the two coincide with `ec50_profile_ci`.
+
+    Refusals. If `target` does not lie strictly between the fitted asymptotes
+    there is no such dose: the estimate is NaN and `reason` says why. That is
+    the case when control survival is already at or below 50%, where an LC50
+    can only be produced by extrapolating outside the model's own range.
+
+    `profile`. The secondary profile-likelihood interval costs about 38
+    additional non-linear fits -- measured at 0.52 s against 0.05 s for
+    everything else in this function, so it is 90% of the cost. Pass
+    `profile=False` where it is not wanted: a Monte-Carlo calibration study,
+    which needs only the interval the function reports as primary, or a batch
+    screen of many compounds where the profile is computed on demand for the
+    few that matter. `profile` is then None and `profile_skipped` says why.
+    Nothing else changes, and the default is unchanged.
+
+    Returns a dict with `estimate`, `ci_lower`, `ci_upper`, `se_log`,
+    `param_e`, `relative_level_pct`, `profile`, `definition`, `reason`,
+    `extrapolated`, `interval_caveat`, `interval_coverage_nominal`.
+
+    MIND THE KEY NAMES (register N96). The interval at the top level is
+    `ci_lower` / `ci_upper`. The one inside the nested `profile` dict is
+    `lower` / `upper`, which is this module's convention for interval
+    sub-dicts everywhere else. Reading `profile["ci_lower"]` returns None
+    silently, and a coverage study here did exactly that and concluded the
+    profile interval could never be computed, across 1,800 fits.
+    """
+    t = float(target)
+    b = float(fit.params["b"])
+    c = float(fit.params["c"])
+    d = float(fit.params["d"])
+    e = float(fit.params["e"])
+
+    out = {
+        "target": t,
+        "param_e": e,
+        "model": fit.model,
+        "level": float(level),
+        "definition": (
+            f"The dose at which the fitted curve equals {t:g} (for a survival "
+            f"curve, {t:.0%} survival): x = e * ((d - {t:g})/({t:g} - c))**(1/b). "
+            f"NOT the fitted `e`, which is the dose at which the response is "
+            f"(c + d)/2 = {(c + d) / 2.0:.4g}."
+        ),
+        "estimate": float("nan"),
+        "ci_lower": float("nan"),
+        "ci_upper": float("nan"),
+        "se_log": float("nan"),
+        "relative_level_pct": float("nan"),
+        "profile": None,
+        "reason": "",
+        "extrapolated": False,
+    }
+
+    lo_a, hi_a = min(c, d), max(c, d)
+    if not np.isfinite(b) or b == 0.0:
+        out["reason"] = "The fitted slope b is zero or not finite; the curve has no inverse."
+        return out
+    if not (lo_a < t < hi_a):
+        out["reason"] = (
+            f"The fitted curve runs between c = {c:.4g} and d = {d:.4g}, so it never "
+            f"reaches {t:g}. For a survival curve this means control survival "
+            f"(d = {d:.4g}) is already at or below {t:.0%}, or the lower plateau "
+            f"(c = {c:.4g}) is above it: there is no {t:.0%} dose inside the model's "
+            f"own range, and reporting one would be extrapolation. Refused."
+        )
+        return out
+
+    num, den = (d - t), (t - c)
+    log_k = float(np.log(num) - np.log(den))
+    log_ld = float(np.log(e)) + log_k / b
+    est = _safe_exp(log_ld)
+    out["estimate"] = est
+    out["relative_level_pct"] = float(100.0 * (d - t) / (d - c))
+
+    # Delta method on log LC50, including the asymptotes.
+    names = fit.theta_names
+    grad = np.zeros(len(names))
+    grad[names.index("log_e")] = 1.0
+    if "b" in names:
+        grad[names.index("b")] = -log_k / (b ** 2)
+    if "d" in names:
+        grad[names.index("d")] = 1.0 / (b * num)
+    if "c" in names:
+        grad[names.index("c")] = 1.0 / (b * den)
+    var_log = float(grad @ fit.cov_theta @ grad)
+    se_log = float(np.sqrt(var_log)) if np.isfinite(var_log) and var_log >= 0 else float("nan")
+    out["se_log"] = se_log
+    dfr = fit.df_resid
+    crit = float(stats.t.ppf(0.5 + level / 2.0, dfr)) if dfr > 0 else float("nan")
+    if np.isfinite(se_log) and np.isfinite(crit):
+        out["ci_lower"] = _safe_exp(log_ld - crit * se_log)
+        out["ci_upper"] = _safe_exp(log_ld + crit * se_log)
+    else:
+        out["reason"] = (
+            "The parameter covariance is not usable (an indefinite or singular "
+            "numerical Hessian), so no interval is reported. The point estimate "
+            "stands but is not accompanied by uncertainty."
+        )
+
+    x_pct = out["relative_level_pct"]
+    if not profile:
+        out["profile_skipped"] = (
+            "profile=False: the secondary profile-likelihood interval was not "
+            "computed. `ci_lower`/`ci_upper` are the delta-method interval this "
+            "function reports as primary and are unaffected."
+        )
+    elif 0.0 < x_pct < 100.0:
+        try:
+            out["profile"] = _profile_interval(fit, level, x_pct)
+        except Exception as exc:                       # pragma: no cover
+            out["profile"] = {"error": str(exc)}
+
+    nz = fit.dose[fit.dose > 0]
+    if nz.size and np.isfinite(est):
+        out["extrapolated"] = bool(est > float(np.max(fit.dose)) or est < float(np.min(nz)))
+    out["method"] = (
+        "Closed-form inversion of the fitted log-logistic at an absolute response "
+        "level; delta-method interval on log-dose including b, c and d."
+    )
+    # Measured, not asserted: see BINOMIAL_INTERVAL_COVERAGE_NOTE above.
+    cav = interval_coverage_caveat(fit)
+    out["interval_caveat"] = cav
+    out["interval_coverage_nominal"] = cav is None
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Interval calibration under binomial sampling -- a MEASURED limitation
+# ═══════════════════════════════════════════════════════════════════════════
+# `fit_loglogistic` is weighted least squares with the cohort size `n` as the
+# weight. That reproduces the 1/n part of a binomial variance but NOT the
+# p(1-p) part. On a steep curve almost every dose sits near 0 or 1, where
+# binomial variance is nearly zero, and only one dose sits near 0.5, where it
+# is largest; homoscedastic least squares weights them alike, so `cov_theta`
+# is too small -- and so is every interval derived from it.
+#
+# Measured (`validate_statistical_calibration`, and the studies recorded in
+# BUG_AND_RISK_REGISTER.md under N95), 7 doses including a control, 40 flies
+# per dose, c = 0, e = 1, nominal 95%:
+#
+#   true d   slope b   binomial   homoscedastic Gaussian   binomial moments
+#     1.00      1        0.953            0.963                 0.950
+#     1.00      2        0.802            0.960                 0.830
+#     1.00      4        0.465            0.940                 0.445
+#     0.90      1        0.947            0.943                 0.950
+#     0.90      2        0.863            0.927                 0.897
+#     0.90      4        0.791            0.949                 0.767
+#
+# Under homoscedastic Gaussian noise the interval attains nominal coverage at
+# every slope, which is what least squares promises. Under binomial sampling
+# it does not, and the third column -- continuous noise with binomial moments
+# -- reproduces the shortfall, so the cause is the SHAPE of the variance and
+# not the discreteness of counts. The mechanism is visible directly: at
+# d = 1, b = 4 the reported SE of log LC50 averages 0.0170 while the true
+# sampling SD of log LC50 is 0.0682, four times larger.
+#
+# It is NOT a small-design artefact. Enriching the design to 20 doses and 300
+# flies per dose leaves coverage at b = 4 essentially unchanged (0.430 ->
+# 0.510 -> 0.483 across three designs), while BIAS does improve with design
+# (+2.4% -> +0.65% -> +0.32%). More data does not fix a wrong variance model.
+#
+# The profile-likelihood interval is better but not a remedy: it is computed
+# from the same residual sum of squares and carries the same assumption,
+# measuring 0.520 against the delta method's 0.480 at b = 4, and it frequently
+# cannot be computed at all on shallow curves (41 of 150 fits at d = 0.9,
+# b = 1).
+#
+# The remedy is a change to the FIT -- iteratively reweighted least squares
+# with binomial weights, or binomial maximum likelihood, or a parametric
+# bootstrap for the interval. That is a substantial change to a scientific
+# module and is recorded as an owner decision rather than made here. What is
+# done here is to stop the interval being reported as a 95% interval without
+# saying what it was measured to be.
+BINOMIAL_INTERVAL_COVERAGE_NOTE = (
+    "Interval calibration: this interval comes from a least-squares parameter "
+    "covariance, which assumes residuals of constant variance. These data are "
+    "proportions out of a cohort size, so their variance is p(1-p)/n and is "
+    "smallest where the curve is flat. Measured coverage of the nominal 95% "
+    "interval under binomial sampling is 0.95 at a slope of b = 1, 0.80-0.86 "
+    "at b = 2 and 0.47-0.79 at b = 4, and it does NOT improve with a larger "
+    "design. Read the interval as a lower bound on the uncertainty, more so "
+    "the steeper the fitted slope. See BUG_AND_RISK_REGISTER.md N95."
+)
+
+
+def interval_coverage_caveat(fit: "LogLogisticFit") -> Optional[str]:
+    """
+    The calibration caveat, where it applies.
+
+    It applies when the fit was given cohort sizes -- that is what makes the
+    response a binomial proportion rather than a continuous measurement. A
+    continuous response measured once per vial is the case least squares was
+    built for and carries no caveat.
+    """
+    w = getattr(fit, "weights", None)
+    if w is None:
+        return None
+    w = np.asarray(w, dtype=float)
+    if w.size == 0:
+        return None
+    # uniform weights mean no cohort sizes were supplied
+    finite = w[np.isfinite(w)]
+    if finite.size == 0 or float(np.ptp(finite)) == 0.0 and float(finite[0]) == 1.0:
+        return None
+    return BINOMIAL_INTERVAL_COVERAGE_NOTE
+
+
 def ec50_profile_ci(fit: LogLogisticFit, level: float = 0.95) -> dict:
     """
     PROFILE-LIKELIHOOD confidence interval for EC50, with the delta-method
@@ -1370,16 +1611,26 @@ def mortality_adjusted_response(
           returned so the user can see the number they would otherwise have
           published.
       (b) The mortality dose-response. Survival proportion (1 - dead/n_exposed)
-          is fitted as a decreasing curve, so `e` is by definition the LC50.
-          The default LL.3 leaves the upper asymptote free, which lets the
-          control survival be below 1 -- that is precisely Abbott's (1925)
-          correction expressed as a model parameter rather than applied by
-          hand. Use "LL.2" to force control survival to exactly 1.
+          is fitted as a decreasing curve, and the LC50 is obtained by solving
+          that curve for survival = 0.5. The default LL.3 leaves the upper
+          asymptote free, which lets the control survival be below 1 -- that is
+          precisely Abbott's (1925) correction expressed as a model parameter
+          rather than applied by hand -- and for exactly that reason the fitted
+          `e` is NOT the LC50: it is the dose at which survival reaches the
+          midpoint (c + d)/2 of the fitted range. `e` is reported separately as
+          `lc50_param_e` for traceability. Use "LL.2" to force control survival
+          to exactly 1, in which case the two coincide.
       (c) The overlap. Per-dose mortality, the highest dose at which mortality
           stays below `mortality_threshold` (the "behaviour-only window"), and
           the ratio EC50_behaviour / LC50.
 
-    HOW TO READ THE RATIO.
+    HOW TO READ THE RATIO. The three bands below are SCREENING CONVENTIONS,
+    not tests: they have no error rate, and the per-dose mortality table is the
+    evidence. They are also a comparison between two differently-defined
+    quantities -- EC50 is relative to the behavioural curve's own fitted range,
+    LC50 is an absolute 50%-survival dose -- so treat the ratio as a question
+    about whether the two curves occupy the same dose region, not as a
+    measurement.
         ratio < 0.33   the behavioural effect is half-maximal at a dose that
                        kills almost nothing; a specific behavioural phenotype
                        is defensible.
@@ -1438,9 +1689,16 @@ def mortality_adjusted_response(
         beh, ec50, beh_ci = None, float("nan"), None
         out["behaviour_error"] = str(exc)
 
-    # ── (b) mortality curve (fitted as SURVIVAL, so e is the LC50) ─────────
+    # ── (b) mortality curve, fitted as SURVIVAL ────────────────────────────
+    # Register N14. The LC50 is the dose at which SURVIVAL = 0.5. It is NOT the
+    # fitted `e`, which is the dose at which survival is (c + d)/2 -- and the
+    # default LL.3 leaves d free precisely so that control survival may be
+    # below 1. Reading `e` as the LC50 overstated it by 11.9% at d = 0.90 and
+    # 67% at d = 0.80, and that error propagated straight into the EC50/LC50
+    # overlap verdict below.
     max_mort = float(np.max(dd / ne)) if x.size else float("nan")
     mort, lc50, mort_ci = None, float("nan"), None
+    lc50_e, lc50_def, lc50_reason = float("nan"), "", ""
     mort_error = None
     if max_mort < 0.5:
         mort_error = (
@@ -1451,8 +1709,31 @@ def mortality_adjusted_response(
     else:
         try:
             mort = fit_loglogistic(x, surv_prop, n=ne, model=mortality_model)
-            lc50 = float(mort.params["e"])
-            mort_ci = ec50_profile_ci(mort, level=level)
+            lc50_e = float(mort.params["e"])
+            ld = lethal_dose_absolute(mort, target=0.5, level=level)
+            lc50 = float(ld["estimate"])
+            lc50_def, lc50_reason = ld["definition"], ld["reason"]
+            # Register N95. The mortality curve is always fitted with cohort
+            # sizes, so the interval below is always the under-covering one.
+            # Carrying the caveat out of here is the only way it reaches the
+            # user: this function, not `lethal_dose_absolute`, is what the
+            # dose-response page calls.
+            out["lc50_interval_caveat"] = ld.get("interval_caveat")
+            out["lc50_interval_coverage_nominal"] = ld.get(
+                "interval_coverage_nominal")
+            mort_ci = {
+                "lc50": lc50,
+                "lower": ld["ci_lower"],
+                "upper": ld["ci_upper"],
+                "level": float(level),
+                "method": ld.get("method", ""),
+                "interval_caveat": ld.get("interval_caveat"),
+                "interval_coverage_nominal": ld.get("interval_coverage_nominal"),
+                "profile_relative": ld.get("profile"),
+                "param_e_profile": ec50_profile_ci(mort, level=level),
+            }
+            if ld["reason"]:
+                out["lc50_refusal"] = ld["reason"]
         except Exception as exc:
             mort_error = str(exc)
     if mort_error:
@@ -1548,6 +1829,19 @@ def mortality_adjusted_response(
         "ec50_ci": beh_ci,
         "lc50": lc50,
         "lc50_ci": mort_ci,
+        "lc50_param_e": lc50_e,
+        "lc50_definition": lc50_def,
+        "lc50_reason": lc50_reason,
+        "ratio_note": (
+            f"The {ratio_warn:g} and {ratio_fail:g} ratio thresholds are SCREENING "
+            "CONVENTIONS chosen for this platform, not statistical tests, and they "
+            "carry no error rate. Nothing is estimated from them; the per-dose "
+            "mortality table is the primary evidence and is always returned. "
+            "EC50 is a relative ECx of the behavioural curve (half of its own "
+            "fitted range) while LC50 is the absolute 50%-survival dose, so the "
+            "ratio compares two differently-defined quantities and is a screening "
+            "heuristic for whether the two curves sit in the same dose region."
+        ),
         "ratio": ratio,
         "ratio_thresholds": {"warn": float(ratio_warn), "fail": float(ratio_fail)},
         "max_mortality": max_mort,
@@ -1560,8 +1854,11 @@ def mortality_adjusted_response(
         "warning": warning,
         "method": (
             "LL.4 behavioural curve among survivors; survival proportion fitted with "
-            f"{mortality_model} so e is the LC50 (control survival free = Abbott 1925 "
-            "correction as a parameter); overlap reported as EC50/LC50."
+            f"{mortality_model} (control survival free = Abbott 1925 correction as a "
+            "parameter), and the LC50 obtained by solving that fitted curve for "
+            "survival = 0.5 -- not by reading the fitted `e`, which is the dose at "
+            "which survival is (c + d)/2 and equals the LC50 only when the curve "
+            "runs from 1 to 0; overlap reported as EC50/LC50."
         ),
     })
     return out

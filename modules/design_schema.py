@@ -549,13 +549,44 @@ def check_confounding(
             "available": True,
             "confounded": False,
             "severity": 0.0,
+            "cluster_confounded": False,
+            "nuisance_purity": 0.0,
+            "n_nuisance_levels_single_factor": 0,
+            "n_nuisance_levels": int(n_nuis),
             "crosstab": tab,
             "verdict": f"'{nuisance}' has only one level within these data; nothing to confound.",
         }
 
     # Severity: fraction of factor levels that occur at only one nuisance level.
+    #
+    # This measures COMPLETE confounding and only that. It is deliberately
+    # kept, because `confounded`, `blocking` and three existing suites are
+    # defined on it -- but on its own it is not enough, and the measurement
+    # below says why.
     levels_with_one = int((tab > 0).sum(axis=1).eq(1).sum())
     severity = levels_with_one / n_factor
+
+    # The complementary question, asked of the NUISANCE levels rather than the
+    # factor levels: how many clusters hold only one group?
+    #
+    # Measured on real published data (Selkrig et al. 2018, Sci Rep 8:10646;
+    # `validate_dam_raw_microbiome`, check G7): three microbiome groups across
+    # twelve DAM monitors, with each group present in four to six monitors, so
+    # `severity` is 0.000 and the verdict read "effects are separable". In the
+    # same call Cramer's V came out at 0.91 and was used only to decorate the
+    # other branches' text. Nine of those twelve monitors in fact held a
+    # single group, the measured between-monitor ICC was 0.118 and the design
+    # effect 4.60 -- 379 flies carrying the information of 82 -- and a per-fly
+    # test on that data returns p = 0.015 against p = 0.37 at the cohort level,
+    # which is to say it contradicts the published conclusion. A design can be
+    # formally separable and still put most of the between-cluster variance
+    # into the group contrast.
+    #
+    # `nuisance_purity` is a fact about the table, not a judgement: no
+    # threshold is introduced, `confounded` is unchanged, and the caller is
+    # told what the table is so it can choose the unit of analysis.
+    nuis_with_one = int((tab > 0).sum(axis=0).eq(1).sum())
+    nuisance_purity = nuis_with_one / n_nuis
 
     # Balance measure: Cramer's V on the contingency table (0 = independent)
     try:
@@ -579,10 +610,21 @@ def check_confounding(
             f"only one level of '{nuisance}' (Cramer's V = {cramers_v:.2f}). Effects are "
             f"separable but with reduced precision and residual bias risk."
         )
+    elif nuis_with_one > 0:
+        verdict = (
+            f"'{factor}' spans several levels of '{nuisance}', so the effects are formally "
+            f"separable -- but {nuis_with_one} of {n_nuis} '{nuisance}' levels hold exactly "
+            f"one level of '{factor}' (Cramer's V = {cramers_v:.2f}). Between-'{nuisance}' "
+            f"variation therefore enters the '{factor}' comparison. Analyse with "
+            f"'{nuisance}' as the unit, or with a model that carries it as a random "
+            f"effect; a test that treats individuals as independent will overstate the "
+            f"evidence by the design effect."
+        )
     else:
         verdict = (
-            f"'{factor}' is crossed with '{nuisance}' (Cramer's V = {cramers_v:.2f}); "
-            f"effects are separable."
+            f"'{factor}' is crossed with '{nuisance}' (Cramer's V = {cramers_v:.2f}), and "
+            f"every '{nuisance}' level holds more than one '{factor}' level; effects are "
+            f"separable."
         )
 
     return {
@@ -590,6 +632,11 @@ def check_confounding(
         "confounded": severity > 0,
         "severity": float(severity),
         "cramers_v": cramers_v,
+        # Clusters that hold a single group. See the comment above `severity`.
+        "cluster_confounded": bool(nuis_with_one > 0),
+        "nuisance_purity": float(nuisance_purity),
+        "n_nuisance_levels_single_factor": nuis_with_one,
+        "n_nuisance_levels": int(n_nuis),
         "crosstab": tab,
         "verdict": verdict,
     }
@@ -619,8 +666,14 @@ def design_report(df: pd.DataFrame, lights_on_hour: float = 8.0) -> dict:
 
     for f, nz in pairs:
         res = check_confounding(df, f, nz)
-        if res.get("available") and res.get("confounded"):
-            confounds.append({"factor": f, "nuisance": nz, **{k: v for k, v in res.items() if k != "crosstab"}})
+        # A pair is reported when it is confounded in the strict sense OR when
+        # some cluster holds a single group -- the second is not blocking, and
+        # is not counted as confounding, but it changes the unit of analysis
+        # and so must not be silent.
+        if res.get("available") and (res.get("confounded")
+                                     or res.get("cluster_confounded")):
+            confounds.append({"factor": f, "nuisance": nz,
+                              **{k: v for k, v in res.items() if k != "crosstab"}})
 
     blocking = [c["verdict"] for c in confounds if c.get("severity", 0) >= 1.0]
 

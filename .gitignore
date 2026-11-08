@@ -113,5 +113,15 @@ validation/validate_dam_15v25.py
 validation/validate_dam_parameters.py
 validation/verify_dam_docx.py
 
+# Audit documents that QUOTE the unpublished recordings. The findings are the
+# deliverable, but these two name the genotype and the compound and reproduce
+# measured sleep values from `docs/DAM_RESULTS_REPORT.md` (register N62, N64,
+# N65; plan section 4), so they stay local alongside that report until the
+# results are published or the documents are generalised. The other four audit
+# documents -- REPOSITORY_AUDIT, MODULE_INVENTORY, ARCHITECTURE_PROPOSAL and
+# SCIENTIFIC_VALIDATION_PLAN -- carry no laboratory measurement and are public.
+docs/BUG_AND_RISK_REGISTER.md
+docs/PRIORITISED_DEVELOPMENT_PLAN.md
+
 # Node dependencies for the document builder
 node_modules/
