@@ -390,16 +390,60 @@ def detect(frames: Sequence[np.ndarray],
     caller, so that the ROI is applied exactly where the published method
     applies it.
     """
-    tp = _trackpy()
-    import pandas as pd
-
     p = p or FreeClimberParams()
     grey = to_greyscale_stack(frames, p)
     if grey.size == 0:
         raise ValueError("no frames were supplied")
     lo, hi = int(p.crop_0), int(p.crop_n or grey.shape[0])
     grey = grey[lo:min(hi, grey.shape[0])]
-    stack, _bg = subtract_background(grey, p)
+    return detect_on_stack(grey, p)
+
+
+def detect_on_stack(grey: np.ndarray,
+                    p: Optional[FreeClimberParams] = None,
+                    background: Optional[np.ndarray] = None
+                    ) -> FreeClimberResult:
+    """
+    FreeClimber's detection chain on an already-cropped greyscale stack.
+
+    Separated from `detect` so that a caller can hand over exactly the frames
+    and exactly the region another detector is being given, which is what makes
+    a detector comparison a comparison of detectors. `detect` calls this, so
+    the suite that reproduces FreeClimber's published output covers this code
+    too.
+
+    `background` is the per-pixel background to subtract. FreeClimber builds its
+    own as a temporal median over the blank frames, which is the same
+    construction as `climbing_video.build_background`; supplying the one
+    already computed therefore leaves the method unchanged while removing a
+    difference in inputs that would otherwise be confounded with the detector.
+    Pass None to let FreeClimber build its own from `blank_0`/`blank_n`.
+
+    IMPORTANT: the signal threshold and the trim lines are computed from the
+    spots of the WHOLE stack, as the published code does. Calling this once per
+    frame would be a different algorithm.
+    """
+    tp = _trackpy()
+    import pandas as pd
+
+    p = p or FreeClimberParams()
+    grey = np.asarray(grey, dtype=float)
+    if grey.ndim != 3 or grey.size == 0:
+        raise ValueError("`grey` must be a non-empty (frames, h, w) stack")
+
+    if background is None:
+        stack, _bg = subtract_background(grey, p)
+    else:
+        bg = np.asarray(background, dtype=float)
+        if bg.ndim == 3:
+            bg = bg.mean(axis=2)
+        if bg.shape != grey.shape[1:]:
+            raise ValueError(
+                f"background shape {bg.shape} does not match the frames "
+                f"{grey.shape[1:]}")
+        # Flies are darker than the lit backdrop, so background minus frame is
+        # positive where a fly is -- the same sign convention as `detect`.
+        stack = bg[None, :, :] - grey
 
     diameter = int(p.diameter)
     if diameter % 2 == 0:
