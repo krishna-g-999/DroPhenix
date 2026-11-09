@@ -50,3 +50,12 @@ both close a gap that `docs/SCIENTIFIC_VALIDATION_PLAN.md` named explicitly.
    scores as asleep. The flag text in `dam_reader.py` was corrected to stop
    claiming the value exceeds every published figure; the numeric bound is
    **not** changed, because that is a calibration decision for the owner.
+
+## Added 2026-11-09 — FreeClimber's own example, for a detector comparison
+
+| Module | Dataset | Type | Citation | What it establishes |
+|---|---|---|---|---|
+| `freeclimber_detector.py` — the reimplementation of FreeClimber's DETECTION | `freeclimber/w1118_m_2_1.h264` (+ `.mp4`, `example.cfg`, `raw.csv`, `filtered.csv`, `slopes.csv`) | **REAL example recording and its published outputs** (MIT) | Spierer AN, Yoon D, Zhu C-T, Rand DM (2021) *J Exp Biol* 224:jeb229377, doi:10.1242/jeb.229377; https://github.com/adamspierer/FreeClimber | A reimplementation used as a reference has to be shown faithful BEFORE it judges anything, and the published program cannot be run here (it pins `trackpy==0.4.2`, which does not build on Python 3.13, and its own `tp.batch(invert=True)` call was removed after 0.4.x). These files let the reimplementation be checked against FreeClimber's own answer: 4,273 located spots against 4,289, 4,091 survivors against 4,093, per-vial totals 1343/1364/1384 against 1344/1364/1385, max per-frame difference 1 spot. Suite `validate_freeclimber_detection`. |
+
+The MIT licence requires its copyright and permission notice to travel with the
+files, so both are reproduced in `freeclimber/NOTICE.md` alongside them.
