@@ -340,15 +340,18 @@ def page_data_input():
     with src_tab:
         src = st.radio(
             "Select data source",
-            ["Demo dataset", "Demo: aging series (for MDR)",
+            ["Demo dataset", "Demo: ageing series only",
              "Upload CSV or Excel", "Use recorded video data"],
             horizontal=True,
         )
-        if src == "Demo: aging series (for MDR)":
+        if src == "Demo: ageing series only":
             st.caption(
-                "Longitudinal climbing across ages 5–45 days (Oregon-WT vs TDP43, "
-                "Vehicle vs Drug). Climbing PI declines with age; this enables "
-                "Motor Decline Rate (MDR). Includes an `Age` column."
+                "A SMALLER dataset: longitudinal climbing across ages 5–45 days "
+                "(Oregon-WT vs TDP43, Vehicle vs Drug), with an `Age` column "
+                "and nothing else. The full **Demo dataset** above already "
+                "covers ageing and every other axis; this one is here when you "
+                "want the ageing analyses on their own, with less to load and "
+                "fewer factors in the way."
             )
             if st.button("Load Aging Demo", type="primary", key="load_aging"):
                 from modules import synthetic as _syn
@@ -362,18 +365,43 @@ def page_data_input():
                            f"{df_raw['Age'].nunique()} ages.")
         elif src == "Demo dataset":
             st.caption(
-                "Built-in demo: Oregon-R (WT), TDP-43, FUS genotypes | "
-                "Vehicle, Spermine, Pantothenate | both sexes | "
-                "3 replicates | 8 timepoints."
+                "A complete worked study, so that every page has something to "
+                "show. A drug screen in a TDP-43 model of ALS: **Oregon-R (wild "
+                "type) vs TDP43**, **Spermine** and **Pantothenate** at four "
+                "doses each plus an untreated arm, **both sexes**, **ages 5-50 "
+                "days**, three vials per cell tested at **ZT2 / ZT6 / ZT10**, "
+                "counts out of n = 20 over 10-120 s."
+            )
+            st.caption(
+                "It carries every axis the app can analyse -- `Age` for Motor "
+                "Decline and the trajectory pages, `Dose` and `Compound` for "
+                "Dose-Response and Drug Ranking, `TimeOfDay` for Time-of-Day, "
+                "`VialID` for the hierarchical model, `DeathAge` for Survivor "
+                "Bias -- and sick untreated vials genuinely drop out of the "
+                "late ages, so the survivorship bias the tool detects is "
+                "present rather than absent."
+            )
+            st.caption(
+                ":red[Simulated data.] Nothing in it is evidence about "
+                "Drosophila and no number from it belongs in a manuscript; it "
+                "is here to show how each page behaves on data of the right "
+                "shape."
             )
             if st.button("Load Demo Dataset", type="primary"):
-                df_raw, warns, errs = load_data(None)
+                from modules import synthetic as _syn
+                df_raw, warns, errs = load_data(_syn.generate_demo_study())
                 st.session_state.update({
                     "df": df_raw, "data_source": "demo",
                     "data_warnings": warns, "data_errors": errs,
                     "run_complete": False, "base_metrics": {},
                 })
-                st.success(f"Demo dataset loaded: {len(df_raw)} rows.")
+                st.success(
+                    f"Demo study loaded: {len(df_raw)} rows, "
+                    f"{df_raw['VialID'].nunique()} vials, "
+                    f"{df_raw['Age'].nunique()} ages, "
+                    f"{df_raw['Dose'].nunique()} dose levels. "
+                    f"Run the pipeline below, then every page in the sidebar "
+                    f"has something to show.")
 
         elif src == "Upload CSV or Excel":
             st.caption(

@@ -709,8 +709,15 @@ def mdr_decay_curves(pi_df,mdr_df,sexes=None,title="Motor Decline Rate -- Expone
         ax.set_xlabel(xlabel,fontsize=FT_LABEL)
         ax.set_ylabel("PI (mean)" if ai==0 else "",fontsize=FT_LABEL)
         ax.set_title(sex,fontsize=FT_LABEL,pad=4)
-        ax.legend(fontsize=FT_LEGEND-1,frameon=False); ax.tick_params(length=3)
-    fig.suptitle(title,fontsize=FT_TITLE); fig.tight_layout(); return fig,_to_bytes(fig)
+        # The legend carries one entry per group PLUS one per fit, so on a
+        # six-group panel it is twelve lines deep and inside the axes it sits
+        # on top of the data it describes. Below the panel it covers nothing.
+        ax.legend(fontsize=FT_LEGEND-1,frameon=False,ncol=2,
+                  loc="upper center",bbox_to_anchor=(0.5,-0.16))
+        ax.tick_params(length=3)
+    fig.suptitle(title,fontsize=FT_TITLE); fig.tight_layout()
+    fig.subplots_adjust(bottom=0.38)      # room for the legend below the axes
+    return fig,_to_bytes(fig)
 
 # --- 11. Trajectory dendrogram -----------------------------------------------
 def trajectory_dendrogram(cluster_result,title="DTW Trajectory Clustering -- Dendrogram"):
