@@ -504,6 +504,13 @@ class DetectorConfig:
     debris_area_mult : a blob above this multiple of the single-fly area is
                      debris -- a shadow, a finger, a label -- not a pile of
                      flies, and is discarded and counted separately.
+    single_fly_area_px : the footprint of ONE fly in px^2, from the apparatus
+                     geometry rather than from the frame. 0 (default) estimates
+                     it from the blobs, which is biased DOWN by fragmentation
+                     and then makes the merge rule multiply every fly --
+                     register N102.
+    single_fly_area_mode : "floor" uses the larger of the supplied and the
+                     estimated area, "replace" uses the supplied one outright.
     max_merge_multiplicity : cap on the flies one blob may be counted as, and
                      the absolute debris ceiling in units of max_area. Kept
                      equal to debris_area_mult so the two rules agree.
@@ -524,6 +531,14 @@ class DetectorConfig:
     # flies is classified as debris, so capping the count lower would silently
     # truncate a pile the detector has already decided is made of flies.
     max_merge_multiplicity: int = 8
+    # The single-fly footprint in px^2, supplied by the caller from the
+    # apparatus geometry. 0 means "estimate it from the blobs in the frame",
+    # which is the previous behaviour and the default. See register N102 and the
+    # note in detect_detailed: the estimate is biased DOWN by fragmentation, and
+    # a too-small estimate makes the merge rule count one fly as several.
+    single_fly_area_px: float = 0.0
+    # "floor" (the larger of the supplied and estimated areas) or "replace".
+    single_fly_area_mode: str = "floor"
     # Detection mode:
     #   'dark' : flies are darker than the vial -> Otsu INVERSE threshold,
     #            background-independent (robust default for backlit/light-vial
@@ -725,6 +740,29 @@ class FlyDetector:
             [a for _, _, a in cand], float(cfg.min_area),
             float(getattr(cfg, "merge_split_factor", 1.6)),
         )
+        # REGISTER N102. The estimate above can be far too small, and when it is,
+        # the split rule below multiplies every fly: measured on 672 cells of
+        # this laboratory's paraquat footage its median estimate was 47 px^2
+        # against the 127 px^2 the apparatus geometry implies -- a factor of
+        # 2.70 -- so a single real fly was counted as round(127/47) = 3 animals.
+        # The cause is fragmentation: Otsu plus morphological opening breaks one
+        # fly into parts, so the 25th percentile lands on a fragment rather than
+        # on an animal, which is exactly the case the iteration cannot repair
+        # because every fragment looks like a small single.
+        #
+        # `single_fly_area_px` lets the caller supply the footprint the geometry
+        # implies -- a fly is about 7% of a cylinder's bore across, so its area
+        # follows from the region's own width. `single_fly_area_mode` chooses
+        # how it is used: "floor" takes the larger of the two, which protects
+        # against fragmentation while still letting a genuinely smaller animal
+        # be measured, and "replace" uses it outright. Zero keeps the previous
+        # behaviour exactly.
+        _geom = float(getattr(cfg, "single_fly_area_px", 0.0) or 0.0)
+        if _geom > 0:
+            if str(getattr(cfg, "single_fly_area_mode", "floor")) == "replace":
+                typical = _geom
+            else:
+                typical = max(typical, _geom)
         split_at = float(getattr(cfg, "merge_split_factor", 1.6)) * typical
         cap = int(getattr(cfg, "max_merge_multiplicity", 8))
         # Two debris ceilings, and the TIGHTER one applies. The relative ceiling
