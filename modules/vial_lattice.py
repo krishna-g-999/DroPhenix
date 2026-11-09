@@ -123,16 +123,45 @@ evidence margin of 10 BIC units (Kass & Raftery 1995). It is NOT a licence to
 score: `detect_vials` still refuses when the geometry checks fail, and every
 caller must still offer manual regions.
 
-AND IT IS NOT YET THE DEFAULT, because it is not yet calibrated on real
-footage. On eight manifest-labelled recordings it agreed 4 of 8, and every
-error was on a frame holding ONE cylinder -- empty frame leaves room for
-spurious teeth, and a real background is full of vertical edges a comb can land
-on that a synthetic one is not: a bench edge, a label, a printed scale, the
-rack frame. The 12/12 synthetic recovery was a layer-2 result and that is all
-it was. `climbing_video.auto_n_vials` therefore still defaults to the blob
-counter, this is opt-in, and the 62-recording calibration in
-`validation/study_vial_lattice_accuracy.py` -- which measures BOTH against the
-same ground truth -- is what decides which becomes the default.
+AND IT IS NOT THE DEFAULT, BECAUSE IT LOST THE CALIBRATION.
+
+Measured on all 62 manifest-labelled recordings of this laboratory's own
+apparatus (`validation/study_vial_lattice_accuracy.py`), against the cylinder
+count the experiment recorded when the videos were taken:
+
+    bands   -- the blob counter this was written to replace   53/62 = 85.5%
+    lattice -- this model, activity only                      46/62 = 74.2%
+    joint   -- this model, activity + wall structure          34/62 = 54.8%
+
+The blob counter wins overall, on both cylinder counts, and on five of six
+treatment arms including the most impaired one (TDP 10 mM: bands 70.0%, joint
+20.0%). The structural cue does not merely fail to help -- it costs 19
+percentage points and drops one-cylinder accuracy from 90.0% to 46.7% --
+because a real background is full of long vertical features a rigid comb scores
+as tube walls: the bench edge, the rack frame, a label, the printed scale. On
+synthetic frames those do not exist, so the cue looked free. The 12/12
+synthetic recovery established that the maths recovers a lattice when the data
+is a lattice, and nothing more.
+
+Nor does the confidence margin rescue it. Confident calls are 73.5% exact
+against 32.1% for unconfident ones, so the margin IS informative -- but 73.5%
+is still below the blob counter's unconditional 85.5%, and confident errors
+occur at delta-BIC 43.3, 35.2, 24.3 and 23.9. There is no threshold on this
+statistic that makes the estimator preferable.
+
+THIS MODULE IS RETAINED ANYWAY, and deliberately. It is the measured baseline
+that makes a next attempt judgeable, and it holds machinery a corrected
+model-order estimator would reuse: the closed-form two-rate likelihoods, the
+quasi-Poisson correction, the physical pitch constraint, and the exhaustive
+cumulative-sum search. Deleting the record of a failed attempt is how the same
+attempt gets made again.
+
+WHAT A NEXT ATTEMPT WOULD NEED, stated so that it is judgeable in advance: a
+cue that distinguishes a tube wall from any other long vertical line -- the
+PAIRED edges of a cylinder at a known separation, or the refractive signature
+of glass, rather than gradient magnitude alone -- and it must be measured on
+all 62 before it goes near a default. The threshold to beat is 85.5% overall
+and 70.0% on TDP 10 mM.
 
 References
 ----------
