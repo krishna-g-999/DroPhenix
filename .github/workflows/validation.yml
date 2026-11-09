@@ -22,8 +22,13 @@
 name: validation
 
 on:
+  # `push: ["**"]` plus `pull_request` runs the whole suite TWICE for every
+  # commit on a branch that has a pull request open -- same commit, same
+  # result, twice the minutes. Pushes are therefore watched only on the
+  # default branch, where there is no pull request to cover them, and
+  # everything else is covered by the pull_request trigger.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
