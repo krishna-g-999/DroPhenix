@@ -61,14 +61,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from modules import climbing_layout as LAY  # noqa: E402
 from modules import climbing_simple as CS  # noqa: E402
 
+# Laboratory data paths are RESOLVED, not hardcoded. See validation/lab_data.py.
+try:
+    from validation import lab_data as _LAB
+except Exception:                                      # direct-script use
+    import lab_data as _LAB
+_CLIMB = _LAB.climbing_root() or Path("_absent")
+
 FAILURES: list[str] = []
 
 # Real footage, if this machine has it. Absent = those checks are SKIPPED and said to
 # be skipped; they are never quietly counted as passes.
 RIGS = {
-    "paraquat": r"D:/DroPhenix/Testing data/Climbing assay/"
-                r"Paraquat climbing assay 010626_new set/**/*.MP4",
-    "Day7": r"D:/DroPhenix/Testing data/Climbing assay/Day7/*.MP4",
+    # Resolved, not hardcoded: the recordings are not on the drive the literal
+    # path assumed, and this suite reported SKIPPED because of it. Day 7 is
+    # under `Climbing assay_SP/` on this machine, which the glob now reflects.
+    "paraquat": str(_CLIMB / "Paraquat climbing assay 010626_new set"
+                    / "**" / "*.MP4"),
+    "Day7": str(_CLIMB / "Climbing assay_SP" / "Day7" / "*.MP4"),
 }
 
 

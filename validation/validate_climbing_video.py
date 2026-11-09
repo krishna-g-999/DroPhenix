@@ -61,11 +61,20 @@ import cv2  # noqa: E402
 
 from modules import climbing_video as CV  # noqa: E402
 
+# Laboratory data paths are RESOLVED, not hardcoded: this suite reported
+# SKIPPED for months because the recordings sit on a different drive than the
+# literal path it used to carry. See validation/lab_data.py.
+try:
+    from validation import lab_data as _LAB
+except Exception:                                      # direct-script use
+    import lab_data as _LAB
+
 FAILURES: list[str] = []
 SKIPPED: list[str] = []
 SEED = 20260803
 
-REAL_VIDEO_DIR = r"D:/DroPhenix/Testing data/Climbing assay/Drosophila _ climbing assay"
+REAL_VIDEO_DIR = str((_LAB.climbing_root() or pathlib.Path("_absent"))
+                     / "Drosophila _ climbing assay")
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
