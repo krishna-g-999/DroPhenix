@@ -61,6 +61,25 @@ _CLIMBING_CANDIDATES: List[Path] = [
 
 _ENV = "DROPHENIX_LAB_DATA"
 
+#: Set this to 1 to make both roots report ABSENT even on a machine that has
+#: the recordings.
+#:
+#: The suite is meant to be portable: a clone with no laboratory data should
+#: SKIP the suites built around that data and pass everything else. That claim
+#: had never been tested, because the suite had only ever run on the machine
+#: holding the data -- and the first CI run on a clean runner failed, so the
+#: claim was false. Testing it needed either a clean machine or this switch;
+#: this switch is cheaper and can be run before every push.
+#:
+#:     DROPHENIX_NO_LAB_DATA=1 ./.venv/Scripts/python.exe validation/run_all.py
+_ENV_NONE = "DROPHENIX_NO_LAB_DATA"
+
+
+def _suppressed() -> bool:
+    """True when the caller has asked us to behave as a machine with no data."""
+    return str(os.environ.get(_ENV_NONE, "")).strip().lower() in (
+        "1", "true", "yes", "on")
+
 
 def _env_root() -> Optional[Path]:
     v = os.environ.get(_ENV)
@@ -78,6 +97,8 @@ def dam_root() -> Optional[Path]:
     environment variable may point either at the parent (containing `DAM/`) or
     at the DAM directory itself, because both are natural readings of it.
     """
+    if _suppressed():
+        return None
     env = _env_root()
     if env is not None:
         for cand in (env / "DAM", env):
@@ -93,6 +114,8 @@ def dam_root() -> Optional[Path]:
 
 def climbing_root() -> Optional[Path]:
     """The directory holding the climbing recordings, or None."""
+    if _suppressed():
+        return None
     env = _env_root()
     if env is not None:
         for cand in (env / "Climbing assay", env):
@@ -123,6 +146,9 @@ def describe_roots() -> str:
     d, c = dam_root(), climbing_root()
     lines.append("DAM root      : %s" % (d if d else "NOT FOUND"))
     lines.append("climbing root : %s" % (c if c else "NOT FOUND"))
+    if _suppressed():
+        lines.append("%s is set, so both roots are reported ABSENT on purpose "
+                     "(portability check)." % _ENV_NONE)
     if os.environ.get(_ENV):
         lines.append("%s = %r" % (_ENV, os.environ[_ENV]))
     else:
