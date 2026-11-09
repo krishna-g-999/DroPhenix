@@ -66,6 +66,14 @@ Suites:
                            page necessary (line outside the box, overlaps, missing
                            fly count), and carrying a layout to another recording
                            with a refusal when the camera moved too far
+  validate_vial_lattice — how many cylinders are in the frame, as a model-order
+                           question rather than a blob count: the two closed-form
+                           likelihoods against naive computation, order and pitch
+                           recovered on known geometry, and the two failures that
+                           defeat any estimator reading fly activity alone — a
+                           fragmented tube read as two, and a vial at 2% activity
+                           read as absent, which is the phenotype-dependent
+                           failure that biases every treatment contrast
   validate_confirmable_line — the scoring line the operator confirms: a
                              confirmed row survives the shared-height-plus-offset
                              round trip with zero drift, the confidence gate
@@ -215,8 +223,23 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           "validate_fly_blob", "validate_climbing_detectors", "validate_climbing_layout",
           "validate_climbing_band",
           "validate_confirmable_line", "validate_multi_assay",
+          # How many cylinders are in the frame, which decides how the frame is
+          # carved up. The blob counter it replaces had never been measured and
+          # was wrong in both directions: it invented a cylinder on a
+          # two-cylinder frame, and it DROPPED the least active vial -- which is
+          # the most impaired one, making the instrument's sensitivity depend on
+          # the phenotype being measured.
+          "validate_vial_lattice",
           "validate_motor_decline", "validate_translational_score",
-          "validate_freeclimber_benchmark", "validate_real_aging_benchmark",
+          "validate_freeclimber_benchmark",
+          # FreeClimber's DETECTION method, reimplemented, so that the two
+          # detectors can be compared on the same frames. The published program
+          # cannot be run here: it pins trackpy 0.4.2, which does not build on
+          # Python 3.13, and with a current trackpy its own call signature is a
+          # TypeError. This suite establishes the reimplementation against
+          # FreeClimber's own published detections before it is used to judge
+          # anything, and asserts the bin-index unit error it reproduces.
+          "validate_freeclimber_detection", "validate_real_aging_benchmark",
           "validate_real_lifespan_benchmark", "validate_larval_powerlaw",
           "validate_grooming_nf1", "validate_dam_25thday", "validate_dam_15v25",
           "validate_dam_parameters", "verify_dam_docx", "validate_dam_pipeline",
