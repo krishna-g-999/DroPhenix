@@ -625,7 +625,7 @@ def detect_vials(
     background: Optional[np.ndarray] = None,
     start_s: float = 4.0,
     labels: Optional[Sequence[str]] = None,
-    verify_count: bool = True,
+    verify_count: bool = False,
 ) -> dict:
     """
     Locate the cylinders and their scoring lines automatically.
@@ -684,6 +684,12 @@ def detect_vials(
         # rather than a low score. An unconfident fit defers to the operator,
         # who knows more about the apparatus than an ambiguous fit does, and
         # the disagreement is recorded for the reviewer either way.
+        #
+        # OFF BY DEFAULT, for now. A safeguard that misfires refuses a valid
+        # analysis, which this project treats as a harm of its own, and the
+        # lattice is not yet calibrated on real footage -- on eight labelled
+        # recordings it over-counted three one-cylinder frames. It is enabled
+        # once study_vial_lattice_accuracy.py has measured it over all 62.
         if verify_count:
             try:
                 from modules import vial_lattice as _VL
@@ -1117,7 +1123,7 @@ def score_heights(heights_px: np.ndarray, vial: VialSpec,
 
 def auto_n_vials(path: str, background: Optional[np.ndarray] = None,
                  start_s: float = 4.0, max_vials: int = 12,
-                 method: str = "lattice") -> dict:
+                 method: str = "bands") -> dict:
     """
     Work out HOW MANY cylinders are in shot, instead of being told.
 
@@ -1138,7 +1144,24 @@ def auto_n_vials(path: str, background: Optional[np.ndarray] = None,
     bands are found from fly activity, fragments merged, and a band accepted
     when it carries at least 25% of the strongest band's activity.
 
-    WHY THE DEFAULT CHANGED. That 25% rule was described here as doing real
+    WHY "bands" IS STILL THE DEFAULT, THOUGH IT IS THE WORSE METHOD IN
+    PRINCIPLE. The lattice is not calibrated on real footage. On eight
+    manifest-labelled recordings of this laboratory's own apparatus it agreed
+    with the manifest 4 times out of 8, and every error was on a frame holding
+    ONE cylinder, where empty frame leaves room for spurious teeth and a real
+    background offers vertical edges a comb can land on -- a bench edge, a
+    label, a printed scale, the rack frame -- that a synthetic background does
+    not. Its 12/12 synthetic recovery establishes that the maths recovers a
+    lattice when the data is a lattice, and nothing more.
+
+    So the lattice is opt-in until `validation/study_vial_lattice_accuracy.py`
+    has measured both methods against all 62 manifest-labelled recordings. That
+    study decides the default. Making the lattice the default on the strength
+    of synthetic recovery -- which is what was done first -- is exactly the
+    inference the L1/L2/L3/L4 separation exists to forbid.
+
+    THE PROBLEM WITH "bands", WHICH IS REAL AND UNFIXED. That 25% rule was
+    described here as doing real
     work -- "a vial in which every fly died carries almost no activity and is
     correctly NOT reported as a vial". That reasoning is wrong in the case that
     matters. A vial whose flies are alive but barely moving is the MOST

@@ -117,12 +117,22 @@ No constant in that expression was chosen to make an answer come out.
 
 WHAT THIS DOES AND DOES NOT CLAIM
 ---------------------------------
-It returns an estimate, a per-order score table, and a `confident` flag that is
-set only when the chosen order beats the runner-up by more than a BIC unit. It
-is NOT a licence to score: `detect_vials` still refuses when the geometry
-checks fail, and every caller must still offer manual regions. Its measured
-agreement with this laboratory's manifest is reported by
-`validation/validate_vial_lattice.py`, not asserted here.
+It returns an estimate, a per-order score table, and a `confident` flag, set
+only when the chosen order beats the runner-up by the published very-strong-
+evidence margin of 10 BIC units (Kass & Raftery 1995). It is NOT a licence to
+score: `detect_vials` still refuses when the geometry checks fail, and every
+caller must still offer manual regions.
+
+AND IT IS NOT YET THE DEFAULT, because it is not yet calibrated on real
+footage. On eight manifest-labelled recordings it agreed 4 of 8, and every
+error was on a frame holding ONE cylinder -- empty frame leaves room for
+spurious teeth, and a real background is full of vertical edges a comb can land
+on that a synthetic one is not: a bench edge, a label, a printed scale, the
+rack frame. The 12/12 synthetic recovery was a layer-2 result and that is all
+it was. `climbing_video.auto_n_vials` therefore still defaults to the blob
+counter, this is opt-in, and the 62-recording calibration in
+`validation/study_vial_lattice_accuracy.py` -- which measures BOTH against the
+same ground truth -- is what decides which becomes the default.
 
 References
 ----------
@@ -148,6 +158,23 @@ N_BINS = 192
 # the REPRESENTATION, not assumptions about biology or about any apparatus.
 MIN_W_BINS = 3
 MAX_W_FRAC = 0.98
+
+# How much better the chosen order must be than the runner-up before the
+# estimate is reported as confident, in BIC units.
+#
+# This was 1.0, chosen as "better than a tie", which is close to meaningless:
+# BIC differences are on a deviance scale and one unit is noise. It is now the
+# published threshold for VERY STRONG evidence in model selection -- Kass &
+# Raftery (1995), table 6 -- which is a convention from the literature rather
+# than a number fitted to the recordings that exposed the problem.
+#
+# Measured on eight manifest-labelled recordings of this laboratory's own
+# apparatus: among the calls the estimator called confident under the old cut,
+# every CORRECT one scored 33 BIC units or more and every ERROR scored 8 or
+# less. The evidence measure separates them; the cut was in the wrong place.
+# Under this threshold the same sample gives three confident calls, all three
+# correct, and five routed to the manual region editor.
+CONFIDENT_DELTA_BIC = 10.0
 
 # Adjacent tubes cannot be closer together than one outside diameter, and the
 # activity band inside a tube is at most its BORE. So the pitch is at least the
@@ -453,12 +480,12 @@ def fit_lattice(profile: np.ndarray, max_vials: int = 12,
         offset_px=int(round(o * px_per_bin)),
         pitch_px=float(d * px_per_bin),
         width_px=float(w * px_per_bin),
-        confident=bool(delta > 1.0),
+        confident=bool(delta > CONFIDENT_DELTA_BIC),
         bic=bic,
         delta_bic=float(delta),
         dispersion=float(phi_a),
         bands=bands,
-        reason=("" if delta > 1.0 else
+        reason=("" if delta > CONFIDENT_DELTA_BIC else
                 f"orders {order[0]} and {order[1]} fit this recording almost "
                 f"equally well (BIC differ by {delta:.2f}); the number of "
                 f"cylinders cannot be read off it. Set the regions manually."),
