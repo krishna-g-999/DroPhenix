@@ -245,6 +245,9 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           # is a credible interval under a stated prior rather than HKSJ with a
           # t(1) quantile four to six times too wide.
           "validate_bayes_pool",
+          # N4: the experimental unit, identified by whether a candidate key
+          # repeats within a timepoint rather than by its column name.
+          "validate_experimental_unit",
           "demo_unequal_n",
           # Regression guard for P0 Block A of the 2026-11 audit: the four
           # safeguards that existed and were bypassed (register N1, N2, N6, N7,
