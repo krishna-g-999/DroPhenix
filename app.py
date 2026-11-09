@@ -5328,19 +5328,53 @@ def page_dams():
         else:
             prof = prof.copy()
             prof["Group"] = prof["Genotype"] + " | " + prof["Treatment"] + " | " + prof["Sex"]
+
+            # THE TIME COLUMN IS NAMED BY WHAT IT MEANS, so read the name rather
+            # than assuming it. `dams.sleep_profile` returns "ZT_hour" only when
+            # lights-on could be derived from the recording's own Light channel
+            # (or was supplied); with no usable Light column it returns
+            # "Hours_since_start" instead, deliberately, so that an axis whose
+            # zero is the start of the file is never labelled as Zeitgeber time.
+            #
+            # This page hardcoded "ZT_hour" and therefore raised KeyError on
+            # exactly the recordings where that safeguard fires -- the module's
+            # honest fallback crashed the page that displays it. Found by
+            # validation/validate_app_pages.py.
+            zt_col = ("ZT_hour" if "ZT_hour" in prof.columns
+                      else "Hours_since_start")
+            if zt_col not in prof.columns:
+                st.info("The sleep profile has no time column, so it cannot be "
+                        "plotted. This is a bug; please report the recording.")
+                st.dataframe(prof, width="stretch")
+                return
+            is_zt = (zt_col == "ZT_hour")
+
             fig = go.Figure()
             for i, (g, sub) in enumerate(prof.groupby("Group")):
-                sub = sub.sort_values("ZT_hour")
-                fig.add_trace(go.Scatter(x=sub["ZT_hour"], y=sub["sleep_min"],
+                sub = sub.sort_values(zt_col)
+                fig.add_trace(go.Scatter(x=sub[zt_col], y=sub["sleep_min"],
                                          mode="lines+markers", name=g,
                                          line=dict(color=palette[i % len(palette)])))
-            fig.update_layout(xaxis_title="Zeitgeber / circadian time (h)",
+            fig.update_layout(xaxis_title=("Zeitgeber / circadian time (h)"
+                                           if is_zt else
+                                           "Hours since recording start"),
                               yaxis_title="Sleep (min per epoch)", height=420,
                               legend=dict(orientation="h", y=1.02),
                               margin=dict(l=40, r=20, t=30, b=40))
             st.plotly_chart(fig, width="stretch")
-            st.caption("Sleep across the circadian cycle. Wild-type flies show a "
-                       "bimodal profile (rest in subjective night, midday siesta).")
+            if is_zt:
+                st.caption("Sleep across the circadian cycle. Wild-type flies "
+                           "show a bimodal profile (rest in subjective night, "
+                           "midday siesta).")
+            else:
+                st.warning(
+                    "The x-axis is HOURS SINCE THE RECORDING STARTED, not "
+                    "Zeitgeber time: this recording has no usable Light "
+                    "channel, so lights-on could not be located and ZT0 is "
+                    "unknown. The dark phase is therefore NOT at a fixed place "
+                    "on this plot, and the bimodal day/night pattern cannot be "
+                    "read off it. Supply the light schedule to get a true ZT "
+                    "axis.")
 
     with t_per:
         if not do_period or "period_summary" not in res:

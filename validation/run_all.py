@@ -235,6 +235,12 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           # simulation). Also establishes that the module's DEFAULT curve
           # family is identified on none of them.
           "validate_historic_trajectory_prior",
+          # The app itself: every page rendered in all three states a user can
+          # be in (no data, data loaded, pipeline run), and the STYLE of every
+          # figure the app actually draws. No other suite touches the app, and
+          # the app is the only part of this project a user ever sees.
+          "validate_app_pages",
+          "validate_figure_style",
           "validate_motor_decline", "validate_translational_score",
           "validate_freeclimber_benchmark",
           # FreeClimber's DETECTION method, reimplemented, so that the two

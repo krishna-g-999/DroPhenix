@@ -154,6 +154,43 @@ def _attach_gaps(fig, **counts):
     return fig
 
 
+def _nested_xaxis(ax, x_pos, tick_labels, groups, tick_fs=None,
+                  group_fs=None, y_rule=-0.46, y_text=-0.50):
+    """
+    Draw a TWO-LEVEL categorical x axis: treatments on the ticks, genotype as a
+    labelled band under the group of bars it spans.
+
+    Both bar charts in this module got this wrong, in opposite directions.
+    `t50_plot` packed both levels into one tick label, truncated and rotated,
+    and on twelve groups they overlapped into unreadable text. `pi_barplot`
+    labelled only the treatment, so the genotype appeared nowhere on the figure
+    and the three blocks of bars were unidentifiable.
+
+    The band sits below the rotated tick labels; `y_rule` is set low enough
+    that a long label such as "Spermine+Pantothenate" rotated 38 degrees clears
+    the rule rather than crossing it.
+
+    `groups` is a sequence of `(name, [x positions])`. The band is drawn in
+    axes-fraction coordinates below the tick labels with `clip_on=False`, so the
+    caller must leave room for it -- `fig.subplots_adjust(bottom=...)` after
+    `tight_layout`, which does not account for artists outside the axes.
+    """
+    ax.set_xticks(list(x_pos))
+    ax.set_xticklabels(list(tick_labels), rotation=38, ha="right",
+                       fontsize=tick_fs or (FT_ANNOT + 1))
+    trans = ax.get_xaxis_transform()          # x in data, y in axes fraction
+    for name, pos in groups:
+        pos = [p for p in pos if p is not None]
+        if not pos:
+            continue
+        a, b = min(pos), max(pos)
+        ax.plot([a - 0.45, b + 0.45], [y_rule, y_rule], transform=trans,
+                color="#999999", linewidth=0.8, clip_on=False, zorder=1)
+        ax.text((a + b) / 2.0, y_text, str(name), transform=trans,
+                ha="center", va="top", fontsize=group_fs or (FT_ANNOT + 1),
+                color="#222222", clip_on=False)
+
+
 def stats_annotation(ax,x1,x2,y,label,dy=1.5,lw=0.8):
     yt=y+dy
     ax.plot([x1,x1,x2,x2],[y,yt,yt,y],lw=lw,color="black")
@@ -259,8 +296,9 @@ def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
     if n_sx==1: axes=[axes]
     for ai,sex in enumerate(sxs):
         ax=axes[ai]; sdf=df[df["Sex"]==sex]
-        x=0; x_pos=[]; x_lbl=[]
+        x=0; x_pos=[]; x_lbl=[]; _groups=[]
         for geno in genos:
+            _gpos=[]
             for ti,trt in enumerate(trts):
                 row=sdf[(sdf["Genotype"]==geno)&(sdf["Treatment"]==trt)]
                 if row.empty: x+=1; continue
@@ -275,19 +313,37 @@ def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
                     _drawn+=1
                     if np.isfinite(pi_s):
                         ax.bar(x,pi_m,yerr=pi_s,color=_col(trt,ti),width=0.72,
-                               capsize=3,error_kw={"linewidth":0.8,"ecolor":"#333"},
+                               capsize=3,error_kw={"linewidth":0.8,"ecolor":"#333",
+                                 # `ecolor` colours the error bar's LINE only;
+                                 # its CAPS fall back to the default colour
+                                 # cycle, which put 60 artists at #1f77b4 on
+                                 # these figures -- the one colour on them that
+                                 # is neither the house style nor
+                                 # colour-blind-safe. Measured: `ecolor` alone
+                                 # leaves the caps at #1f77b4 and
+                                 # `markeredgecolor` does nothing -- `color` is
+                                 # the key matplotlib uses for the cap style.
+                                 "capthick":0.8,"color":"#333"},
                                edgecolor="black",linewidth=0.5,
                                hatch=SEX_HATCH.get(sex,""),zorder=3)
                         _ebars+=1
                     else:
                         # No SEM: no error bar. A zero-length one would assert
                         # that this mean is known exactly.
+                        #
+                        # MARKED BY ITS EDGE, NOT BY A LABEL ON EVERY BAR. This
+                        # used to annotate "SEM n/a" above each such bar: drawn
+                        # horizontally the labels collided with each other and
+                        # with the n= row, and drawn vertically they ran past
+                        # the axes and over the panel title. On this dataset
+                        # that is twelve overlapping texts carrying one fact.
+                        # A dotted edge says the same thing once per bar at no
+                        # cost in ink, and the figure note below says what it
+                        # means -- which is the ordinary convention for marking
+                        # a subset of bars.
                         ax.bar(x,pi_m,color=_col(trt,ti),width=0.72,
-                               edgecolor="black",linewidth=0.5,
+                               edgecolor="black",linewidth=0.9,linestyle=":",
                                hatch=SEX_HATCH.get(sex,""),zorder=3)
-                        ax.annotate("SEM n/a",(x,pi_m),textcoords="offset points",
-                                    xytext=(0,3),fontsize=FT_ANNOT,color="#777",
-                                    ha="center")
                         _gap_sem+=1
                     if "PI_replicates" in row.columns:
                         reps=r0["PI_replicates"]
@@ -297,10 +353,15 @@ def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
                         ax.annotate(f"n={int(_num(r0,_nc))}",(x,0.0),
                                     textcoords="offset points",xytext=(0,-12),
                                     fontsize=FT_ANNOT,color="#333",ha="center")
-                x_pos.append(x); x_lbl.append(trt[:10]); x+=1
+                x_pos.append(x); x_lbl.append(str(trt)); _gpos.append(x); x+=1
+            if _gpos: _groups.append((geno,_gpos))
             x+=0.7
         ax.axhline(0,color="black",linewidth=0.6,linestyle="--",alpha=0.45)
-        ax.set_xticks(x_pos); ax.set_xticklabels(x_lbl,rotation=38,ha="right",fontsize=FT_ANNOT+1)
+        # The genotype was previously NOWHERE on this figure: the ticks carried
+        # the treatment alone, so the blocks of bars could not be told apart.
+        _nested_xaxis(ax,x_pos,x_lbl,_groups)
+        ax.set_xlabel("Treatment, grouped by genotype",fontsize=FT_LABEL,
+                      labelpad=46)
         ax.set_ylabel("Performance Index" if ai==0 else "",fontsize=FT_LABEL)
         ax.set_title(sex,fontsize=FT_LABEL,pad=4)
         ax.set_ylim(-110,115)
@@ -315,8 +376,18 @@ def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
     else:
         fig.text(0.01,0.01,"n per bar not available in this table",
                  fontsize=FT_ANNOT,color="#a00")
+    if _gap_sem:
+        # Says once what used to be written on every affected bar.
+        fig.text(0.01,0.035,
+                 f"dotted outline: no SEM available for that bar "
+                 f"({_gap_sem} of {_drawn}); no error bar is drawn rather than "
+                 f"a zero-width one",
+                 fontsize=FT_ANNOT,color="#555")
     fig.suptitle(title,fontsize=FT_TITLE,y=1.01)
     fig.tight_layout()
+    # tight_layout does not account for artists drawn outside the axes, and the
+    # genotype band is one, so the room for it is reserved explicitly.
+    fig.subplots_adjust(bottom=0.42)
     _attach_gaps(fig,missing_metric=_gap_metric,missing_sem=_gap_sem,
                  drawn=_drawn,errorbars_drawn=_ebars,
                  n_units_reported=bool(_nc is not None),n_unit_column=_nc)
@@ -324,7 +395,19 @@ def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
 
 # --- 3. AUC heatmap ----------------------------------------------------------
 def auc_heatmap(auc_df,sex="Male",metric="AUC_norm",title=None):
-    """Heatmap Genotype x Treatment. RdYlGn, annotated values, 300 DPI."""
+    """
+    Heatmap Genotype x Treatment, annotated values, 300 DPI.
+
+    COLORMAP: `cividis`, not the `RdYlGn` this used to use. A red-green
+    diverging map is the worst available choice for a colour-vision-deficient
+    reader -- red and green are precisely the pair deuteranopes and protanopes
+    cannot separate -- so on a figure whose entire message is carried by colour
+    it makes that message unavailable to about one man in twelve, in a module
+    whose first line claims a colour-blind-safe palette. `cividis` was designed
+    for that readership (Nunez, Anderton & Renslow 2018, PLoS ONE 13:e0199239)
+    and is perceptually uniform, so an equal step in AUC is an equal step in
+    apparent lightness.
+    """
     df=auc_df[auc_df["Sex"]==sex].copy() if "Sex" in auc_df.columns else auc_df.copy()
     if df.empty or metric not in df.columns:
         fig,ax=plt.subplots(figsize=FS_SINGLE)
@@ -334,7 +417,7 @@ def auc_heatmap(auc_df,sex="Male",metric="AUC_norm",title=None):
     nr,nc=len(piv.index),len(piv.columns)
     fig,ax=plt.subplots(figsize=(max(4.5,nc*1.5),max(3.0,nr*0.9)))
     vmin=float(piv.min().min()); vmax=float(piv.max().max())
-    im=ax.imshow(piv.values,cmap=plt.cm.RdYlGn,aspect="auto",vmin=vmin,vmax=vmax)
+    im=ax.imshow(piv.values,cmap=plt.cm.cividis,aspect="auto",vmin=vmin,vmax=vmax)
     ax.set_xticks(range(nc)); ax.set_xticklabels(piv.columns,rotation=38,ha="right",fontsize=FT_TICK)
     ax.set_yticks(range(nr)); ax.set_yticklabels(piv.index,fontsize=FT_TICK)
     rng=vmax-vmin+1e-9
@@ -342,7 +425,11 @@ def auc_heatmap(auc_df,sex="Male",metric="AUC_norm",title=None):
         for j in range(nc):
             v=piv.values[i,j]
             if not np.isnan(v):
-                tc="black" if 0.25<(v-vmin)/rng<0.75 else "white"
+                # cividis runs dark blue (low) to bright yellow (high), so
+                # readable annotation ink is white on the lower half and black
+                # on the upper -- the opposite of what a light-middle diverging
+                # map needs, and wrong text contrast is itself a legibility bug.
+                tc="white" if (v-vmin)/rng<0.55 else "black"
                 ax.text(j,i,f"{v:.2f}",ha="center",va="center",fontsize=FT_ANNOT,color=tc)
     cb=fig.colorbar(im,ax=ax,fraction=0.03,pad=0.04)
     cb.set_label("Normalised AUC",fontsize=FT_TICK); cb.ax.tick_params(labelsize=FT_TICK)
@@ -365,22 +452,40 @@ def t50_plot(t50_df,sexes=None,title="Time to 50% Climbing (t50)"):
     if n_sx==1: axes=[axes]
     for ai,sex in enumerate(sxs):
         ax=axes[ai]; sdf=df[df["Sex"]==sex]
-        x=0; x_pos=[]; x_lbl=[]
+        x=0; x_pos=[]; x_lbl=[]; _groups=[]
         for geno in genos:
+            _gpos=[]
             for ti,trt in enumerate(trts):
                 row=sdf[(sdf["Genotype"]==geno)&(sdf["Treatment"]==trt)]
                 if row.empty: x+=1; continue
                 t50_m=float(row["t50_mean"].iloc[0])
                 t50_s=float(row["t50_sem"].iloc[0]) if "t50_sem" in row.columns else 0.0
                 ax.bar(x,t50_m,yerr=t50_s,color=_col(trt,ti),width=0.72,capsize=3,
-                       error_kw={"linewidth":0.8,"ecolor":"#333"},
+                       error_kw={"linewidth":0.8,"ecolor":"#333",
+                                 # `ecolor` colours the error bar's LINE only;
+                                 # its CAPS fall back to the default colour
+                                 # cycle, which put 60 artists at #1f77b4 on
+                                 # these figures -- the one colour on them that
+                                 # is neither the house style nor
+                                 # colour-blind-safe. Measured: `ecolor` alone
+                                 # leaves the caps at #1f77b4 and
+                                 # `markeredgecolor` does nothing -- `color` is
+                                 # the key matplotlib uses for the cap style.
+                                 "capthick":0.8,"color":"#333"},
                        edgecolor="black",linewidth=0.5,hatch=SEX_HATCH.get(sex,""))
-                x_pos.append(x); x_lbl.append(geno[:6]+"\n"+trt[:8]); x+=1
+                x_pos.append(x); x_lbl.append(str(trt)); _gpos.append(x); x+=1
+            if _gpos: _groups.append((geno,_gpos))
             x+=0.6
-        ax.set_xticks(x_pos); ax.set_xticklabels(x_lbl,fontsize=FT_ANNOT,rotation=30,ha="right")
+        # Was `geno[:6] + "\n" + trt[:8]` rotated 30 degrees: twelve truncated
+        # two-line labels that overlapped into unreadable text on the demo data.
+        _nested_xaxis(ax,x_pos,x_lbl,_groups)
+        ax.set_xlabel("Treatment, grouped by genotype",fontsize=FT_LABEL,
+                      labelpad=46)
         ax.set_ylabel("t50 (s)" if ai==0 else "",fontsize=FT_LABEL)
         ax.set_title(sex,fontsize=FT_LABEL,pad=4); ax.tick_params(length=3)
-    fig.suptitle(title,fontsize=FT_TITLE); fig.tight_layout(); return fig,_to_bytes(fig)
+    fig.suptitle(title,fontsize=FT_TITLE); fig.tight_layout()
+    fig.subplots_adjust(bottom=0.42)      # room for the genotype band
+    return fig,_to_bytes(fig)
 
 # --- 5. CRI bar chart --------------------------------------------------------
 def cri_barplot(cri_df,title="Composite Rescue Index (CRI)"):
@@ -749,7 +854,7 @@ def pairwise_dot_plot(pairwise_df,title="Pairwise Comparisons (BH-FDR corrected)
             mat.loc[row["group1"],row["group2"]]=p
             mat.loc[row["group2"],row["group1"]]=p
         fig,ax=plt.subplots(figsize=(max(4.5,len(groups)*1.1),max(3.5,len(groups)*0.9)))
-        im=ax.imshow(mat.values.astype(float),cmap=plt.cm.RdYlGn_r,vmin=0,vmax=0.05,aspect="auto")
+        im=ax.imshow(mat.values.astype(float),cmap=plt.cm.cividis_r,vmin=0,vmax=0.05,aspect="auto")
         ax.set_xticks(range(len(groups))); ax.set_xticklabels(groups,rotation=40,ha="right",fontsize=FT_TICK)
         ax.set_yticks(range(len(groups))); ax.set_yticklabels(groups,fontsize=FT_TICK)
         for i in range(len(groups)):
