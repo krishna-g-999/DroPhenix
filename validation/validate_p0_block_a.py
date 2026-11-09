@@ -296,7 +296,17 @@ def _block_a4(results):
         _bool_check("A4 SKIPPED (cv2 absent)", True, "cv2", "absent", results)
         return
 
-    from modules import auto_recording as AR
+    # `modules/auto_recording.py` is kept OUT of the public repository by the
+    # publishing policy (.gitignore), so a clone legitimately does not have it
+    # and this block must skip rather than fail -- exactly as it already skips
+    # when cv2 is absent, three lines above. Unguarded, it made the whole suite
+    # FAIL on every checkout but this one, which the first CI run demonstrated.
+    try:
+        from modules import auto_recording as AR
+    except ImportError as exc:
+        _bool_check("A4 SKIPPED (auto_recording not in this checkout)", True,
+                    "module absent", str(exc)[:60], results)
+        return
 
     with tempfile.TemporaryDirectory() as td:
         clip = _synthetic_clip(Path(td) / "stationary_top.mp4", seconds=5.0, fps=20.0)
