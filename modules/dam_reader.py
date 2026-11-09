@@ -473,8 +473,7 @@ def truncate_at_death(long: pd.DataFrame, silence_h: float = 12.0) -> pd.DataFra
 #   Activity: healthy flies typically record several hundred to a few thousand
 #   beam crossings per day.
 #
-#   MEASURED CAVEAT -- the upper bound is method-dependent, and 1150 is not an
-#   upper bound on published values.
+#   MEASURED CAVEAT -- 1150 is not an upper bound on published values.
 #   Two real published datasets were run through this pipeline:
 #     * Selkrig et al. 2018, Sci Rep 8:10646 (raw single-beam DAM, 379 flies,
 #       12:12 LD, 7 days): median 1,188 min/day = 19.8 h, with a healthy median
@@ -483,14 +482,35 @@ def truncate_at_death(long: pd.DataFrame, silence_h: float = 12.0) -> pd.DataFra
 #     * Jagannath et al. 2024, eLife 13:RP91355, ethoscope position tracking at
 #       the same >=5-min criterion: median 730-847 min/day, and 128 of 128
 #       undisturbed flies inside (300, 1150).
-#   Same criterion, same species, ~400 min/day apart -- because a single-beam
-#   monitor scores a fly that is awake but not crossing the beam as asleep,
-#   while position tracking does not. So an excursion above 1150 on DAM data is
-#   evidence about the monitor at least as much as about the flies, which is
-#   what the flag text must say. Whether to widen the DAM bound is a
-#   calibration decision for the owner and is recorded as an open decision in
-#   PRIORITISED_DEVELOPMENT_PLAN.md; it is NOT changed here on the strength of
-#   two datasets.
+#
+#   WHAT THAT DOES AND DOES NOT ESTABLISH. It establishes that healthy flies in
+#   real published recordings sit far outside (300, 1150), which is enough to
+#   show the single range was wrong. It does NOT establish that the acquisition
+#   method causes the difference, and an earlier version of this comment said
+#   it did. Those are two different experiments -- different laboratories,
+#   strains, ages, food and protocols -- with no fly measured by both systems,
+#   so instrument and biology cannot be separated by comparing them.
+#
+#   The better-designed study points the other way. Garbe DS, Bollinger WL,
+#   Vigderman A, Masek P, Gertowski J, Sehgal A, Keene AC (2015) "Context-
+#   specific comparison of sleep acquisition systems in Drosophila", Biol Open
+#   4(11):1558-1568, doi:10.1242/bio.013011, ran single-beam infrared,
+#   multi-beam infrared and video tracking on the SAME flies: "No significant
+#   differences were observed between the two IR systems for daytime (P>0.82),
+#   nighttime (P>0.58), or total (P>0.054) sleep duration", and against video
+#   at a 100% beam-length criterion day and night duration "did not differ from
+#   that obtained using a SB-IR system (P>0.90)". What differed was sleep
+#   ARCHITECTURE: the multi-beam system "detected significantly greater numbers
+#   of total sleep bouts". Their concern about single-beam detection is stated
+#   conditionally -- it "potentially" overestimates sleep.
+#
+#   So the two entries below are dataset-derived REFERENCE POPULATIONS, labelled
+#   by the instrument that produced each because that is how a caller knows
+#   which applies -- not a claim that the instrument causes the difference. The
+#   operative fix is not the bound at all: it is that the FLAG requires high
+#   sleep AND low activity together (see `plausibility_report`), which was
+#   validated directly against the seven channels in Selkrig 2018 that are
+#   genuinely empty or dead.
 # Kept for callers that import it. The gate itself now uses
 # PLAUSIBLE_SLEEP_BY_METHOD, because this single range was applied to any
 # instrument and flagged 68.7% of healthy flies on real single-beam DAM data.
@@ -564,14 +584,18 @@ def plausibility_report(per_fly: pd.DataFrame,
                  other value the sleep check is DECLINED rather than applied to
                  a criterion it was not measured under, and
                  `sleep_range_applicable` says so.
-    acquisition : which instrument produced the sleep column --
-                 "dam_single_beam" (the default, and what this platform reads)
-                 or "position_tracking". The reference interval differs by
-                 method because a single beam scores an awake fly that is not
-                 crossing it as asleep: measured on the same criterion, DAM
-                 gives a median of 1,188 min/day and position tracking 776.
-                 Judging DAM data by the position-tracking interval flags two
-                 thirds of healthy flies.
+    acquisition : which reference population applies -- "dam_single_beam" (the
+                 default, and what this platform reads) or
+                 "position_tracking", named for the instrument that produced
+                 each. The two differ substantially: measured at the same
+                 criterion, the DAM reference population has a median of 1,188
+                 min/day and the position-tracking one 776, and judging the
+                 first by the second's interval flags two thirds of healthy
+                 flies. Whether the INSTRUMENT causes that is not established
+                 here -- the two are different experiments, and Garbe 2015
+                 found no sleep-duration difference between single-beam and
+                 video on the same flies. The label selects a reference
+                 population; it does not assert a mechanism.
     group_cols : columns to stratify the sleep check by, where present.
                  Register N63 -- the check tested the pooled median only, so
                  a genotype x sex group sleeping close to 90% of the day passed
@@ -726,14 +750,15 @@ def plausibility_report(per_fly: pd.DataFrame,
                     else:
                         out["notes"].append(
                             msg + (f"Activity is {act:.0f} beam crossings/fly/day, "
-                                   "which is normal, so this is NOT flagged: a single "
-                                   "beam scores an awake fly that is not crossing it "
-                                   "as asleep, and high sleep with healthy activity "
-                                   "is what real single-beam recordings look like "
-                                   "(Selkrig 2018: median 1,188 min/day on 377 flies, "
-                                   "against 776 for position tracking at the same "
-                                   "criterion). Reported so it is visible; compare "
-                                   "like with like before reading it as a difference."
+                                   "which is normal, so this is NOT flagged: high "
+                                   "scored sleep with healthy activity is what real "
+                                   "published recordings look like (Selkrig 2018: "
+                                   "median 1,188 min/day on 377 flies with normal "
+                                   "activity). Whether a single beam inflates sleep "
+                                   "relative to position tracking is unsettled -- "
+                                   "Garbe 2015 found no duration difference on the "
+                                   "same flies -- so read this as between-population "
+                                   "variation, and compare like with like."
                                    if np.isfinite(act) else
                                    "No activity column, so the conjunction that "
                                    "distinguishes a quiet fly from a dead beam cannot "
