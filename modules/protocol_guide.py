@@ -162,7 +162,7 @@ def show_data_template() -> None:
             ],
         }
         import pandas as pd
-        st.dataframe(pd.DataFrame(col_data), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(col_data), width="stretch", hide_index=True)
 
         st.divider()
 
@@ -202,7 +202,7 @@ def show_vial_protocol() -> None:
     with st.expander("🔬  Vial Setup & Recording Protocol", expanded=False):
         img_b = _img_bytes(_PROTOCOL_IMG)
         if img_b:
-            st.image(img_b, use_container_width=True,
+            st.image(img_b, width="stretch",
                      caption="DroPhenix Negative Geotaxis Vial Setup Protocol (SSSIHL)")
         else:
             st.warning("Protocol image not found. Place vial_setup_protocol.png in assets/ folder.")

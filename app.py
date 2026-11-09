@@ -455,7 +455,7 @@ def page_data_input():
         st.markdown('<p class="sec-hdr">Group Summary</p>', unsafe_allow_html=True)
         st.dataframe(get_group_summary(df), width='stretch')
         st.divider()
-        if st.button("Run Full Analysis Pipeline", type="primary", use_container_width=True):
+        if st.button("Run Full Analysis Pipeline", type="primary", width="stretch"):
             _run_pipeline(df, wt_sel, veh_sel)
 
 
@@ -4390,7 +4390,7 @@ def page_csv_upload():
         veh = st.selectbox("Vehicle treatment",
             ["(auto-detect)"] + sorted(groups["treatments"]), key="csv_veh")
 
-    if st.button("Load and Run Full Analysis", type="primary", use_container_width=True):
+    if st.button("Load and Run Full Analysis", type="primary", width="stretch"):
         wt_sel  = None if wt  == "(auto-detect)" else wt
         veh_sel = None if veh == "(auto-detect)" else veh
         st.session_state.update({
