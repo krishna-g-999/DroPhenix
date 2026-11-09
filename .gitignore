@@ -125,3 +125,9 @@ docs/PRIORITISED_DEVELOPMENT_PLAN.md
 
 # Node dependencies for the document builder
 node_modules/
+
+# Cached activity/structure profiles derived from unpublished lab recordings.
+# One decode pass per video is the whole cost of the cylinder-count study, so
+# the profiles are cached -- but they are derived from footage that may not be
+# published, so they never enter the repository.
+.cache/
