@@ -230,6 +230,11 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           # the most impaired one, making the instrument's sensitivity depend on
           # the phenotype being measured.
           "validate_vial_lattice",
+          # The trajectory population prior, built from 20 REAL published
+          # cohorts for the first time (it had only ever been built from
+          # simulation). Also establishes that the module's DEFAULT curve
+          # family is identified on none of them.
+          "validate_historic_trajectory_prior",
           "validate_motor_decline", "validate_translational_score",
           "validate_freeclimber_benchmark",
           # FreeClimber's DETECTION method, reimplemented, so that the two
