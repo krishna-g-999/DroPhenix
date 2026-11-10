@@ -37,6 +37,14 @@ D. THE PROPOSAL IS HONEST ON REAL FOOTAGE. `find_line` is run on real recordings
    tracks the thing it claims to track, and that no vial is silently marked clear
    when its line sits outside the glassware.
 
+   This section used to establish NOTHING, because it asked `detect_vials` for three
+   cylinders on recordings that contain one or two. Detection refused on all 62
+   paraquat videos -- correctly -- and the suite printed 62 skips. The cylinder count
+   is now read from the experiment's own manifest, and where no manifest exists the
+   count is passed as unknown rather than assumed. Because the manifest IS ground
+   truth, the section additionally measures the automatic cylinder-count estimator
+   against it, and asserts that detection returns the manifest's count when told it.
+
 WHAT THIS SUITE DOES NOT ESTABLISH
 ----------------------------------
 It does not measure how often the proposal is right. That requires hand-marked lines,
@@ -61,15 +69,75 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from modules import climbing_layout as LAY  # noqa: E402
 from modules import climbing_simple as CS  # noqa: E402
 
+# Laboratory data paths are RESOLVED, not hardcoded. See validation/lab_data.py.
+try:
+    from validation import lab_data as _LAB
+except Exception:                                      # direct-script use
+    import lab_data as _LAB
+_CLIMB = _LAB.climbing_root() or Path("_absent")
+
 FAILURES: list[str] = []
 
 # Real footage, if this machine has it. Absent = those checks are SKIPPED and said to
 # be skipped; they are never quietly counted as passes.
 RIGS = {
-    "paraquat": r"D:/DroPhenix/Testing data/Climbing assay/"
-                r"Paraquat climbing assay 010626_new set/**/*.MP4",
-    "Day7": r"D:/DroPhenix/Testing data/Climbing assay/Day7/*.MP4",
+    # Resolved, not hardcoded: the recordings are not on the drive the literal
+    # path assumed, and this suite reported SKIPPED because of it. Day 7 is
+    # under `Climbing assay_SP/` on this machine, which the glob now reflects.
+    "paraquat": str(_CLIMB / "Paraquat climbing assay 010626_new set"
+                    / "**" / "*.MP4"),
+    "Day7": str(_CLIMB / "Climbing assay_SP" / "Day7" / "*.MP4"),
 }
+
+# How many cylinders are actually in frame, per recording.
+#
+# This suite used to ask `detect_vials` for THREE on every video. The paraquat
+# experiment does not contain a single three-cylinder recording: its own
+# manifest records 32 videos with two cylinders and 30 with one. Detection
+# therefore refused on every one of them -- correctly, since three cylinders
+# were not there -- the suite printed "no cylinders located", and section D
+# established nothing on the footage it exists to exercise. Asking a detector
+# for something that is not in the frame does not test the detector.
+#
+# The count is read from the experiment's own manifest. Where no manifest
+# exists (the Day 7 rig), the count is NOT assumed: `n_vials=None` is passed
+# and the module estimates it, which is the honest thing to do with an unknown.
+_PARAQUAT_MANIFEST = (_CLIMB / "Paraquat climbing assay 010626_new set"
+                      / "paraquat_video_manifest.csv")
+
+
+def cylinders_in_frame(path: str) -> "int | None":
+    """
+    The manifest's cylinder count for this recording, or None if unrecorded.
+
+    None means "unknown", and is passed straight through to `detect_vials`,
+    which then estimates the count from the activity profile. It does not mean
+    three.
+    """
+    name = Path(path).name.lower()
+    for row in _manifest_rows():
+        if row.get("video", "").strip().lower() == name:
+            try:
+                return int(float(row["cylinders_in_frame"]))
+            except (KeyError, TypeError, ValueError):
+                return None
+    return None
+
+
+_MAN_CACHE: "list[dict] | None" = None
+
+
+def _manifest_rows() -> "list[dict]":
+    global _MAN_CACHE
+    if _MAN_CACHE is None:
+        rows: list[dict] = []
+        if _PARAQUAT_MANIFEST.is_file():
+            import csv
+            with _PARAQUAT_MANIFEST.open(newline="", encoding="utf-8-sig") as fh:
+                rows = list(csv.DictReader(fh))
+        _MAN_CACHE = rows
+    return _MAN_CACHE
+
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -207,6 +275,7 @@ def test_D_proposal_on_real_footage() -> None:
         return
 
     any_rig = False
+    n_est_right = n_est_tested = 0
     for rig, pattern in RIGS.items():
         vids = sorted(glob.glob(pattern, recursive=True))[:3]
         if not vids:
@@ -214,16 +283,41 @@ def test_D_proposal_on_real_footage() -> None:
             continue
         any_rig = True
         for path in vids:
+            # The number of cylinders comes from the experiment's record, not
+            # from a constant. Unknown is passed as unknown.
+            n_true = cylinders_in_frame(path)
             try:
                 info = CVm.probe_video(path)
                 bg = CVm.build_background(path)
-                det = CVm.detect_vials(path, background=bg)
+                det = CVm.detect_vials(path, n_vials=n_true, background=bg)
                 vs = det.get("vials") or []
             except Exception as exc:
                 print(f"  [SKIP] {Path(path).name}: {exc!r}")
                 continue
+
+            # Where the truth is recorded, this is a MEASUREMENT of the
+            # automatic count estimator, which nothing else in the suite makes.
+            if n_true is not None:
+                try:
+                    est = CVm.auto_n_vials(path, background=bg)
+                    n_est = int(est.get("n_vials", -1))
+                except Exception as exc:
+                    n_est = -1
+                    print(f"        count estimator raised: {exc!r}")
+                n_est_tested += 1
+                n_est_right += int(n_est == n_true)
+                print(f"        {rig:9s} {Path(path).name[:20]:20s} "
+                      f"cylinders: manifest {n_true}, estimated {n_est} "
+                      f"-> {'agrees' if n_est == n_true else 'DISAGREES'}")
+                check(f"{Path(path).name}: detection returns the manifest's "
+                      f"cylinder count when told it",
+                      len(vs) == n_true,
+                      f"got {len(vs)} region(s), manifest says {n_true}; "
+                      f"{det.get('reason', '')}")
+
             if not vs:
-                print(f"  [SKIP] {Path(path).name}: no cylinders located")
+                print(f"  [SKIP] {Path(path).name}: no cylinders located "
+                      f"({det.get('reason', '')})")
                 continue
             for i, v in enumerate(vs, 1):
                 pad = int(0.08 * v.width)
@@ -241,6 +335,11 @@ def test_D_proposal_on_real_footage() -> None:
                       inside or not fit.is_clear(),
                       f"row {fit.row} vs box {box.y0}-{box.y1}")
 
+    if n_est_tested:
+        print(f"\n      automatic cylinder count vs the manifest: "
+              f"{n_est_right}/{n_est_tested} agree  "
+              f"(reported, not asserted -- the estimator is a convenience and "
+              f"every caller must offer manual regions)")
     if not any_rig:
         print("  [SKIP] no real footage on this machine; section D established nothing")
 

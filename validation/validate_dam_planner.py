@@ -35,9 +35,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from modules import dam_planner as DP  # noqa: E402
 
+# Laboratory data paths are RESOLVED, not hardcoded: this suite reported
+# SKIPPED for months because the recordings sit on a different drive than the
+# literal path it used to carry. See validation/lab_data.py.
+try:
+    from validation import lab_data as _LAB
+except Exception:                                      # direct-script use
+    import lab_data as _LAB
+
 FAILURES: list[str] = []
 SKIPPED: list[str] = []
-REAL_MAP = Path(r"D:/DroPhenix/Testing data/DAM/channel_map_CONFIRMED.csv")
+REAL_MAP = ((_LAB.dam_root() or Path("_absent"))
+            / "channel_map_CONFIRMED.csv")
 
 GROUPS_8 = [{"Genotype": g, "Sex": s, "Age": a}
             for a in ("old", "young")

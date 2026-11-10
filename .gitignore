@@ -40,7 +40,17 @@ modules/app_fixed_tabs.py
 modules/styles_backup_*.py
 modules/fly_detector_bak.py
 modules/videoanalyzer.py
-modules/auto_recording.py
+# modules/auto_recording.py -- NO LONGER EXCLUDED (register N114).
+# README.md:64 advertises "Video / Live Recording -- Webcam / MP4 with
+# automated fly counting", and app.py's PAGES has a Live Recording entry,
+# but this file was excluded here -- so the shipped page could only ever
+# tell a cloner to "Place auto_recording.py in modules/ folder", a file the
+# repository did not contain. It also silently defeated two safeguards: the
+# N6 background-subtractor regression guard recorded its own ImportError as
+# a PASS, and validate_app_pages reported ALL APP PAGES RENDER for a page
+# with zero widgets. The file is 355 lines with no author paths and a
+# guarded cv2 import; it sat in this block beside *_bak.py and
+# app_fixed_tabs.py and was evidently swept up with the dead files.
 modules/camera_manager.py
 modules/page_video_analyzer.py
 # Generated outputs
@@ -113,5 +123,21 @@ validation/validate_dam_15v25.py
 validation/validate_dam_parameters.py
 validation/verify_dam_docx.py
 
+# Audit documents that QUOTE the unpublished recordings. The findings are the
+# deliverable, but these two name the genotype and the compound and reproduce
+# measured sleep values from `docs/DAM_RESULTS_REPORT.md` (register N62, N64,
+# N65; plan section 4), so they stay local alongside that report until the
+# results are published or the documents are generalised. The other four audit
+# documents -- REPOSITORY_AUDIT, MODULE_INVENTORY, ARCHITECTURE_PROPOSAL and
+# SCIENTIFIC_VALIDATION_PLAN -- carry no laboratory measurement and are public.
+docs/BUG_AND_RISK_REGISTER.md
+docs/PRIORITISED_DEVELOPMENT_PLAN.md
+
 # Node dependencies for the document builder
 node_modules/
+
+# Cached activity/structure profiles derived from unpublished lab recordings.
+# One decode pass per video is the whole cost of the cylinder-count study, so
+# the profiles are cached -- but they are derived from footage that may not be
+# published, so they never enter the repository.
+.cache/

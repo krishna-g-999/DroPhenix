@@ -61,10 +61,22 @@ from modules import climbing_simple as CS  # noqa: E402
 from modules import climbing_video as CV  # noqa: E402
 from modules import provenance as PROV  # noqa: E402
 
-B = Path(r"D:/DroPhenix/Testing data/Climbing assay/"
-         r"Paraquat climbing assay 010626_new set")
-OUT = B / "paraquat_scored_net_blob.csv"
-SIDECAR = B / "paraquat_scored_net_blob.provenance.json"
+# Resolved, not hardcoded: the recordings are not on the drive this literal
+# path assumed, so this script could not run at all. See validation/lab_data.py.
+try:
+    from validation import lab_data as _LAB
+except Exception:                                      # direct-script use
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "validation"))
+    import lab_data as _LAB
+
+B = ((_LAB.climbing_root() or Path("_absent"))
+     / "Paraquat climbing assay 010626_new set")
+
+# A NEW output file. The August CSVs are evidence -- they are the output of the
+# pre-fix detector, and the comparison between them and this run is the measure
+# of what the fixes bought. Overwriting them would destroy that.
+OUT = B / "paraquat_scored_net_blob_2026-11.csv"
+SIDECAR = B / "paraquat_scored_net_blob_2026-11.provenance.json"
 
 TIMES = [10., 20., 30., 40., 50., 60., 70., 80., 90., 100., 110., 120.]
 SCORING_MODE = "net"       # the protocol: up minus down = the standing count

@@ -34,11 +34,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from modules import data_triage as T  # noqa: E402
 
+# Laboratory data paths are RESOLVED, not hardcoded: this suite reported
+# SKIPPED for months because the recordings sit on a different drive than the
+# literal path it used to carry. See validation/lab_data.py.
+try:
+    from validation import lab_data as _LAB
+except Exception:                                      # direct-script use
+    import lab_data as _LAB
+
 FAILURES: list[str] = []
 SKIPPED: list[str] = []
 SEED = 20260805
-DAM_DIR = Path(r"D:/DroPhenix/Testing data/DAM")
-VIDEO_TABLE = Path(r"D:/DroPhenix/Testing data/Climbing assay/batch15_climbing_table.csv")
+DAM_DIR = _LAB.dam_root() or Path("_absent")
+VIDEO_TABLE = ((_LAB.climbing_root() or Path("_absent"))
+               / "batch15_climbing_table.csv")
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:

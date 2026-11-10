@@ -163,6 +163,196 @@ def rank_biserial_r(a: np.ndarray, b: np.ndarray) -> float:
     return float((2 * u_stat) / (n1 * n2) - 1)
 
 
+#: Largest number of label assignments to enumerate for the exact rank test.
+#: C(20,10) = 184,756, which runs in well under a second; above this the
+#: tie-corrected normal approximation is used and said so.
+MW_EXACT_LIMIT = 250_000
+
+
+def mannwhitney_two_sided(a: Sequence[float], b: Sequence[float]) -> Tuple[float, float, str]:
+    """
+    Two-sided Mann-Whitney U with a p-value that respects the design's floor.
+
+    WHY THIS EXISTS (register N107)
+    -------------------------------
+    `scipy.stats.mannwhitneyu(..., method="auto")` abandons the exact test as
+    soon as there are TIES and falls back to the tie-corrected normal
+    approximation. Measured on a=[100,100,100], b=[60,60,60] -- three vials
+    where all ten flies climbed, which is the ordinary case for a climbing PI:
+
+        method="auto"       p = 0.04685
+        method="exact"      p = 0.10000
+        min_attainable_p    p = 0.10000
+
+    The reported 0.0469 is BELOW the smallest p this design can attain, so it
+    is impossible under the exact null, and `min_attainable_p` in this same
+    module already says so.
+
+    `method="exact"` is not the fix either: scipy's exact null distribution
+    assumes NO ties, so with tied data it is answering a different question.
+    The correct small-sample test is the exact permutation distribution of U
+    CONDITIONAL on the observed pooled values -- enumerate every way of
+    splitting the pooled sample into groups of size n1 and n2, compute the
+    mid-rank U for each, and count how many are at least as extreme as the
+    observed one. With ties this is the exact conditional test; without ties it
+    reduces to the textbook exact test. Above `MW_EXACT_LIMIT` assignments the
+    tie-corrected asymptotic p is used and the method string says so.
+
+    Returns (U statistic, two-sided p, method description).
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    a = a[np.isfinite(a)]
+    b = b[np.isfinite(b)]
+    n1, n2 = len(a), len(b)
+    if n1 == 0 or n2 == 0:
+        return np.nan, np.nan, "Mann-Whitney U (empty group)"
+
+    pooled = np.concatenate([a, b])
+    N = n1 + n2
+    ranks = stats.rankdata(pooled)          # mid-ranks: ties handled correctly
+    u_obs = float(ranks[:n1].sum()) - n1 * (n1 + 1) / 2.0
+
+    from math import comb
+    n_assign = comb(N, n1)
+
+    if n_assign <= MW_EXACT_LIMIT:
+        mu = n1 * n2 / 2.0
+        dev_obs = abs(u_obs - mu)
+        # Enumerate every assignment of mid-ranks to group 1. This is the exact
+        # permutation distribution of U given the observed values, which is what
+        # makes it valid under ties.
+        idx = np.arange(N)
+        count = 0
+        for combo in combinations(idx, n1):
+            u = ranks[list(combo)].sum() - n1 * (n1 + 1) / 2.0
+            if abs(u - mu) >= dev_obs - 1e-12:
+                count += 1
+        p = count / n_assign
+        n_ties = N - len(np.unique(pooled))
+        method = ("Mann-Whitney U, exact permutation of mid-ranks"
+                  + (f" ({n_ties} tied value(s))" if n_ties else ""))
+        return u_obs, float(p), method
+
+    try:
+        u_stat, p = stats.mannwhitneyu(a, b, alternative="two-sided",
+                                       method="asymptotic")
+    except Exception:
+        return u_obs, np.nan, "Mann-Whitney U (failed)"
+    return float(u_stat), float(p), "Mann-Whitney U, tie-corrected normal approximation"
+
+
+#: Cap on enumerated label assignments for the exact Kruskal-Wallis.
+KW_EXACT_LIMIT = 200_000
+#: Permutation draws used when exact enumeration is out of reach.
+KW_PERM_DRAWS = 20_000
+
+
+def kruskal_wallis_exact(arrays: Sequence[Sequence[float]],
+                         seed: int = 12345) -> Tuple[float, float, float, str]:
+    """
+    Kruskal-Wallis H with a permutation p-value AND the design's attainable floor.
+
+    WHY (register N107)
+    -------------------
+    `scipy.stats.kruskal` returns a chi-square ASYMPTOTIC p. At the group sizes
+    this platform actually sees it can report a significant omnibus while no
+    pairwise comparison in the same result can reach alpha at all. Measured on
+    {A:[10,20,30], B:[40,50,60], C:[70,80], D:[90,95]}:
+
+        scipy.kruskal        H = 3.857, p = 0.0495  ->  "*"
+        every pairwise p                     0.100  ->  cannot reject
+
+    Those two statements were returned in the same dict. The omnibus p was an
+    artefact of the chi-square approximation at n = 2-3 per group.
+
+    This computes the exact permutation distribution of H over the mid-ranks
+    when the number of distinct label assignments is tractable, and a seeded
+    Monte-Carlo permutation otherwise. It also returns `p_floor`: the smallest
+    p the design can attain, found by tracking the most extreme H reachable by
+    ANY assignment. When `p_floor > alpha` the omnibus has an empty rejection
+    region and the caller must say so rather than printing a star.
+
+    Returns (H observed, p, p_floor, method).
+    """
+    arrs = [np.asarray(a, dtype=float) for a in arrays]
+    arrs = [a[np.isfinite(a)] for a in arrs]
+    sizes = [len(a) for a in arrs]
+    if len(arrs) < 2 or min(sizes) == 0:
+        return np.nan, np.nan, np.nan, "Kruskal-Wallis (insufficient data)"
+
+    pooled = np.concatenate(arrs)
+    N = len(pooled)
+    ranks = stats.rankdata(pooled)
+
+    # Tie correction, as applied by scipy.stats.kruskal and R's kruskal.test:
+    # H is divided by 1 - sum(t^3 - t) / (N^3 - N) over tie groups. It depends
+    # only on the POOLED multiset, so it is a constant across permutations --
+    # it leaves the permutation p-value untouched while making the reported H
+    # identical to R's. Without it the PlantGrowth benchmark read 7.9865
+    # against a published 7.9882.
+    _, tie_counts = np.unique(pooled, return_counts=True)
+    _tie_sum = float(np.sum(tie_counts ** 3 - tie_counts))
+    _tie_corr = 1.0 - _tie_sum / (N ** 3 - N) if N > 1 else 1.0
+    if _tie_corr <= 0:
+        _tie_corr = 1.0
+
+    def _h(rk: np.ndarray) -> float:
+        """H from a rank vector laid out in group order, tie-corrected."""
+        out, off = 0.0, 0
+        for n in sizes:
+            rs = rk[off:off + n].sum()
+            out += (rs * rs) / n
+            off += n
+        return (12.0 / (N * (N + 1)) * out - 3.0 * (N + 1)) / _tie_corr
+
+    h_obs = _h(ranks)
+
+    from math import factorial
+    n_assign = factorial(N)
+    for n in sizes:
+        n_assign //= factorial(n)
+
+    if n_assign <= KW_EXACT_LIMIT:
+        # Enumerate every distinct assignment of the pooled mid-ranks to the
+        # group sizes, recursively choosing each group's members in turn.
+        count = 0
+        h_max = -np.inf
+        n_max = 0
+
+        def _walk(remaining: Tuple[int, ...], gi: int, laid: List[float]) -> None:
+            nonlocal count, h_max, n_max
+            if gi == len(sizes):
+                h = _h(np.asarray(laid, dtype=float))
+                if h >= h_obs - 1e-12:
+                    count += 1
+                if h > h_max + 1e-12:
+                    h_max, n_max = h, 1
+                elif abs(h - h_max) <= 1e-12:
+                    n_max += 1
+                return
+            for combo in combinations(range(len(remaining)), sizes[gi]):
+                chosen = [remaining[i] for i in combo]
+                rest = tuple(remaining[i] for i in range(len(remaining))
+                             if i not in set(combo))
+                _walk(rest, gi + 1, laid + [ranks[c] for c in chosen])
+
+        _walk(tuple(range(N)), 0, [])
+        p = count / n_assign
+        p_floor = n_max / n_assign if n_max else np.nan
+        return (float(h_obs), float(p), float(p_floor),
+                "Kruskal-Wallis, exact permutation of mid-ranks")
+
+    rng = np.random.default_rng(seed)
+    ge = 0
+    for _ in range(KW_PERM_DRAWS):
+        if _h(rng.permutation(ranks)) >= h_obs - 1e-12:
+            ge += 1
+    p = (ge + 1) / (KW_PERM_DRAWS + 1)        # never reports exactly zero
+    return (float(h_obs), float(p), 1.0 / (KW_PERM_DRAWS + 1),
+            f"Kruskal-Wallis, {KW_PERM_DRAWS} permutations of mid-ranks")
+
+
 def min_attainable_p(n1: int, n2: int) -> float:
     """
     The smallest two-sided Mann-Whitney U p-value a design with group sizes
@@ -543,10 +733,10 @@ def _two_group_test(a: np.ndarray, b: np.ndarray, label_a: str, label_b: str, pr
             "pairwise": pairwise,
         }
 
-    try:
-        stat, p = stats.mannwhitneyu(a, b, alternative="two-sided")
-    except Exception:
-        stat, p = np.nan, np.nan
+    # Register N107: the exact permutation of mid-ranks, not scipy's "auto",
+    # which drops to the normal approximation under ties and returns a p below
+    # this design's own attainable floor.
+    stat, p, mw_method = mannwhitney_two_sided(a, b)
 
     r = rank_biserial_r(a, b)
 
@@ -707,11 +897,22 @@ def kruskal_dunn(data: Dict[str, np.ndarray]) -> Tuple[dict, pd.DataFrame]:
         }, pd.DataFrame()
 
     v_groups, v_arrays = zip(*valid)
+    # Register N107 / audit item 12: groups below MIN_GROUP_SIZE are dropped
+    # here, and `main_result` used to carry no record of it -- so a 4-group dict
+    # with two n=2 groups was reported as a 4-group omnibus. Name them.
+    excluded = [g for g, a in zip(groups, arrays) if len(a) < MIN_GROUP_SIZE]
 
+    h_stat, p_kw, p_kw_floor, kw_method = kruskal_wallis_exact(v_arrays)
+    # The chi-square asymptotic p is ALSO reported. It is what R's
+    # `kruskal.test` and scipy return, so it is the figure the published
+    # benchmarks and the cross-tool comparison reproduce; it is NOT the primary
+    # verdict, because at these group sizes it can fall below the design's own
+    # attainable floor (register N107). Both are carried so neither claim is
+    # quietly dropped: `p_value` is valid, `p_value_chisq` is comparable.
     try:
-        h_stat, p_kw = stats.kruskal(*v_arrays)
+        _h_chi, p_kw_chisq = stats.kruskal(*v_arrays)
     except Exception:
-        h_stat, p_kw = np.nan, np.nan
+        p_kw_chisq = np.nan
 
     pair_meta = []
     raw_p = []
@@ -719,18 +920,21 @@ def kruskal_dunn(data: Dict[str, np.ndarray]) -> Tuple[dict, pd.DataFrame]:
     for i, j in combinations(range(len(v_groups)), 2):
         ga, gb = v_groups[i], v_groups[j]
         a, b = v_arrays[i], v_arrays[j]
-        try:
-            stat, p = stats.mannwhitneyu(a, b, alternative="two-sided")
-        except Exception:
-            stat, p = np.nan, np.nan
+        # Register N107. This path had NO underpowered-by-design guard at all:
+        # the same 3-vs-3 tied data that the two-group path labels
+        # "underpowered by design" was reported here as a bare p_raw of 0.0469,
+        # below the 0.100 floor that no exact test of this design can beat.
+        stat, p, mw_method = mannwhitney_two_sided(a, b)
+        p_floor = min_attainable_p(len(a), len(b))
         raw_p.append(p if pd.notna(p) else np.nan)
-        pair_meta.append((ga, gb, a, b, stat, p))
+        pair_meta.append((ga, gb, a, b, stat, p, p_floor, mw_method))
 
     adj_p = bh_correction(np.array(raw_p, dtype=float))
 
     rows = []
-    for (ga, gb, a, b, stat, p_raw), p_adj in zip(pair_meta, adj_p):
+    for (ga, gb, a, b, stat, p_raw, p_floor, mw_method), p_adj in zip(pair_meta, adj_p):
         r = rank_biserial_r(a, b)
+        underpowered = pd.notna(p_floor) and p_floor > 0.05
         rows.append(
             {
                 "Group A": ga,
@@ -740,18 +944,51 @@ def kruskal_dunn(data: Dict[str, np.ndarray]) -> Tuple[dict, pd.DataFrame]:
                 "Statistic": round(float(stat), 4) if pd.notna(stat) else np.nan,
                 "p_raw": round(float(p_raw), 6) if pd.notna(p_raw) else np.nan,
                 "p_adj_BH": round(float(p_adj), 6) if pd.notna(p_adj) else np.nan,
-                "Sig": sig_label(p_adj),
+                "Sig": ("underpowered by design" if underpowered
+                        else sig_label(p_adj)),
+                "p_min_attainable": (round(float(p_floor), 4)
+                                     if pd.notna(p_floor) else np.nan),
+                "Underpowered_by_design": bool(underpowered),
                 "Rank_biserial_r": round(r, 3) if pd.notna(r) else np.nan,
                 "Effect_size": _rbr_label(r),
-                "Method": "Mann-Whitney U + BH-FDR",
+                "Method": mw_method + " + BH-FDR",
+                "Design_note": (
+                    f"n1={len(a)}, n2={len(b)}: the smallest two-sided p any "
+                    f"exact test of this design can attain is {p_floor:.3f}, so "
+                    f"the rejection region at alpha = 0.05 is EMPTY. Report the "
+                    f"effect size and its interval, not this p."
+                    if underpowered else ""),
             }
         )
 
     return (
         {
             "H_statistic": round(float(h_stat), 4) if pd.notna(h_stat) else np.nan,
+            "Method": kw_method,
+            "p_value_chisq": (round(float(p_kw_chisq), 6)
+                              if pd.notna(p_kw_chisq) else np.nan),
+            "p_value_chisq_note": (
+                "The chi-square approximation, as returned by R kruskal.test "
+                "and scipy.stats.kruskal. Reported for comparability with "
+                "published values and other tools; `p_value` above is the "
+                "permutation p and is the valid one at small n."),
+            "n_groups_tested": len(v_groups),
+            "groups_tested": ", ".join(map(str, v_groups)),
+            "groups_excluded": (", ".join(map(str, excluded)) if excluded else ""),
+            "exclusion_note": (
+                f"{len(excluded)} group(s) had fewer than {MIN_GROUP_SIZE} "
+                f"observations and were EXCLUDED from this omnibus: "
+                f"{', '.join(map(str, excluded))}. The test below is over "
+                f"{len(v_groups)} groups, not {len(groups)}."
+                if excluded else ""),
+            "p_min_attainable": (round(float(p_kw_floor), 5)
+                                 if pd.notna(p_kw_floor) else np.nan),
+            "Underpowered_by_design": bool(pd.notna(p_kw_floor)
+                                           and p_kw_floor > 0.05),
             "p_value": round(float(p_kw), 6) if pd.notna(p_kw) else np.nan,
-            "Significant": sig_label(p_kw),
+            "Significant": ("underpowered by design"
+                            if (pd.notna(p_kw_floor) and p_kw_floor > 0.05)
+                            else sig_label(p_kw)),
         },
         pd.DataFrame(rows),
     )

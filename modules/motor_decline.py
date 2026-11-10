@@ -759,6 +759,33 @@ def _exact_spearman_p(x: np.ndarray, y: np.ndarray,
     return (1.0 + cnt) / (1.0 + n_mc), 1.0 / (1.0 + n_mc)
 
 
+#: Column names seen in the wild for median lifespan, including the ones the
+#: app's own blank template emits. All mean the same quantity.
+_LIFESPAN_ALIASES = (
+    "Median_Survival_days", "MedianSurvival_days", "MedianSurvivalDays",
+    "Median_survival_days", "median_survival_days",
+    "Lifespan_days", "LifespanDays", "Lifespandays", "lifespan_days",
+    "Mean_Lifespan_days", "Median_lifespan_days",
+)
+
+
+def normalise_lifespan_table(lifespan_df: pd.DataFrame) -> pd.DataFrame:
+    """Rename whichever median-lifespan alias is present to the canonical name.
+
+    Returns an empty frame when no recognised lifespan column exists, so the
+    caller refuses the analysis rather than raising a KeyError at the merge.
+    """
+    if lifespan_df is None or lifespan_df.empty:
+        return pd.DataFrame()
+    out = lifespan_df.copy()
+    if "Median_Survival_days" in out.columns:
+        return out
+    for alias in _LIFESPAN_ALIASES:
+        if alias in out.columns:
+            return out.rename(columns={alias: "Median_Survival_days"})
+    return pd.DataFrame()
+
+
 def compute_msci(
     mdr_df: pd.DataFrame,
     lifespan_df: pd.DataFrame,
@@ -768,8 +795,19 @@ def compute_msci(
     Motor-Survival Coupling Index (MSCI).
 
     Spearman rho between per-group MDR (k) and median lifespan, with an EXACT
-    permutation p-value (see _exact_spearman_p). Positive rho = faster motor
-    decline goes with shorter lifespan.
+    permutation p-value (see _exact_spearman_p).
+
+    THE SIGN, STATED ONCE SO IT CANNOT BE READ BACKWARDS
+    ----------------------------------------------------
+    `k` is a decay RATE: a larger k means FASTER motor decline. So the
+    coupling of interest -- faster decline going with shorter life -- is a
+    NEGATIVE rho, because high k pairs with low lifespan. A POSITIVE rho is
+    the opposite and biologically surprising: faster decline with LONGER
+    life. This docstring previously asserted the reverse, while the
+    interpretation strings below used abs(rho) and so reported both cases
+    with the same label (register N106). The real-data result recorded in
+    docs/METHODS_PROVENANCE.md is rho = -0.82 (F) / -0.84 (M), i.e. the
+    expected coupling.
 
     TWO LIMITATIONS ARE REPORTED, NOT HIDDEN
     ----------------------------------------
@@ -788,11 +826,35 @@ def compute_msci(
     if mdr_df.empty or lifespan_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
+    # Accept the lifespan table the way users and the UI actually supply it.
+    #
+    # This tolerance used to live in `app.py` as a parallel MSCI implementation
+    # (`_compute_msci_inline`), which also reinstated the asymptotic Spearman p
+    # that this function exists to avoid. The tolerance was the only part of it
+    # worth keeping, so it lives here now -- as a normaliser in front of ONE
+    # implementation, not as a second implementation.
+    lifespan_df = normalise_lifespan_table(lifespan_df)
+    if lifespan_df is None or lifespan_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Merge on whatever design keys both frames actually carry, most specific
+    # first. Genotype is required; Treatment and Sex are used when present in
+    # both. A missing key must degrade the merge, not raise.
+    keys = [c for c in ("Genotype", "Treatment", "Sex")
+            if c in mdr_df.columns and c in lifespan_df.columns]
+    if "Genotype" not in keys:
+        return pd.DataFrame(), pd.DataFrame()
     merged = mdr_df.merge(
-        lifespan_df[["Genotype", "Treatment", "Sex", "Median_Survival_days"]],
-        on=["Genotype", "Treatment", "Sex"],
+        lifespan_df[keys + ["Median_Survival_days"]],
+        on=keys,
         how="inner",
     )
+    if merged.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    # groupby below needs a Sex column; synthesise a single pooled level rather
+    # than dropping the analysis when the design has no sex factor.
+    if "Sex" not in merged.columns:
+        merged = merged.assign(Sex="Pooled")
 
     rows = []
     for (geno, sex), grp in merged.groupby(["Genotype", "Sex"], dropna=False):
@@ -820,10 +882,21 @@ def compute_msci(
                       f"smallest attainable p is {p_min:.3f}, so no correlation "
                       f"however perfect can reach the 0.05 level. Report rho as "
                       f"descriptive only.")
-        elif significant and pd.notna(rho) and abs(rho) >= 0.7:
-            interp = "Motor decline strongly predicts lifespan"
-        elif significant and pd.notna(rho) and abs(rho) >= 0.4:
-            interp = "Moderate motor-survival coupling"
+        elif significant and pd.notna(rho):
+            # The DIRECTION is the biology, so it is named rather than left to
+            # abs(rho). k is a decay rate, so rho < 0 is the expected coupling
+            # (faster decline, shorter life) and rho > 0 is its opposite. Both
+            # previously printed the same label (register N106).
+            strength = "strong" if abs(rho) >= 0.7 else (
+                "moderate" if abs(rho) >= 0.4 else "weak")
+            if rho < 0:
+                interp = (f"Faster motor decline goes with SHORTER lifespan "
+                          f"({strength} coupling, rho = {rho:+.2f})")
+            else:
+                interp = (f"Faster motor decline goes with LONGER lifespan "
+                          f"({strength}, rho = {rho:+.2f}) -- the OPPOSITE of the "
+                          f"expected coupling; check for a survivorship or "
+                          f"follow-up-length artefact before interpreting")
         else:
             interp = "No significant motor-survival coupling"
 

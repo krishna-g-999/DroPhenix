@@ -45,9 +45,17 @@ warnings.filterwarnings("ignore")
 
 from modules import dam_pipeline as P     # noqa: E402
 
+# Laboratory data paths are RESOLVED, not hardcoded: this suite reported
+# SKIPPED for months because the recordings sit on a different drive than the
+# literal path it used to carry. See validation/lab_data.py.
+try:
+    from validation import lab_data as _LAB
+except Exception:                                      # direct-script use
+    import lab_data as _LAB
+
 FAILURES: list[str] = []
 SKIPPED: list[str] = []
-DAM = Path(r"D:/DroPhenix/Testing data/DAM")
+DAM = _LAB.dam_root() or Path("_absent")
 CMAP = DAM / "25th day" / "channel_map_25thday.csv"
 D25 = [DAM / "25th day" / "Monitor_1_25th day.txt", DAM / "25th day" / "Monitor_2_25th day.txt"]
 D15 = [DAM / "15th day" / "Monitor_1.txt", DAM / "15th day" / "Monitor_2.txt"]

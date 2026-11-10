@@ -39,8 +39,24 @@ from typing import Any, Dict, List, Optional, Tuple
 # that have nothing to do with cameras. It costs nothing here: FFMPEG cannot
 # open an integer camera index on Windows anyway, so it never competes with
 # MSMF for a camera -- it only ever wins for files, which is what is wanted.
+#
+# Register N68. `OPENCV_VIDEOIO_PRIORITY_DSHOW = "0"` used to sit here, for the
+# cosmetic reason given above -- DirectShow prints a great deal while probing
+# camera indices. But priority 0 does not quieten a backend, it REMOVES it from
+# the registry, exactly as the comment above says for FFMPEG. Every camera open
+# in this module and in `recorder.py` then asked for `cv2.CAP_DSHOW`
+# explicitly, which cannot succeed against a backend that is not registered, so
+# live recording could not start on Windows at all and the operator was told
+# the camera was disconnected or in use. Verified in process: the camera
+# backends were GSTREAMER, UEYE, MSMF, FFMPEG, and CAP_DSHOW = 700 was absent
+# from the registry.
+#
+# DirectShow is left registered and is used as a FALLBACK after MSMF, which is
+# the modern Windows capture backend and is the one `_backend()` was written to
+# return. The cost is DirectShow's verbose probing output when enumerating
+# cameras, which is noise in a console; the cost of the previous arrangement
+# was the feature.
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"]  = "1"
-os.environ["OPENCV_VIDEOIO_PRIORITY_DSHOW"] = "0"
 os.environ["OPENCV_VIDEOIO_PRIORITY_FFMPEG"] = "1"
 
 try:
@@ -66,13 +82,97 @@ def _backend() -> int:
     return cv2.CAP_V4L2
 
 
-def _open_cap(index: int):
-    """Open camera with preferred backend; fall back to CAP_ANY."""
+def camera_backend_order() -> List[int]:
+    """
+    The camera backends this process will try, in order, filtered to those
+    OpenCV actually has.
+
+    Register N68. The previous code asked for `cv2.CAP_DSHOW` while a
+    process-wide environment variable had removed DirectShow from the registry,
+    so every open failed. Asking for a backend that is not registered is the
+    defect, so the order is now filtered against
+    `cv2.videoio_registry.getCameraBackends()` -- the registry is the authority
+    on what exists, not a constant. `CAP_ANY` is last: it lets OpenCV choose,
+    which is the right fallback and the wrong first move, because on Windows it
+    can pick a backend that opens the device but cannot set the frame size.
+    """
+    if not CV2_AVAILABLE:
+        return []
+    try:
+        available = set(cv2.videoio_registry.getCameraBackends())
+    except Exception:                               # pragma: no cover
+        available = set()
+
+    preferred = [_backend()]
+    if platform.system() == "Windows":
+        # DirectShow second: older UVC cameras that MSMF will not open often
+        # work through it. It is registered again now (see the note at the top).
+        preferred.append(cv2.CAP_DSHOW)
+    order = [b for b in preferred if (not available) or b in available]
+    order.append(cv2.CAP_ANY)
+    # Preserve order while removing duplicates.
+    seen, out = set(), []
+    for b in order:
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+    return out
+
+
+def camera_backend_names() -> List[str]:
+    """`camera_backend_order` as names, for an operator-facing message."""
+    if not CV2_AVAILABLE:
+        return []
+    out = []
+    for b in camera_backend_order():
+        try:
+            out.append(cv2.videoio_registry.getBackendName(b))
+        except Exception:                           # pragma: no cover
+            out.append(str(b))
+    return out
+
+
+def capture_backend_for(source) -> int:
+    """
+    The backend to request for one capture source.
+
+    An integer is a camera index and gets the first camera backend. A string is
+    a file path or a network stream -- `CameraStream` accepts an IP stream by
+    its own docstring -- and a camera backend is meaningless for it, so OpenCV
+    chooses (which is how FFMPEG comes to read a file). Passing `CAP_DSHOW` for
+    an `rtsp://` URL, as the previous code did, could only fail.
+    """
+    if not CV2_AVAILABLE:
+        return 0
+    is_index = isinstance(source, bool) is False and (
+        isinstance(source, int)
+        or (isinstance(source, str) and source.strip().lstrip("-").isdigit()))
+    if not is_index:
+        return cv2.CAP_ANY
+    order = camera_backend_order()
+    return order[0] if order else cv2.CAP_ANY
+
+
+def open_capture(source):
+    """
+    Open a camera index or a stream/file source, trying each usable backend.
+
+    Returns an opened `cv2.VideoCapture` that has delivered one frame, or None.
+    """
     if not CV2_AVAILABLE:
         return None
-    for bk in [_backend(), cv2.CAP_ANY]:
+    is_index = isinstance(source, int) or (
+        isinstance(source, str) and source.strip().lstrip("-").isdigit())
+    if is_index:
+        src = int(source)
+        backends = camera_backend_order()
+    else:
+        src = source
+        backends = [cv2.CAP_ANY]
+
+    for bk in backends:
         try:
-            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(src, bk)
         except Exception:
             continue
         if not cap.isOpened():
@@ -83,6 +183,11 @@ def _open_cap(index: int):
             return cap
         cap.release()
     return None
+
+
+def _open_cap(index: int):
+    """Open camera with the first usable backend; fall back to CAP_ANY."""
+    return open_capture(int(index))
 
 
 # ---------------------------------------------------------------------------

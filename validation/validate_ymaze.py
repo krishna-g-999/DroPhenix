@@ -42,6 +42,12 @@ def _check(name, got, expected, tol, results, integer=False):
     return ok
 
 
+def _boolcheck(name, ok, got, results):
+    """A check whose answer is a verdict string, not a number."""
+    results.append((name, "True", str(got), bool(ok)))
+    return bool(ok)
+
+
 def _one_fly(seq):
     df = pd.DataFrame({"Genotype": ["G"], "Treatment": ["T"], "Sex": ["M"],
                        "FlyID": ["f1"], "Sequence": [seq]})
@@ -73,7 +79,16 @@ def main() -> int:
     res = Y.run_ymaze_analysis(pd.DataFrame(rows))
     alt = res["alternation"].iloc[0]
     tb = res["turn_bias"].iloc[0]
-    _check("Unbiased alternation% (~50)", alt["Mean_alternation_pct"], 50.0, 1.5, results)
+    _check("Unbiased alternation% (~50)", alt["Mean_alternation_pct_raw"], 50.0, 1.5, results)
+    # Register N104. An UNBIASED memoryless population (b = 0.5) is the one case
+    # where the raw 50% null happens to be right, so the check above cannot see
+    # the defect. This one does: the bias-corrected residual must be ~0 for a
+    # memoryless fly at ANY bias, and the verdict must not claim memory.
+    _check("Unbiased memoryless: residual vs own baseline (~0)",
+           alt["Mean_alternation_vs_chance"], 0.0, 1.5, results)
+    _boolcheck("Unbiased memoryless: verdict does not claim working memory",
+               "intact" not in str(alt["Interpretation"]).lower(),
+               str(alt["Interpretation"])[:70], results)
     _check("Unbiased turn-bias mean (~0.50)", tb["Mean_turn_bias"], 0.50, 0.02, results)
 
     # ── B2. de Bivort calibration: ~23.5% extreme, individuality significant ─

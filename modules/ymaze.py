@@ -89,6 +89,8 @@ import pandas as pd
 
 GROUP_KEYS = ["Genotype", "Treatment", "Sex"]
 ARM_ORDER_DEFAULT = ("A", "B", "C")
+
+_FLYID_ALIASES = ("flyid", "fly_id", "fly", "id", "animal", "subject")
 DEFAULT_CHANCE = 0.50
 MIN_ENTRIES = 3   # need >=3 entries to score one alternation triad
 
@@ -149,7 +151,7 @@ def _resolve_columns(df: pd.DataFrame) -> Dict[str, str]:
         "Genotype": ["genotype", "strain", "line"],
         "Treatment": ["treatment", "drug", "compound", "condition"],
         "Sex": ["sex"],
-        "FlyID": ["flyid", "fly_id", "fly", "id", "animal", "subject"],
+        "FlyID": list(_FLYID_ALIASES),
         "Order": ["order", "entry", "entry_order", "step", "index", "time", "t"],
         "Arm": ["arm", "arm_entered", "choice", "position"],
         "Turn": ["turn", "direction", "lr"],
@@ -164,16 +166,56 @@ def _resolve_columns(df: pd.DataFrame) -> Dict[str, str]:
     return found
 
 
-def load_ymaze(df: pd.DataFrame) -> pd.DataFrame:
+def _validate_arms(values, order, where: str) -> None:
+    """
+    Every arm label must be one of the maze's actual arms.
+
+    Register N20. Arm labels were never checked, and the alternation triad test
+    is `arms[i] != arms[i-1] and arms[i] != arms[i-2] and arms[i-1] != arms[i-2]`
+    -- three mutually different labels. A file whose arms are labelled W, X, Y, Z
+    therefore scores 100% alternation, because consecutive entries are always
+    three different strings. A three-arm maze has three arms; a fourth label is
+    a data-entry error, a different apparatus, or a column that is not an arm
+    column, and in none of those cases is the alternation score meaningful.
+    """
+    allowed = {str(a).strip().upper() for a in order}
+    seen = {str(v).strip().upper() for v in values
+            if v is not None and str(v).strip() != "" and str(v).lower() != "nan"}
+    bad = sorted(seen - allowed)
+    if bad:
+        raise ValueError(
+            f"Unrecognised Y-maze arm label(s) {bad} in {where}; the maze arms are "
+            f"{sorted(allowed)}. Arm labels were previously used unchecked, and "
+            f"because an alternation triad is scored whenever three consecutive "
+            f"labels differ, {len(bad)} extra label(s) make a fly alternate "
+            f"perfectly by construction -- four distinct invalid labels score "
+            f"100% alternation. Relabel the arms, or pass `arm_order` if this "
+            f"apparatus really uses different names."
+        )
+
+
+def load_ymaze(df: pd.DataFrame,
+               arm_order: Sequence = ARM_ORDER_DEFAULT) -> pd.DataFrame:
     """
     Normalise input to a canonical long table:
         Genotype, Treatment, Sex, FlyID, Order, Arm, Turn
 
     Accepts:
       (A) Long per-entry rows: one row per arm entry, with an Arm column
-          (and/or a Turn column), ordered by Order if present.
+          (and/or a Turn column), ordered by Order if present. A FlyID is
+          REQUIRED for this layout (register N20): without one, each row was
+          given its own index as a fly identifier, so six arm entries by one
+          fly became six flies with one entry each. That destroys the sequence
+          -- and in a Y-maze the sequence IS the datum, since alternation is a
+          property of consecutive triads, not of individual entries. It also
+          multiplies N by the number of entries per fly, so every interval
+          narrows and every test inflates.
       (B) Per-fly sequence string: a Sequence column like "ABCACB" or
-          "A,B,C,A,C,B" (one row per fly).
+          "A,B,C,A,C,B" (one row per fly). Here one row really is one fly, so a
+          row index is a label rather than a fabrication and FlyID stays
+          optional.
+
+    Arm labels are validated against `arm_order` in both layouts.
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=["Genotype", "Treatment", "Sex", "FlyID", "Order", "Arm", "Turn"])
@@ -188,16 +230,19 @@ def load_ymaze(df: pd.DataFrame) -> pd.DataFrame:
     if "Genotype" not in col:
         df["Genotype"] = "Genotype1"
         col["Genotype"] = "Genotype"
-    if "FlyID" not in col:
-        df["FlyID"] = np.arange(len(df))
-        col["FlyID"] = "FlyID"
-
     # ── Layout B: per-fly sequence string ────────────────────────────────────
     if "Sequence" in col and "Arm" not in col:
+        # One row is one fly here, so an index is a label, not an invention.
+        if "FlyID" not in col:
+            df["FlyID"] = [f"row{i}" for i in range(len(df))]
+            col["FlyID"] = "FlyID"
         rows = []
         for _, r in df.iterrows():
             seq = str(r[col["Sequence"]]).strip()
             arms = [s for s in (seq.split(",") if "," in seq else list(seq)) if s.strip()]
+            _validate_arms(arms, arm_order,
+                           f"the Sequence string {seq!r} for fly {r[col['FlyID']]!r}")
+            arms = [a.strip().upper() for a in arms]
             for o, a in enumerate(arms):
                 rows.append({
                     "Genotype": r[col["Genotype"]], "Treatment": r[col["Treatment"]],
@@ -208,11 +253,27 @@ def load_ymaze(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Layout A: long per-entry rows ─────────────────────────────────────────
     elif "Arm" in col or "Turn" in col:
+        if "FlyID" not in col:
+            raise ValueError(
+                f"Long-format Y-maze input (one row per arm entry) has no FlyID "
+                f"column; the aliases searched were {_FLYID_ALIASES}. Each row "
+                f"was previously given its own identifier, so {len(df)} arm "
+                f"entries became {len(df)} flies with one entry each: the "
+                f"sequence -- which is the datum a Y-maze measures, since "
+                f"alternation is a property of consecutive triads -- was "
+                f"destroyed, and N was inflated by the number of entries per "
+                f"fly. Add a FlyID column, or supply one row per fly with a "
+                f"Sequence string instead."
+            )
+        if "Arm" in col:
+            _validate_arms(df[col["Arm"]].tolist(), arm_order,
+                           f"column {col['Arm']!r}")
         out = pd.DataFrame({
             "Genotype": df[col["Genotype"]], "Treatment": df[col["Treatment"]],
             "Sex": df[col["Sex"]], "FlyID": df[col["FlyID"]],
             "Order": df[col["Order"]] if "Order" in col else np.arange(len(df)),
-            "Arm": df[col["Arm"]].astype(str) if "Arm" in col else np.nan,
+            "Arm": df[col["Arm"]].astype(str).str.strip().str.upper()
+            if "Arm" in col else np.nan,
             "Turn": df[col["Turn"]].astype(str).str.upper().str[0] if "Turn" in col else np.nan,
         })
         out = out.sort_values(["Genotype", "Treatment", "Sex", "FlyID", "Order"])
@@ -357,10 +418,37 @@ def _empty_per_fly(per_fly: pd.DataFrame) -> bool:
 
 
 def alternation_summary(per_fly: pd.DataFrame, chance: float = DEFAULT_CHANCE) -> pd.DataFrame:
-    """Per-group mean alternation %, SEM, and one-sample test vs chance level."""
+    """
+    Per-group alternation, tested against each fly's OWN bias-expected baseline.
+
+    WHY THE TEST IS NOT AGAINST A FIXED 50% (register N104)
+    -------------------------------------------------------
+    A memoryless fly with turn bias `b` alternates at 100*(b^2 + (1-b)^2),
+    which is >= 50% for EVERY b and equals 50% only at b = 0.5. Werkhoven et al.
+    report individual Canton-S flies with bias above 70% or below 30%, so a
+    fixed 50% null is wrong for any real population: a memoryless fly at
+    b = 0.9 scores 82% raw and reads as excellent spatial memory.
+
+    This function previously tested the RAW `alternation_pct` against
+    `chance * 100`, while the bias-corrected `alternation_vs_chance` -- derived
+    three hundred lines earlier for exactly this purpose -- never reached a
+    verdict. Measured on `demo_ymaze()`, the TDP43 disease arm at 54.0% was
+    reported as "Above chance (working memory intact)" at p = 0.0024.
+
+    The primary test is therefore a one-sample test of `alternation_vs_chance`
+    against ZERO: positive means a fly alternates MORE than its own handedness
+    predicts, which is what working memory means. The raw mean and the raw test
+    are retained as descriptive columns, suffixed `_raw`, so the handedness
+    confound stays visible rather than being silently corrected away.
+
+    When `alternation_vs_chance` is unavailable -- a fly whose turn bias could
+    not be estimated -- the verdict REFUSES rather than falling back to the raw
+    test, because the fallback is the defect.
+    """
     if _empty_per_fly(per_fly):
         return pd.DataFrame()
     mu = chance * 100.0
+    has_corrected = "alternation_vs_chance" in per_fly.columns
     rows = []
     for kv, sub in per_fly.groupby(GROUP_KEYS, sort=False):
         vals = pd.to_numeric(sub["alternation_pct"], errors="coerce").to_numpy()
@@ -368,20 +456,61 @@ def alternation_summary(per_fly: pd.DataFrame, chance: float = DEFAULT_CHANCE) -
         n = len(v)
         mean = float(np.mean(v)) if n else np.nan
         sem = float(np.std(v, ddof=1) / np.sqrt(n)) if n > 1 else np.nan
-        stat, p, method = _onesample_vs_chance(vals, mu)
+        # descriptive only, kept so the handedness confound remains visible
+        _stat_raw, p_raw, method_raw = _onesample_vs_chance(vals, mu)
+
+        # ── the primary, bias-corrected test ────────────────────────────────
+        if has_corrected:
+            cvals = pd.to_numeric(sub["alternation_vs_chance"],
+                                  errors="coerce").to_numpy()
+            cv = cvals[~np.isnan(cvals)]
+            n_c = len(cv)
+            mean_c = float(np.mean(cv)) if n_c else np.nan
+            sem_c = float(np.std(cv, ddof=1) / np.sqrt(n_c)) if n_c > 1 else np.nan
+            _stat_c, p_c, method_c = _onesample_vs_chance(cvals, 0.0)
+            chance_mean = float(np.nanmean(pd.to_numeric(
+                sub["chance_alternation_pct"], errors="coerce").to_numpy()))                 if "chance_alternation_pct" in sub.columns else np.nan
+        else:
+            cv = np.array([])
+            n_c, mean_c, sem_c, p_c, method_c = 0, np.nan, np.nan, np.nan, "none"
+            chance_mean = np.nan
+
+        if n_c == 0:
+            interp = ("NOT INTERPRETABLE: turn bias could not be estimated, so "
+                      "each fly's own chance baseline is unknown. The raw "
+                      "columns are descriptive only -- a fixed 50% null is not "
+                      "valid for a handed population (register N104).")
+        elif pd.notna(p_c) and p_c < 0.05 and mean_c > 0:
+            interp = ("Alternates above its own turn-bias baseline "
+                      "(working memory intact)")
+        elif pd.notna(p_c) and p_c < 0.05 and mean_c < 0:
+            interp = ("Alternates BELOW its own turn-bias baseline "
+                      "(memory deficit)")
+        else:
+            interp = ("At its own turn-bias baseline (no evidence of spatial "
+                      "working memory beyond handedness)")
+
         rec = dict(zip(GROUP_KEYS, kv if isinstance(kv, tuple) else (kv,)))
         rec.update({
             "n_flies": n,
-            "Mean_alternation_pct": round(mean, 2) if pd.notna(mean) else np.nan,
-            "SEM": round(sem, 2) if pd.notna(sem) else np.nan,
-            "Chance_pct": round(mu, 1),
-            "vs_chance_p": round(p, 6) if pd.notna(p) else np.nan,
-            "Sig_vs_chance": _sig(p),
-            "Test": method,
-            "Interpretation": (
-                "Above chance (working memory intact)" if pd.notna(p) and p < 0.05 and mean > mu
-                else "Below chance (memory deficit)" if pd.notna(p) and p < 0.05 and mean < mu
-                else "At chance (no evidence of spatial working memory)"),
+            # the primary, bias-corrected quantities
+            "Mean_alternation_vs_chance": round(mean_c, 2) if pd.notna(mean_c) else np.nan,
+            "SEM_vs_chance": round(sem_c, 2) if pd.notna(sem_c) else np.nan,
+            "Mean_own_chance_pct": round(chance_mean, 2) if pd.notna(chance_mean) else np.nan,
+            "vs_own_chance_p": round(p_c, 6) if pd.notna(p_c) else np.nan,
+            "Sig_vs_own_chance": _sig(p_c),
+            "Test": method_c,
+            "Interpretation": interp,
+            # descriptive: the raw figure and the invalid fixed-50% test, kept
+            # visible and clearly marked so the confound is not hidden
+            "Mean_alternation_pct_raw": round(mean, 2) if pd.notna(mean) else np.nan,
+            "SEM_raw": round(sem, 2) if pd.notna(sem) else np.nan,
+            "Fixed_chance_pct_raw": round(mu, 1),
+            "vs_fixed_chance_p_raw": round(p_raw, 6) if pd.notna(p_raw) else np.nan,
+            "Test_raw": method_raw,
+            "Raw_test_note": ("DESCRIPTIVE ONLY: a fixed 50% null over-states "
+                              "alternation for any handed population; the "
+                              "verdict uses each fly's own baseline."),
         })
         rows.append(rec)
     return pd.DataFrame(rows)

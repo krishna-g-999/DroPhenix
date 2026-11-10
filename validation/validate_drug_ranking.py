@@ -85,8 +85,38 @@ def main() -> int:
     _bool("All 4 assays used", set(res["per_assay"]["assay"]) ==
           {"climbing", "ymaze", "dams", "survival"}, "4 assays",
           str(sorted(set(res["per_assay"]["assay"]))), results)
-    pa = comp.set_index("drug")["p_value"]
-    _bool("Drug_A significant", pa["Drug_A"] < 0.05, "p<0.05", round(float(pa["Drug_A"]), 4), results)
+    ci = comp.set_index("drug")
+    pa = ci["p_value"]
+    # Register N34. This check used to read `Drug_A significant: p < 0.05`, and
+    # the p-value it read was the FIXED-EFFECT one -- so the suite asserted the
+    # defect. On this synthetic screen Drug_A's four assay effects are 1.38
+    # (climbing), 5.43 (dams), 0.27 (survival) and 0.80 (ymaze): I2 across
+    # assays is 85.3%, tau^2 = 1.61, and the module itself reports
+    # assays_consistent = False. A fixed-effect pool of four measurements that
+    # disagree by a factor of twenty gives p = 0.0036 and a claim of
+    # overwhelming cross-assay evidence; the random-effects HKSJ interval on the
+    # same numbers is [-1.76, 4.89] and spans zero. What is asserted now is the
+    # corrected behaviour: no single cross-assay p-value where the assays
+    # disagree, and the fixed-effect figure retained as secondary so the
+    # difference stays visible.
+    _bool("Drug_A: assays disagree (I2 >= 50)",
+          float(ci.loc["Drug_A", "I2_assay_pct"]) >= 50.0, ">=50",
+          round(float(ci.loc["Drug_A", "I2_assay_pct"]), 1), results)
+    _bool("Drug_A: no single cross-assay p-value when they disagree",
+          bool(np.isnan(float(pa["Drug_A"]))), "NaN", str(pa["Drug_A"]), results)
+    _bool("Drug_A: and the reason is stated",
+          "undefined" in str(ci.loc["Drug_A", "p_value_note"]).lower(),
+          "stated", str(ci.loc["Drug_A", "p_value_note"])[:18], results)
+    _bool("Drug_A: fixed-effect figure retained as secondary",
+          float(ci.loc["Drug_A", "p_fixed"]) < 0.05, "p_fixed<0.05",
+          round(float(ci.loc["Drug_A", "p_fixed"]), 5), results)
+    _bool("Drug_A: the random-effects interval spans zero",
+          float(ci.loc["Drug_A", "ci_lo"]) < 0 < float(ci.loc["Drug_A", "ci_hi"]),
+          "spans 0",
+          f"[{float(ci.loc['Drug_A', 'ci_lo']):.2f},"
+          f"{float(ci.loc['Drug_A', 'ci_hi']):.2f}]", results)
+    _bool("Drug_A still ranks first on effect size",
+          order[0] == "Drug_A", "Drug_A", order[0], results)
     _bool("Drug_C not significant", pa["Drug_C"] > 0.05, "p>0.05", round(float(pa["Drug_C"]), 4), results)
     # unequal-N must be detected and flagged
     flagged = (res["imbalance"]["flag"].str.contains("unequal").any())

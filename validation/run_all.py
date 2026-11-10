@@ -66,6 +66,14 @@ Suites:
                            page necessary (line outside the box, overlaps, missing
                            fly count), and carrying a layout to another recording
                            with a refusal when the camera moved too far
+  validate_vial_lattice — how many cylinders are in the frame, as a model-order
+                           question rather than a blob count: the two closed-form
+                           likelihoods against naive computation, order and pitch
+                           recovered on known geometry, and the two failures that
+                           defeat any estimator reading fly activity alone — a
+                           fragmented tube read as two, and a vial at 2% activity
+                           read as absent, which is the phenotype-dependent
+                           failure that biases every treatment contrast
   validate_confirmable_line — the scoring line the operator confirms: a
                              confirmed row survives the shared-height-plus-offset
                              round trip with zero drift, the confidence gate
@@ -78,12 +86,20 @@ Suites:
                            own first layout (all old in Monitor 1, all young in
                            Monitor 2) is rejected on Age while Genotype and Sex
                            still pass
-  validate_freeclimber_benchmark — DroPhenix vs an independent published tool on
-                           REAL data: an independent reimplementation of
-                           FreeClimber's local-linear-regression velocity
-                           read-out reproduces its published slope, frame
-                           window, r and standard error for every vial of
-                           Spierer et al. (2021)'s own example recording
+  validate_freeclimber_benchmark — NOT a test of DroPhenix (register N115). This
+                           suite imports NOTHING from modules/: it is a
+                           self-contained reimplementation of FreeClimber's
+                           local-linear-regression velocity read-out, checked
+                           against the published slope, frame window, r and
+                           standard error for every vial of Spierer et al.
+                           (2021)'s own example recording. It establishes that
+                           we can reproduce the published method, which is
+                           worth knowing -- but the method is not in the
+                           product (no local-linear velocity read-out exists in
+                           modules/), so a PASS here says nothing about any
+                           DroPhenix output. It was previously described as
+                           "DroPhenix vs an independent published tool on REAL
+                           data", which it is not
   validate_real_aging_benchmark — the decline model on REAL published
                            longitudinal data (Shahrestani et al. 2016,
                            Evolution 70:2550; 10 populations, geotaxis and
@@ -215,12 +231,83 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           "validate_fly_blob", "validate_climbing_detectors", "validate_climbing_layout",
           "validate_climbing_band",
           "validate_confirmable_line", "validate_multi_assay",
+          # How many cylinders are in the frame, which decides how the frame is
+          # carved up. The blob counter it replaces had never been measured and
+          # was wrong in both directions: it invented a cylinder on a
+          # two-cylinder frame, and it DROPPED the least active vial -- which is
+          # the most impaired one, making the instrument's sensitivity depend on
+          # the phenotype being measured.
+          "validate_vial_lattice",
+          # The trajectory population prior, built from 20 REAL published
+          # cohorts for the first time (it had only ever been built from
+          # simulation). Also establishes that the module's DEFAULT curve
+          # family is identified on none of them.
+          "validate_historic_trajectory_prior",
+          # The app itself: every page rendered in all three states a user can
+          # be in (no data, data loaded, pipeline run), and the STYLE of every
+          # figure the app actually draws. No other suite touches the app, and
+          # the app is the only part of this project a user ever sees.
+          "validate_app_pages",
+          "validate_figure_style",
+          "validate_readme_claims",
           "validate_motor_decline", "validate_translational_score",
-          "validate_freeclimber_benchmark", "validate_real_aging_benchmark",
+          "validate_freeclimber_benchmark",
+          # FreeClimber's DETECTION method, reimplemented, so that the two
+          # detectors can be compared on the same frames. The published program
+          # cannot be run here: it pins trackpy 0.4.2, which does not build on
+          # Python 3.13, and with a current trackpy its own call signature is a
+          # TypeError. This suite establishes the reimplementation against
+          # FreeClimber's own published detections before it is used to judge
+          # anything, and asserts the bin-index unit error it reproduces.
+          "validate_freeclimber_detection", "validate_real_aging_benchmark",
           "validate_real_lifespan_benchmark", "validate_larval_powerlaw",
           "validate_grooming_nf1", "validate_dam_25thday", "validate_dam_15v25",
           "validate_dam_parameters", "verify_dam_docx", "validate_dam_pipeline",
-          "demo_unequal_n"]
+          # Real published sleep-deprivation recordings (eLife 2024). The
+          # validation plan named this dataset as unblocked and ready to wire
+          # in; until this suite existed the characterisation lived only in a
+          # document, which the governance rules do not accept as evidence.
+          "validate_sleep_homeostasis",
+          # Raw Trikinetics beam counts (Selkrig et al. 2018). This is the
+          # dataset the validation plan named as the only way to validate the
+          # >=5-min bout rule itself, every other sleep dataset in the
+          # repository being already-scored sleep.
+          "validate_dam_raw_microbiome",
+          # Real published per-fly escape-climbing records (Thiem et al. 2024),
+          # usable now that the data guide from the same Zenodo record has been
+          # downloaded and the figure panels are labelled.
+          "validate_climbing_thiem",
+          # The two Layer-3 calibration rows the plan names, re-derived every
+          # run rather than left as numbers in a document.
+          "validate_statistical_calibration",
+          # The N95 remedy: binomial maximum likelihood, a profile interval on
+          # the LC50 itself, and the resolvable-slope rule. Written before the
+          # implementation and recorded raising on its first call.
+          "validate_binomial_ml",
+          # Owner decision 10: at k = 2 tau^2 is not estimable, so the interval
+          # is a credible interval under a stated prior rather than HKSJ with a
+          # t(1) quantile four to six times too wide.
+          "validate_bayes_pool",
+          # N4: the experimental unit, identified by whether a candidate key
+          # repeats within a timepoint rather than by its column name.
+          "validate_experimental_unit",
+          "demo_unequal_n",
+          # Regression guard for P0 Block A of the 2026-11 audit: the four
+          # safeguards that existed and were bypassed (register N1, N2, N6, N7,
+          # N9, N73, N74). Every check in it failed on commit 633c3f4.
+          "validate_p0_block_a",
+          # Regression guard for P0 Block B: the denominator and the
+          # representation of a missing measurement (register N5, N8, N10,
+          # N70, N79). Every check in it failed before the Block B fixes.
+          "validate_p0_block_b",
+          # Regression guard for P0 Block C: the fourteen numerical corrections
+          # (register N3, N11, N12, N14-N22, N29, N31, N32a/b, N34, N35, N43,
+          # N44). 56 of its 73 checks failed before the Block C fixes.
+          "validate_p0_block_c",
+          # Regression guard for P0 Block D: the eleven P3-sized crashes and
+          # unread safeguards (register N68, N71, N72, N76, N77, N80, N81, N82,
+          # N84, N85, N86). 36 of its 56 checks failed before the Block D fixes.
+          "validate_p0_block_d"]
 
 
 def main() -> int:

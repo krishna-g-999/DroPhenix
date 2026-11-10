@@ -111,8 +111,20 @@ def read_monitor(
     light = pd.to_numeric(raw[9], errors="coerce")
 
     # A restart shows up as the index column going backwards.
+    #
+    # Register N80. This was `np.diff(idx, prepend=idx[0]) <= 0`, which makes
+    # the FIRST difference idx[0] - idx[0] = 0 -- and 0 satisfies `<= 0`, so the
+    # first row was counted as a restart and the cumulative sum started at 1
+    # before the `+ 1`. Every session label was therefore one too high and the
+    # recording began at "Session 2": any report, filter or figure legend
+    # looking for session 1 found nothing, on every file. Prepending a value
+    # one SMALLER than the first index makes the first difference positive,
+    # which is what it is -- the recording starting is not a restart.
     idx = pd.to_numeric(raw[0], errors="coerce").fillna(0).to_numpy()
-    session = (np.diff(idx, prepend=idx[0]) <= 0).cumsum() + 1
+    if idx.size == 0:
+        session = np.zeros(0, dtype=int)
+    else:
+        session = (np.diff(idx, prepend=idx[0] - 1.0) <= 0).cumsum() + 1
 
     counts = raw.iloc[:, _FIRST_CHANNEL_COL:_FIRST_CHANNEL_COL + N_CHANNELS]
     counts = counts.apply(pd.to_numeric, errors="coerce").to_numpy(float)
@@ -460,11 +472,103 @@ def truncate_at_death(long: pd.DataFrame, silence_h: float = 12.0) -> pd.DataFra
 #   25:129-138; Shaw et al. 2000, Science 287:1834-1837; Andretic & Shaw 2005).
 #   Activity: healthy flies typically record several hundred to a few thousand
 #   beam crossings per day.
+#
+#   MEASURED CAVEAT -- 1150 is not an upper bound on published values.
+#   Two real published datasets were run through this pipeline:
+#     * Selkrig et al. 2018, Sci Rep 8:10646 (raw single-beam DAM, 379 flies,
+#       12:12 LD, 7 days): median 1,188 min/day = 19.8 h, with a healthy median
+#       521 beam crossings/fly/day and almost nothing lost to death truncation.
+#       69% of those flies fall outside (300, 1150).
+#     * Jagannath et al. 2024, eLife 13:RP91355, ethoscope position tracking at
+#       the same >=5-min criterion: median 730-847 min/day, and 128 of 128
+#       undisturbed flies inside (300, 1150).
+#
+#   WHAT THAT DOES AND DOES NOT ESTABLISH. It establishes that healthy flies in
+#   real published recordings sit far outside (300, 1150), which is enough to
+#   show the single range was wrong. It does NOT establish that the acquisition
+#   method causes the difference, and an earlier version of this comment said
+#   it did. Those are two different experiments -- different laboratories,
+#   strains, ages, food and protocols -- with no fly measured by both systems,
+#   so instrument and biology cannot be separated by comparing them.
+#
+#   The better-designed study points the other way. Garbe DS, Bollinger WL,
+#   Vigderman A, Masek P, Gertowski J, Sehgal A, Keene AC (2015) "Context-
+#   specific comparison of sleep acquisition systems in Drosophila", Biol Open
+#   4(11):1558-1568, doi:10.1242/bio.013011, ran single-beam infrared,
+#   multi-beam infrared and video tracking on the SAME flies: "No significant
+#   differences were observed between the two IR systems for daytime (P>0.82),
+#   nighttime (P>0.58), or total (P>0.054) sleep duration", and against video
+#   at a 100% beam-length criterion day and night duration "did not differ from
+#   that obtained using a SB-IR system (P>0.90)". What differed was sleep
+#   ARCHITECTURE: the multi-beam system "detected significantly greater numbers
+#   of total sleep bouts". Their concern about single-beam detection is stated
+#   conditionally -- it "potentially" overestimates sleep.
+#
+#   So the two entries below are dataset-derived REFERENCE POPULATIONS, labelled
+#   by the instrument that produced each because that is how a caller knows
+#   which applies -- not a claim that the instrument causes the difference. The
+#   operative fix is not the bound at all: it is that the FLAG requires high
+#   sleep AND low activity together (see `plausibility_report`), which was
+#   validated directly against the seven channels in Selkrig 2018 that are
+#   genuinely empty or dead.
+# Kept for callers that import it. The gate itself now uses
+# PLAUSIBLE_SLEEP_BY_METHOD, because this single range was applied to any
+# instrument and flagged 68.7% of healthy flies on real single-beam DAM data.
 PLAUSIBLE_SLEEP_MIN_PER_DAY = (300.0, 1150.0)
 PLAUSIBLE_ACTIVITY_PER_DAY = (150.0, 5000.0)
 
+# The sleep range above is published for the CONVENTIONAL >=5-min inactivity
+# rule (Hendricks 2000; Shaw 2000) and for nothing else. `dams.sleep_per_fly`
+# takes `sleep_min` as a parameter, so a table of sleep scored under a
+# different criterion can reach this function and be judged against a range
+# that was never derived for it.
+#
+# Measured on real published data -- Jagannath et al. 2024, eLife 13:RP91355,
+# the SAME undisturbed Canton-S flies scored under both criteria
+# (`validate_sleep_homeostasis`, checks G1-G5): under the 25-min deep-sleep
+# criterion that paper uses, the 58 flies have a median of 356 min/day and 22
+# of the 58 fall outside (300, 1150). They are healthy, undisturbed flies. A
+# range cannot be stretched to a criterion it was not measured under, and
+# there is no published 25-min-criterion range to substitute, so the only
+# honest behaviour is to decline to judge and say so.
+PUBLISHED_SLEEP_DEFINITION_MIN = 5.0
 
-def plausibility_report(per_fly: pd.DataFrame) -> dict:
+# Reference intervals for total daily sleep, PER ACQUISITION METHOD, each the
+# union of the central-95% intervals of the healthy reference populations
+# available for it. Derived in `validate_sleep_homeostasis` and
+# `validate_dam_raw_microbiome` from the real recordings, not chosen; the
+# derivation and the between-laboratory spread are in the comment above
+# `plausibility_report` and in BUG_AND_RISK_REGISTER.md under N89b.
+#
+# These are wide ON PURPOSE. Total daily sleep is not transferable between
+# laboratories at the precision a narrow gate implies -- an interval derived
+# from Selkrig 2018 alone excludes the published values of Hendricks 2000,
+# Shaw 2000 and Seugnet 2009 -- and a plausibility gate that fires on real
+# between-laboratory variation is worse than none, because it trains its
+# reader to ignore it.
+PLAUSIBLE_SLEEP_BY_METHOD = {
+    # single-beam DAM: Selkrig 2018 (986-1315, n=377), eLife 2024 Figure 1
+    # (725-1440, n=331), Hendricks 2000 / Shaw 2000 (~500-1000),
+    # Seugnet 2009 (725). Union, rounded outward.
+    "dam_single_beam": (450.0, 1400.0),
+    # position tracking (ethoscope, video): eLife 2024 undisturbed at the
+    # 5-min criterion (474-1018, n=128). One reference population only, so the
+    # interval is widened to acknowledge that.
+    "position_tracking": (400.0, 1100.0),
+}
+
+# Activity below this, with sleep near the ceiling, is the signature of a
+# channel that is not reading rather than a fly that is not moving. Selkrig
+# 2018: the seven empty or dead channels read activity of exactly 0, while
+# healthy flies have a central 95% of 221-1711 counts/day around a median of
+# 521.
+SLEEP_GATE_ACTIVITY_FLOOR = 150.0
+
+
+def plausibility_report(per_fly: pd.DataFrame,
+                        sleep_min: float = PUBLISHED_SLEEP_DEFINITION_MIN,
+                        group_cols=("Genotype", "Sex"),
+                        acquisition: str = "dam_single_beam") -> dict:
     """
     Compare per-fly sleep and activity against published ranges and say plainly
     when they do not belong there.
@@ -474,35 +578,213 @@ def plausibility_report(per_fly: pd.DataFrame) -> dict:
     like a finding. Sleep of 90% of the day is not a strain difference, it is a
     signal that the flies were barely moving or the monitor was barely reading
     -- and no amount of downstream analysis will reveal that.
+
+    sleep_min  : the inactivity criterion, in minutes, that produced the sleep
+                 column. The published range applies at 5 min only; at any
+                 other value the sleep check is DECLINED rather than applied to
+                 a criterion it was not measured under, and
+                 `sleep_range_applicable` says so.
+    acquisition : which reference population applies -- "dam_single_beam" (the
+                 default, and what this platform reads) or
+                 "position_tracking", named for the instrument that produced
+                 each. The two differ substantially: measured at the same
+                 criterion, the DAM reference population has a median of 1,188
+                 min/day and the position-tracking one 776, and judging the
+                 first by the second's interval flags two thirds of healthy
+                 flies. Whether the INSTRUMENT causes that is not established
+                 here -- the two are different experiments, and Garbe 2015
+                 found no sleep-duration difference between single-beam and
+                 video on the same flies. The label selects a reference
+                 population; it does not assert a mechanism.
+    group_cols : columns to stratify the sleep check by, where present.
+                 Register N63 -- the check tested the pooled median only, so
+                 a genotype x sex group sleeping close to 90% of the day passed
+                 as long as the other groups pulled the pooled median back
+                 inside the range. The range is a per-population range, so
+                 comparing each group's median against it is the comparison the
+                 citation supports; no new threshold is introduced.
+
+    Three things this deliberately does NOT do.
+      * It does not flag on the FRACTION of flies outside the range. Some
+        fraction outside a population range is expected, and no published work
+        states how large a fraction is too large -- a threshold here would be
+        invented, and an invented threshold inside a plausibility gate is the
+        very failure mode the gate exists to catch. The fraction is reported,
+        per group, so it cannot be missed.
+      * It does not rescale the range for a different criterion.
+      * It does not treat an absent sleep column and a WITHHELD one alike.
     """
-    out: dict = {"flags": [], "ok": True}
+    out: dict = {"flags": [], "notes": [], "ok": True,
+                 "sleep_definition_min": float(sleep_min),
+                 "sleep_range_applicable":
+                     float(sleep_min) == PUBLISHED_SLEEP_DEFINITION_MIN,
+                 "sleep_checked": False}
     if per_fly is None or per_fly.empty:
-        return {"flags": ["No per-fly metrics to check."], "ok": False}
+        out["flags"].append("No per-fly metrics to check.")
+        out["ok"] = False
+        return out
 
     if "Total_sleep_min_per_day" in per_fly.columns:
-        s = per_fly["Total_sleep_min_per_day"].dropna()
+        raw = pd.to_numeric(per_fly["Total_sleep_min_per_day"], errors="coerce")
+        s = raw.dropna()
         lo, hi = PLAUSIBLE_SLEEP_MIN_PER_DAY
-        out["median_sleep_min_per_day"] = float(s.median())
-        out["fraction_outside_sleep_range"] = float(((s < lo) | (s > hi)).mean())
-        if s.median() > hi:
+        out["median_sleep_min_per_day"] = float(s.median()) if len(s) else float("nan")
+        out["n_sleep_values"] = int(len(s))
+        out["n_sleep_withheld"] = int(len(raw) - len(s))
+        out["fraction_outside_sleep_range"] = (
+            float(((s < lo) | (s > hi)).mean()) if len(s) else float("nan"))
+
+        if len(s) == 0:
+            # Block D (N81) withholds sleep where the bin width cannot resolve
+            # the criterion. Before this, an all-NaN sleep column made every
+            # comparison below False, so the gate returned ok=True with no
+            # flags: a table whose sleep had been refused passed the
+            # plausibility check silently. That is the worst available outcome,
+            # because the refusal was correct and then invisible.
             out["ok"] = False
             out["flags"].append(
-                f"Median sleep is {s.median():.0f} min/day ({s.median() / 14.4:.0f}% of the "
-                f"day), above the ~{hi:.0f} min/day upper end of published values for adult "
-                "Drosophila. Sleep is scored as five or more consecutive minutes without a "
-                "beam break, so anything that stops beam breaks -- a fly that has died, a "
-                "misaligned or dirty beam, flies resting away from the beam, or a tube "
-                "loaded with food at the wrong end -- is indistinguishable from sleep. "
-                "Check activity per day and the survival of the flies before interpreting "
-                "this as biology."
+                f"Sleep was not checked: all {len(raw)} sleep values are missing or "
+                "withheld. `sleep_summary` withholds sleep when the recording's bin "
+                "width cannot resolve the inactivity criterion, so this is expected "
+                "on coarse-binned data -- and it means there is no sleep measurement "
+                "here to judge. Do not read the absence of a sleep flag as a passing "
+                "sleep check."
             )
-        elif s.median() < lo:
-            out["ok"] = False
-            out["flags"].append(
-                f"Median sleep is only {s.median():.0f} min/day, below the ~{lo:.0f} min/day "
-                "lower end of published values. Constant beam breaking can indicate a "
-                "vibrating monitor or a light leak."
+        elif not out["sleep_range_applicable"]:
+            out["notes"].append(
+                f"Sleep check DECLINED: these values were scored with a "
+                f"{sleep_min:g}-min inactivity criterion, and the {lo:.0f}-{hi:.0f} "
+                f"min/day reference range is published for the conventional "
+                f"{PUBLISHED_SLEEP_DEFINITION_MIN:g}-min rule. A longer criterion "
+                "scores strictly less sleep, so the range does not transfer. Median "
+                f"here is {out['median_sleep_min_per_day']:.0f} min/day over {len(s)} "
+                f"flies ({100 * out['fraction_outside_sleep_range']:.0f}% outside the "
+                "5-min-rule range), reported for information and not as a verdict."
             )
+        else:
+            out["sleep_checked"] = True
+            ref = PLAUSIBLE_SLEEP_BY_METHOD.get(str(acquisition))
+            if ref is None:
+                out["flags"].append(
+                    f"Unknown acquisition method {acquisition!r}: expected one of "
+                    f"{sorted(PLAUSIBLE_SLEEP_BY_METHOD)}. The sleep check did "
+                    "not run, because the reference interval depends on the "
+                    "instrument."
+                )
+                out["ok"] = False
+                out["sleep_checked"] = False
+                return out
+            lo, hi = ref
+            out["acquisition"] = str(acquisition)
+            out["sleep_reference_interval"] = (float(lo), float(hi))
+            strata = [c for c in (group_cols or ()) if c in per_fly.columns]
+            out["sleep_strata"] = strata
+            groups = ([("ALL", per_fly)] if not strata
+                      else list(per_fly.groupby(strata, sort=False)))
+            per_group = {}
+            for key, sub in groups:
+                g = pd.to_numeric(sub["Total_sleep_min_per_day"],
+                                  errors="coerce").dropna()
+                if len(g) == 0:
+                    continue
+                if isinstance(key, str):
+                    label = key
+                elif isinstance(key, tuple):
+                    label = " / ".join(str(k) for k in key)
+                else:
+                    label = str(key)
+                per_group[label] = {"n": int(len(g)), "median": float(g.median()),
+                                    "fraction_outside":
+                                        float(((g < lo) | (g > hi)).mean())}
+            out["sleep_by_group"] = per_group
+            # The activity of each group, where it is available -- the
+            # conjunction below needs it.
+            act_by_group = {}
+            if "Total_activity_per_day" in per_fly.columns:
+                frames_a = ([("ALL", per_fly)] if not strata
+                            else list(per_fly.groupby(strata, sort=False)))
+                for key, sub in frames_a:
+                    g = pd.to_numeric(sub["Total_activity_per_day"],
+                                      errors="coerce").dropna()
+                    if not len(g):
+                        continue
+                    if isinstance(key, str):
+                        lbl = key
+                    elif isinstance(key, tuple):
+                        lbl = " / ".join(str(v) for v in key)
+                    else:
+                        lbl = str(key)
+                    act_by_group[lbl] = float(g.median())
+
+            for label, st in per_group.items():
+                where = "" if label == "ALL" else f" in {label}"
+                act = act_by_group.get(label, float("nan"))
+                st["median_activity"] = act
+                if st["median"] > hi:
+                    # High scored sleep ALONE is ambiguous under single-beam
+                    # detection -- measured 68.7% false alarms on real healthy
+                    # flies at the old ceiling -- so it is reported, not
+                    # flagged. The FLAG is the conjunction with low activity,
+                    # which is the signature of a channel that is not reading:
+                    # 0 false alarms and all seven empty or dead channels
+                    # caught on the same data.
+                    quiet = np.isfinite(act) and act < SLEEP_GATE_ACTIVITY_FLOOR
+                    msg = (
+                        f"Median sleep is {st['median']:.0f} min/day "
+                        f"({st['median'] / 14.4:.0f}% of the day){where}, above the "
+                        f"{hi:.0f} min/day upper end of the reference interval for "
+                        f"{acquisition}. "
+                    )
+                    if quiet:
+                        out["ok"] = False
+                        out["flags"].append(
+                            msg + f"Median activity is only {act:.0f} beam "
+                            f"crossings/fly/day, below the {SLEEP_GATE_ACTIVITY_FLOOR:.0f} "
+                            "floor. High scored sleep TOGETHER WITH low activity is "
+                            "the signature of a channel that is not reading rather "
+                            "than a fly that is not moving: a fly that has died, a "
+                            "misaligned or dirty beam, or a tube loaded with food at "
+                            "the wrong end. Do not interpret this as biology until "
+                            "the monitor and the survival of the flies are checked."
+                        )
+                    else:
+                        out["notes"].append(
+                            msg + (f"Activity is {act:.0f} beam crossings/fly/day, "
+                                   "which is normal, so this is NOT flagged: high "
+                                   "scored sleep with healthy activity is what real "
+                                   "published recordings look like (Selkrig 2018: "
+                                   "median 1,188 min/day on 377 flies with normal "
+                                   "activity). Whether a single beam inflates sleep "
+                                   "relative to position tracking is unsettled -- "
+                                   "Garbe 2015 found no duration difference on the "
+                                   "same flies -- so read this as between-population "
+                                   "variation, and compare like with like."
+                                   if np.isfinite(act) else
+                                   "No activity column, so the conjunction that "
+                                   "distinguishes a quiet fly from a dead beam cannot "
+                                   "be evaluated. Reported, not flagged.")
+                        )
+                elif st["median"] < lo:
+                    # Unambiguous, and flagged unconditionally: sleep far below
+                    # the floor means the beam is being broken almost
+                    # constantly, which no healthy fly does.
+                    out["ok"] = False
+                    out["flags"].append(
+                        f"Median sleep is only {st['median']:.0f} min/day{where}, "
+                        f"below the {lo:.0f} min/day lower end of the reference "
+                        f"interval for {acquisition}. Constant beam breaking "
+                        "indicates a vibrating monitor or a light leak"
+                        + (f"; median activity is {act:.0f} counts/fly/day."
+                           if np.isfinite(act) else ".")
+                    )
+            if len(per_group) > 1:
+                out["notes"].append(
+                    "Sleep checked per " + " x ".join(strata) + " group ("
+                    + "; ".join(f"{k}: n={v['n']}, median {v['median']:.0f}"
+                                for k, v in per_group.items())
+                    + "). Register N63: a pooled median can sit inside the range "
+                      "while one group is far outside it."
+                )
 
     if "Total_activity_per_day" in per_fly.columns:
         a = per_fly["Total_activity_per_day"].dropna()
@@ -550,9 +832,38 @@ def to_dams_long(labelled: pd.DataFrame,
     of replication for everything downstream.
     """
     df = labelled.copy()
+    dropped_info = {"dead_channels_dropped": 0, "dead_channels": [],
+                    "dead_threshold": float(dead_threshold),
+                    "dead_channels_by_group": {},
+                    "dead_filter_applied": bool(drop_dead)}
     if drop_dead:
+        # Register N82. This filter removed channels and recorded nothing,
+        # while `unlabelled_channels_dropped` two hundred lines earlier is
+        # recorded. Exclusion by total activity is not a neutral filter: a sick
+        # or heavily treated cohort moves less, so a threshold on movement
+        # removes those cohorts preferentially, and the surviving comparison is
+        # between the healthiest members of each group. The count, the
+        # threshold, the channels and -- because that is the part that matters
+        # -- the distribution of the loss across groups are all recorded.
         tot = df.groupby(["Monitor", "Channel"])["Activity"].sum(min_count=1)
-        alive = tot[tot.fillna(0) >= dead_threshold].index
+        alive_mask = tot.fillna(0) >= dead_threshold
+        alive = tot[alive_mask].index
+        dead = tot[~alive_mask].index
+
+        if len(dead):
+            key = df.set_index(["Monitor", "Channel"]).index
+            dead_rows = df[key.isin(dead)]
+            by_group = {}
+            if "Genotype" in dead_rows.columns:
+                per_ch = dead_rows.drop_duplicates(["Monitor", "Channel"])
+                by_group = {str(k): int(v) for k, v in
+                            per_ch["Genotype"].astype(str).value_counts().items()}
+            dropped_info.update({
+                "dead_channels_dropped": int(len(dead)),
+                "dead_channels": [f"{m}_C{c}" for m, c in dead],
+                "dead_channels_by_group": by_group,
+            })
+
         df = df.set_index(["Monitor", "Channel"]).loc[
             df.set_index(["Monitor", "Channel"]).index.isin(alive)].reset_index()
 
@@ -571,4 +882,23 @@ def to_dams_long(labelled: pd.DataFrame,
         if extra in df.columns:
             out[extra] = df[extra].to_numpy()
     out.loc[out["Treatment"].isin(["nan", ""]), "Treatment"] = "Untreated"
-    return out.reset_index(drop=True)
+    out = out.reset_index(drop=True)
+    # Carry anything the source frame recorded, then this function's own
+    # exclusion record. `attrs` is how every other exclusion in this module is
+    # reported, so the run summary reads one place (N82).
+    for k, v in (getattr(labelled, "attrs", None) or {}).items():
+        out.attrs.setdefault(k, v)
+    out.attrs.update(dropped_info)
+    if dropped_info["dead_channels_dropped"]:
+        out.attrs["dead_filter_note"] = (
+            f"{dropped_info['dead_channels_dropped']} channel(s) were removed "
+            f"for total activity below {dead_threshold:g}: "
+            f"{dropped_info['dead_channels']}. By group: "
+            f"{dropped_info['dead_channels_by_group']}. Removal by activity is "
+            f"differential -- an impaired or treated cohort moves less -- so if "
+            f"the loss is concentrated in one group the remaining comparison is "
+            f"between the most active members of each, not between the groups "
+            f"as loaded. Check these channels against the death report before "
+            f"accepting the exclusion."
+        )
+    return out

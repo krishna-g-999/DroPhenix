@@ -141,7 +141,7 @@ _, tf = _tb(s, Inches(0.85), Inches(1.0), Inches(11.6), Inches(1.0))
 p = tf.paragraphs[0]; _run(p, "DroPhenix ", 46, WHITE, bold=True, font=HEAD); _run(p, "Analytics", 46, GOLD, bold=True, font=HEAD)
 _, tf = _tb(s, Inches(0.85), Inches(2.18), Inches(11.7), Inches(0.7))
 _run(tf.paragraphs[0], "A statistically rigorous web platform for multi-assay Drosophila phenotyping and actuarial cross-strain compound ranking", 17, LIGHT, font=HEAD)
-for i, (n, lb) in enumerate([("6", "biological assays"), ("24/24", "tool checks agree"), ("r = 1.0000", "vs gold-standard software"), ("18/18", "reference datasets")]):
+for i, (n, lb) in enumerate([("6", "biological assays"), ("24/26", "tool checks agree"), ("r = 1.0000", "vs gold-standard software"), ("18/18", "reference datasets")]):
     stat_dark(s, Inches(0.85 + i * 3.0), Inches(3.65), Inches(2.7), n, lb)
 _, tf = _tb(s, Inches(0.85), Inches(6.35), Inches(11.7), Inches(0.5))
 _run(tf.paragraphs[0], "Krishnasalini Gunanathan  ·  Venketesh Sivaramakrishnan   |   Dept. of Biosciences, SSSIHL", 13, LIGHT)
@@ -331,7 +331,7 @@ card(s, Inches(0.55), Inches(4.12), Inches(6.35), Inches(2.28), "Input → Outpu
       "OUT: per-strain effects, per-assay pooled g (I²),",
       "     composite Therapeutic Score + ranking, CSV",
       "VALIDATED: pooling exact vs statsmodels; ranks",
-      "     A>B>C; 19.9% lower error, 95.8% CI coverage"],
+      "     A>B>C; 19.2% lower error; reported HKSJ interval covers 99.5%"],
      headcolor=GREEN, size=11)
 if (FIG / "Figure2_innovation.png").exists():
     s.shapes.add_picture(str(FIG / "Figure2_innovation.png"), Inches(7.05), Inches(1.75), width=Inches(5.75))
@@ -363,7 +363,7 @@ for i, (t, col, lines) in enumerate(cols):
         pp = tfh.add_paragraph(); pp.space_before = Pt(3); pp.line_spacing = 1.05; _run(pp, ln, 11.5, INK)
     x = x + w + Inches(0.2)
 _, tf = _tb(s, Inches(0.55), Inches(6.0), Inches(12.2), Inches(0.9))
-_run(tf.paragraphs[0], "Plus a fourth check: the SAME data through seven independent tools (R, lifelines, statsmodels, scipy, pingouin, astropy, pyBOAT) — 24/24 metrics agree.", 13, SLATE, italic=True)
+_run(tf.paragraphs[0], "Plus a fourth check: the SAME data through seven independent tools (R, lifelines, statsmodels, scipy, pingouin, astropy, pyBOAT) — 24 of 26 metrics agree, none disagree.", 13, SLATE, italic=True)
 footer(s)
 
 # ═══ 16. TESTING SAMPLES ══════════════════════════════════════════════════════
@@ -420,7 +420,7 @@ _run(tf.paragraphs[0], "KM vs lifelines · climbing kinetics · MDR over age · 
 
 # ═══ 19. RESULTS: COMPARISON ══════════════════════════════════════════════════
 s = content("Results · comparison", "Perfect agreement with seven independent tools")
-for i, (n, lb) in enumerate([("24/24", "metrics agree"), ("r = 1.0000", "DroPhenix vs reference"), ("7", "reference tools")]):
+for i, (n, lb) in enumerate([("24/26", "metrics agree"), ("r = 1.0000", "DroPhenix vs reference"), ("7", "reference tools")]):
     box = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.7 + i * 2.12), Inches(1.7), Inches(1.92), Inches(1.5)); _fill(box, NAVY)
     tf = box.text_frame; tf.word_wrap = True; tf.vertical_anchor = MSO_ANCHOR.MIDDLE
     _run(tf.paragraphs[0], n, 24, GOLD, bold=True, font=HEAD); tf.paragraphs[0].alignment = PP_ALIGN.CENTER
@@ -468,7 +468,7 @@ footer(s)
 # ═══ 22. WHY RELIABLE ═════════════════════════════════════════════════════════
 s = content("Trust", "Why DroPhenix is reliable")
 items = [("Reproduces published data", "Textbook datasets (Freireich, PlantGrowth, Konopka–Benzer) return their exact published statistics."),
-         ("Agrees with gold-standard software", "24/24 metrics match R survival, lifelines, statsmodels, scipy, pingouin, astropy, pyBOAT (r = 1.0000)."),
+         ("Agrees with gold-standard software", "24 of 26 metrics match R survival, lifelines, statsmodels, scipy, pingouin, astropy, pyBOAT (r = 1.0000); the other 2 are documented method differences, not disagreements."),
          ("Correct by construction", "Assumption-gated tests, FDR control, and the right measurement axis (e.g. MDR over age)."),
          ("Independently verifiable", "The full validation + comparison suite ships; every number regenerates with one command."),
          ("Honest about limits", "Method notes (Breslow vs Efron), un-buildable tools, and simulated-vs-real data are all stated.")]
@@ -497,8 +497,8 @@ _, tf = _tb(s, Inches(0.85), Inches(1.05), Inches(11.6), Inches(1.2))
 _run(tf.paragraphs[0], "From fragmented spreadsheets to one verifiable workflow", 32, WHITE, bold=True, font=HEAD)
 bullets(s, Inches(0.85), Inches(2.7), Inches(11.6), Inches(3),
         [("Six assays, one platform,", "with publication-grade statistics throughout."),
-         ("A genuinely novel innovation:", "actuarial, unequal-N cross-strain compound ranking (19.9% more efficient than naive averaging)."),
-         ("Validated and benchmarked:", "reproduces published data and agrees with gold-standard software on 24/24 checks."),
+         ("A genuinely novel innovation:", "actuarial, unequal-N cross-strain compound ranking (19.2% more efficient than naive averaging)."),
+         ("Validated and benchmarked:", "reproduces published data and agrees with gold-standard software on 24 of 26 checks, with none disagreeing."),
          ("Free and open:", "drophenix.streamlit.app · GitHub · GPL-3 · manuscript prepared for Nucleic Acids Research.")],
         size=15, gap=11, color=LIGHT)
 footer(s, dark=True)
@@ -512,7 +512,7 @@ def set_notes(slide, text):
 
 N = [
 """IN PLAIN TERMS: DroPhenix is a free website that automatically analyses experiments on fruit flies (Drosophila) — the standard cheap, fast stand-in for human brain disease. We turned six common fly tests into one reliable automated tool and added a new statistical method for comparing drugs fairly.
-LEAD WITH: it agrees with the world's gold-standard analysis software on 24/24 checks (perfect correlation) and reproduces published scientific data exactly.
+LEAD WITH: it agrees with the world's gold-standard analysis software on 24 of 26 checks, with none disagreeing (perfect correlation on the agreeing metrics) and reproduces published scientific data exactly.
 EXPERT Q: "Why flies?" — ~75% of human disease genes conserved; weeks-long lifespan; the standard first-pass ALS/PD/HD model. "Novel or a wrapper?" — both: standardises best practice AND a new ranking method.
 NON-SCIENTIST Q: "What does it do?" — you upload your numbers, it makes the correct graphs and statistics and ranks which drug works best. "Who is it for?" — fly labs and pre-clinical drug screening.""",
 """IN PLAIN TERMS: An "assay" is a standard lab test. Today each is analysed separately in spreadsheets with inconsistent statistics, and there is no fair way to combine results when strains have different numbers of flies.
@@ -564,7 +564,7 @@ EXPERT Q: "How is k chosen?" — silhouette-optimal over Ward-linkage clustering
 NON-SCIENTIST Q: "What is it for?" — spotting distinct response patterns in a screen at a glance.""",
 """IN PLAIN TERMS — THE INNOVATION: How do you fairly combine a drug's effect across several fly strains of DIFFERENT sizes into one score? We borrow medical meta-analysis. Each strain's effect (Hedges' g) is weighted by its reliability (inverse of its variance): bigger, cleaner strains count more; small noisy ones count less but aren't discarded. These combine across strains and then across all assays into one Therapeutic Score.
 DEFINE: Hedges' g = standardised effect size; inverse-variance / DerSimonian–Laird = the optimal weighting recipe; I² = how much strains genuinely differ.
-PROOF: in 3,000 simulations it was 19.9% more accurate than simple averaging with correctly-calibrated confidence intervals (95.8%), and the maths matches statsmodels to six decimals.
+PROOF: in 3,000 simulations it was 19.2% more accurate than simple averaging, and the interval we actually report never under-covers (99.5% against a nominal 95% -- deliberately cautious when there are few strains), and the maths matches statsmodels to six decimals.
 EXPERT Q: "Why random-effects?" — to account for real strain-to-strain heterogeneity.
 NON-SCIENTIST Q: "Business value?" — fewer wrong drug bets carried forward — real money saved.""",
 """IN PLAIN TERMS: We tested the tool three independent ways. (1) Published benchmark data — reproduce a paper's exact answer. (2) Analytic ground truth — feed in data whose correct answer we built in, and check it comes back out. (3) Reference datasets — ≥3 per assay tied to cited literature. A fourth check compares against seven trusted tools.
@@ -597,7 +597,7 @@ COMMERCIAL ANGLE: a fairer, more accurate candidate ranking means fewer false le
 EXPERT Q: "Can it take my lab's data?" — yes; documented templates match common bench outputs.
 NON-SCIENTIST Q: "Path to impact/revenue?" — adoption by fly labs and pre-clinical CROs; a validated core that can underpin paid hosted or extended versions.""",
 """IN PLAIN TERMS: The takeaway — six scattered, manually-analysed fly experiments turned into one automated, rigorously-validated web tool, plus a genuinely new, more efficient way to rank drugs across unequal-sized strains. Free, open, and prepared for a leading journal.
-CLOSE ON: reliable (24/24 tool agreement, reproduces published data) + novel (19.9% more efficient ranking) + accessible (free web app).
+CLOSE ON: reliable (24 of 26 tool checks agree, none disagree; reproduces published data) + novel (19.2% more efficient ranking) + accessible (free web app).
 FINAL Qs: Expert — "what's next?" more assays, hosted deployment. Non-scientist — "how do I try it?" open drophenix.streamlit.app; no install, no login.""",
 ]
 for _sl, _nt in zip(prs.slides, N):

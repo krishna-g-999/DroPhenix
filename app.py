@@ -49,6 +49,25 @@ except ImportError:
 
 inject_css()
 
+# ── N12: carry the modification count into EVERY page ────────────────────────
+# The parser's corrections used to be transient toasts on whichever page the
+# file happened to be uploaded on, while every later page read
+# st.session_state["df"] with no record that anything had been excluded. Every
+# page header now repeats the count for as long as that dataset is open.
+# `_corrections_banner` is defined further down; Python resolves it at call
+# time, so the order does not matter.
+_render_header_base = render_header
+
+
+def render_header(*a, **kw):                      # noqa: F811
+    out = _render_header_base(*a, **kw)
+    try:
+        _corrections_banner()
+    except Exception:
+        pass
+    return out
+
+
 # ── Write config.toml once ────────────────────────────────────────────────────
 def _write_config():
     d = Path(".streamlit")
@@ -86,6 +105,10 @@ try:
         cluster_trajectories, cluster_summary_table, interpret_clusters,
     )
     from modules.metrics import compute_novel_metrics
+    from modules.provenance import (
+        manifest as _pv_manifest, manifest_json as _pv_manifest_json,
+        provenance_line as _pv_line,
+    )
     from modules.translational_score import run_tcs_pipeline
     from modules.visualizer import (
         climbing_curves, pi_barplot, auc_heatmap, t50_plot,
@@ -101,9 +124,10 @@ try:
         CV2_AVAILABLE,
     )
     from modules.video_analyzer import (
-        VideoAnalyzer, video_counts_to_drophenix, get_video_info,
+        VideoAnalyzer, BatchVideoAnalyzer, video_counts_to_drophenix,
+        get_video_info,
     )
-    from modules.fly_detector import DetectorConfig, VIAL_PRESETS
+    from modules.fly_detector import DetectorConfig, VialROI, VIAL_PRESETS
     _IMPORTS_OK = True
     _IMPORT_ERROR = ""
 except Exception as _ie:
@@ -316,15 +340,18 @@ def page_data_input():
     with src_tab:
         src = st.radio(
             "Select data source",
-            ["Demo dataset", "Demo: aging series (for MDR)",
+            ["Demo dataset", "Demo: ageing series only",
              "Upload CSV or Excel", "Use recorded video data"],
             horizontal=True,
         )
-        if src == "Demo: aging series (for MDR)":
+        if src == "Demo: ageing series only":
             st.caption(
-                "Longitudinal climbing across ages 5–45 days (Oregon-WT vs TDP43, "
-                "Vehicle vs Drug). Climbing PI declines with age; this enables "
-                "Motor Decline Rate (MDR). Includes an `Age` column."
+                "A SMALLER dataset: longitudinal climbing across ages 5–45 days "
+                "(Oregon-WT vs TDP43, Vehicle vs Drug), with an `Age` column "
+                "and nothing else. The full **Demo dataset** above already "
+                "covers ageing and every other axis; this one is here when you "
+                "want the ageing analyses on their own, with less to load and "
+                "fewer factors in the way."
             )
             if st.button("Load Aging Demo", type="primary", key="load_aging"):
                 from modules import synthetic as _syn
@@ -338,18 +365,43 @@ def page_data_input():
                            f"{df_raw['Age'].nunique()} ages.")
         elif src == "Demo dataset":
             st.caption(
-                "Built-in demo: Oregon-R (WT), TDP-43, FUS genotypes | "
-                "Vehicle, Spermine, Pantothenate | both sexes | "
-                "3 replicates | 8 timepoints."
+                "A complete worked study, so that every page has something to "
+                "show. A drug screen in a TDP-43 model of ALS: **Oregon-R (wild "
+                "type) vs TDP43**, **Spermine** and **Pantothenate** at four "
+                "doses each plus an untreated arm, **both sexes**, **ages 5-50 "
+                "days**, three vials per cell tested at **ZT2 / ZT6 / ZT10**, "
+                "counts out of n = 20 over 10-120 s."
+            )
+            st.caption(
+                "It carries every axis the app can analyse -- `Age` for Motor "
+                "Decline and the trajectory pages, `Dose` and `Compound` for "
+                "Dose-Response and Drug Ranking, `TimeOfDay` for Time-of-Day, "
+                "`VialID` for the hierarchical model, `DeathAge` for Survivor "
+                "Bias -- and sick untreated vials genuinely drop out of the "
+                "late ages, so the survivorship bias the tool detects is "
+                "present rather than absent."
+            )
+            st.caption(
+                ":red[Simulated data.] Nothing in it is evidence about "
+                "Drosophila and no number from it belongs in a manuscript; it "
+                "is here to show how each page behaves on data of the right "
+                "shape."
             )
             if st.button("Load Demo Dataset", type="primary"):
-                df_raw, warns, errs = load_data(None)
+                from modules import synthetic as _syn
+                df_raw, warns, errs = load_data(_syn.generate_demo_study())
                 st.session_state.update({
                     "df": df_raw, "data_source": "demo",
                     "data_warnings": warns, "data_errors": errs,
                     "run_complete": False, "base_metrics": {},
                 })
-                st.success(f"Demo dataset loaded: {len(df_raw)} rows.")
+                st.success(
+                    f"Demo study loaded: {len(df_raw)} rows, "
+                    f"{df_raw['VialID'].nunique()} vials, "
+                    f"{df_raw['Age'].nunique()} ages, "
+                    f"{df_raw['Dose'].nunique()} dose levels. "
+                    f"Run the pipeline below, then every page in the sidebar "
+                    f"has something to show.")
 
         elif src == "Upload CSV or Excel":
             st.caption(
@@ -359,8 +411,10 @@ def page_data_input():
             _template_button("climbing_template.csv", "Download climbing template", "tpl_clim")
             uploaded = st.file_uploader("Upload file", type=["csv","xlsx","xls"],
                                         label_visibility="collapsed")
+            dup_policy = _duplicate_policy_control("home")
             if uploaded:
-                df_raw, warns, errs = load_data(uploaded)
+                df_raw, warns, errs = load_data(uploaded,
+                                                duplicate_policy=dup_policy)
                 st.session_state.update({
                     "df": df_raw, "data_source": "upload",
                     "data_warnings": warns, "data_errors": errs,
@@ -371,6 +425,10 @@ def page_data_input():
                 else:
                     st.success(f"File loaded: {len(df_raw)} rows.")
                 for w in warns: st.warning(w)
+                # N12: raw values and corrected cells, shown here rather than
+                # left as a toast on one page.
+                if not errs:
+                    _render_upload_integrity(df_raw, key="home")
 
         else:
             if st.session_state.get("last_recording_path"):
@@ -397,7 +455,7 @@ def page_data_input():
         st.markdown('<p class="sec-hdr">Group Summary</p>', unsafe_allow_html=True)
         st.dataframe(get_group_summary(df), width='stretch')
         st.divider()
-        if st.button("Run Full Analysis Pipeline", type="primary", use_container_width=True):
+        if st.button("Run Full Analysis Pipeline", type="primary", width="stretch"):
             _run_pipeline(df, wt_sel, veh_sel)
 
 
@@ -430,7 +488,7 @@ def page_climbing_curves():
         genotypes=sel_geno or None, treatments=sel_trt or None, sexes=sel_sex or None,
         show_raw=show_raw, raw_df=norm if show_raw else None,
     )
-    st.pyplot(fig, width='stretch')
+    _show_fig(fig, width='stretch')
     st.download_button("Download figure", img, "climbing_curves.png", "image/png")
 
     with st.expander("Aggregated data table"):
@@ -464,7 +522,7 @@ def page_core_metrics():
         st.caption("PI = (climbed minus not climbed) / total x 100. Range: -100 to +100.")
         if not pi_df.empty:
             fig, img = pi_barplot(pi_df, title="Performance Index by Group")
-            st.pyplot(fig, width='stretch')
+            _show_fig(fig, width='stretch')
             st.download_button("Download PI figure", img, "pi_barplot.png", "image/png")
             with st.expander("PI data table"):
                 st.dataframe(pi_df, width='stretch')
@@ -479,7 +537,7 @@ def page_core_metrics():
         if not auc_df.empty:
             sex_sel = st.radio("Sex", ["Male", "Female"], horizontal=True, key="auc_sex")
             fig, img = auc_heatmap(auc_df, sex=sex_sel)
-            st.pyplot(fig, width='stretch')
+            _show_fig(fig, width='stretch')
             st.download_button("Download AUC heatmap", img,
                                f"auc_{sex_sel}.png", "image/png")
             with st.expander("AUC data table"):
@@ -494,7 +552,7 @@ def page_core_metrics():
         st.caption("Interpolated time at which 50% of each group climbed above threshold.")
         if not t50_df.empty:
             fig, img = t50_plot(t50_df)
-            st.pyplot(fig, width='stretch')
+            _show_fig(fig, width='stretch')
             st.download_button("Download t50 figure", img, "t50_plot.png", "image/png")
             with st.expander("t50 data table"):
                 st.dataframe(t50_df, width='stretch')
@@ -507,7 +565,7 @@ def page_core_metrics():
         st.markdown("#### Male vs Female PI Comparison")
         if not pi_df.empty:
             fig, img = sex_comparison_plot(pi_df)
-            st.pyplot(fig, width='stretch')
+            _show_fig(fig, width='stretch')
             st.download_button("Download sex comparison", img,
                                "sex_comparison.png", "image/png")
         else:
@@ -536,7 +594,7 @@ def page_novel_metrics():
         )
         if not cri_df.empty:
             fig, img = cri_barplot(cri_df)
-            st.pyplot(fig, width='stretch')
+            _show_fig(fig, width='stretch')
             st.download_button("Download CRI figure", img, "cri_barplot.png", "image/png")
             with st.expander("CRI data table"):
                 st.dataframe(cri_df, width='stretch')
@@ -550,7 +608,7 @@ def page_novel_metrics():
         st.caption("SDQ > 0.5 indicates strong sex-differential phenotype.")
         if not sdq_df.empty:
             fig, img = sdq_plot(sdq_df)
-            st.pyplot(fig, width='stretch')
+            _show_fig(fig, width='stretch')
             st.download_button("Download SDQ figure", img, "sdq_plot.png", "image/png")
             if st.checkbox("Run SDQ permutation test (n=10,000)", key="sdq_perm"):
                 pi_df = st.session_state["base_metrics"].get("pi", pd.DataFrame())
@@ -575,7 +633,7 @@ def page_novel_metrics():
         )
         if not tsw_df.empty:
             fig, img = tsw_plot(tsw_df)
-            st.pyplot(fig, width='stretch')
+            _show_fig(fig, width='stretch')
             st.download_button("Download TSW figure", img, "tsw_plot.png", "image/png")
             with st.expander("TSW data table"):
                 st.dataframe(tsw_df, width='stretch')
@@ -794,7 +852,7 @@ def page_motor_decline():
             try:
                 fig, img = mdr_decay_curves(age_pi, mdr_df, sexes=sexes,
                                             time_col="Age", xlabel="Age (days)")
-                st.pyplot(fig, width=720)
+                _show_fig(fig, width=720)
                 st.download_button("Download MDR figure", img, "mdr_decay.png", "image/png")
             except Exception as _fe:
                 st.warning(f"Decay curve plot failed: {_fe}")
@@ -855,66 +913,43 @@ def page_motor_decline():
                 _c2.markdown("**Treatments**\n\n" + "\n".join(f"• `{t}`" for t in _mdr_trts))
                 _c3.markdown("**Sexes**\n\n" + "\n".join(f"• `{s}`" for s in _mdr_sexes))
 
-            # ── self-contained MSCI computation (bypasses module function) ─
-            def _compute_msci_inline(mdr: "pd.DataFrame",
-                                     ls:  "pd.DataFrame") -> "pd.DataFrame":
-                """Spearman r between MDR k and lifespan. Tries multiple merge strategies."""
-                import numpy as _np
-                from scipy.stats import spearmanr as _spr
-                _ls = ls.copy()
-                # normalise lifespan column name
-                for _alias in [
-                    "Median_Survival_days","MedianSurvival_days","Lifespandays",
-                    "Lifespan_days","LifespanDays","median_survival_days",
-                    "MedianSurvivalDays","Median_survival_days",
-                ]:
-                    if _alias in _ls.columns and _alias != "Median_Survival_days":
-                        _ls = _ls.rename(columns={_alias: "Median_Survival_days"})
-                        break
-                if "Median_Survival_days" not in _ls.columns:
-                    return pd.DataFrame()
-                # try merge strategies from most specific to least
-                for _keys in [
-                    [c for c in ["Genotype","Treatment","Sex"] if c in mdr.columns and c in _ls.columns],
-                    [c for c in ["Genotype","Sex"]             if c in mdr.columns and c in _ls.columns],
-                    [c for c in ["Genotype"]                   if c in mdr.columns and c in _ls.columns],
-                ]:
-                    if not _keys: continue
-                    _mg = mdr.merge(_ls, on=_keys, how="inner")
-                    if not _mg.empty:
-                        break
-                if _mg.empty:
-                    return pd.DataFrame()
-                _rows = []
-                for _g, _sub in _mg.groupby("Genotype"):
-                    _kv  = _sub["k"].astype(float)
-                    _lsv = _sub["Median_Survival_days"].astype(float)
-                    if len(_kv) < 2: continue
-                    _r, _p = _spr(_kv, _lsv)
-                    _rows.append({"Genotype":_g, "MSCI_r":round(float(_r),3),
-                                  "p_value":round(float(_p),4),
-                                  "n_groups":len(_sub),
-                                  "Interpretation": (
-                                      "Strongly coupled" if abs(_r)>=0.6 else
-                                      "Weakly coupled"   if abs(_r)>=0.3 else
-                                      "Uncoupled")})
-                if len(_mg) >= 2:
-                    _ra, _pa = _spr(_mg["k"].astype(float),
-                                    _mg["Median_Survival_days"].astype(float))
-                    _rows.append({"Genotype":"ALL",
-                                  "MSCI_r":round(float(_ra),3),
-                                  "p_value":round(float(_pa),4),
-                                  "n_groups":len(_mg),
-                                  "Interpretation": (
-                                      "Strongly coupled" if abs(_ra)>=0.6 else
-                                      "Weakly coupled"   if abs(_ra)>=0.3 else
-                                      "Uncoupled")})
-                return pd.DataFrame(_rows)
+            # MSCI is computed by modules.motor_decline.compute_msci -- the one
+            # audited implementation. This page used to define its own inline
+            # copy, which reported scipy's ASYMPTOTIC Spearman p: at n = 3 with
+            # a perfect rank correlation that p is 0.0, while the smallest p the
+            # design can attain is 1/3. The module uses an exact permutation p,
+            # reports p_min_attainable, labels an underpowered design as such,
+            # and carries the ecological-correlation caveat on every row. None
+            # of that reached the user through the inline copy.
+            def _render_msci_table(msci_df, key_prefix: str):
+                _p_cols = [c for c in ("p_Spearman", "p_min_attainable") if c in msci_df.columns]
+                st.dataframe(msci_df, width='stretch')
+                if "Caveat" in msci_df.columns and len(msci_df):
+                    st.caption(str(msci_df["Caveat"].iloc[0]))
+                if "Interpretation" in msci_df.columns and msci_df["Interpretation"].astype(str).str.contains("nderpowered").any():
+                    st.warning(
+                        "At least one row is **underpowered by construction**: with this "
+                        "many groups the smallest attainable p exceeds 0.05, so no "
+                        "correlation however perfect can reach that level. Treat rho as "
+                        "descriptive only."
+                    )
+                if _p_cols:
+                    st.caption("p is an exact permutation p-value; `p_min_attainable` is the "
+                               "smallest p this design could ever produce.")
 
             # ── Demo button ───────────────────────────────────────────────
             st.info(
-                "**No lifespan file?** Click **Load Demo Lifespan** to compute MSCI "
-                "using synthetic survival values matched to your current groups."
+                "**No lifespan file?** Click **Load Demo Lifespan** to see how MSCI is "
+                "computed, using placeholder survival values matched to your current "
+                "groups."
+            )
+            st.warning(
+                "The demo lifespan values are **assigned deterministically from the "
+                "genotype name** (wild-type-like 65 d, disease-model-like 38 d, "
+                "otherwise 52 d, plus fixed treatment and sex offsets). Any "
+                "correlation they produce is an artefact of that rule, not a "
+                "simulated biological result. Use it to check the computation, never "
+                "as evidence."
             )
             if st.button("Load Demo Lifespan & Compute MSCI",
                          key="demo_msci_btn", type="primary"):
@@ -937,16 +972,20 @@ def page_motor_decline():
                     _ls_rows.append({"Genotype":_g,"Treatment":_t,"Sex":_s,
                                      "Median_Survival_days":round(_surv(_g)+_tmod+_smod,1)})
                 _ls_demo = pd.DataFrame(_ls_rows)
-                _msci_out = _compute_msci_inline(mdr_df, _ls_demo)
+                _msci_out, _msci_merged = compute_msci(mdr_df, _ls_demo)
                 if not _msci_out.empty:
                     st.success(f"MSCI computed — {len(_msci_out)} groups")
-                    st.dataframe(_msci_out, width='stretch')
+                    _render_msci_table(_msci_out, "demo")
                     st.download_button("Download MSCI CSV",
                         _msci_out.to_csv(index=False).encode(),
                         "msci_demo.csv","text/csv",key="dlmsci_demo")
                 else:
-                    st.error("MSCI still empty after inline computation. "
-                             "MDR table may lack k column or scipy is missing.")
+                    st.error(
+                        "MSCI is empty. Either the MDR table has no `k` column, no "
+                        "recognised median-lifespan column was found, the Genotype / "
+                        "Treatment / Sex values do not match between the two tables, "
+                        "or no Genotype x Sex cell has the 3 groups MSCI requires."
+                    )
                     with st.expander("Debug: MDR table preview"):
                         st.dataframe(mdr_df.head(6), width='stretch')
                         st.dataframe(_ls_demo.head(6), width='stretch')
@@ -970,9 +1009,9 @@ def page_motor_decline():
                 if ls_file:
                     try:
                         _lsdf = pd.read_csv(ls_file)
-                        _msci_up = _compute_msci_inline(mdr_df, _lsdf)
+                        _msci_up, _msci_merged = compute_msci(mdr_df, _lsdf)
                         if not _msci_up.empty:
-                            st.dataframe(_msci_up, width='stretch')
+                            _render_msci_table(_msci_up, "upload")
                             st.download_button("Download MSCI CSV",
                                 _msci_up.to_csv(index=False).encode(),
                                 "msci.csv","text/csv")
@@ -1242,13 +1281,13 @@ def page_trajectory_clustering():
 
     with t_dend:
         fig, img = trajectory_dendrogram(cr)
-        st.pyplot(fig, width='stretch')
+        _show_fig(fig, width='stretch')
         st.download_button("Download dendrogram", img, "dendrogram.png", "image/png")
 
     with t_embed:
         use_umap = st.checkbox("Use UMAP (requires umap-learn)", value=False)
         fig, img = trajectory_pca(cr, use_umap=use_umap)
-        st.pyplot(fig, width='stretch')
+        _show_fig(fig, width='stretch')
         st.download_button("Download embedding", img, "embedding.png", "image/png")
 
     with t_summary:
@@ -1298,13 +1337,13 @@ def page_tcs():
     with t_ranked:
         top_n = st.slider("Candidates to display", 5, 30, 15, key="tcs_topn")
         fig, img = tcs_ranked_bar(tcs_full, top_n=top_n)
-        st.pyplot(fig, width='stretch')
+        _show_fig(fig, width='stretch')
         st.download_button("Download ranked bar", img, "tcs_ranked.png", "image/png")
 
     with t_radar:
         if radar_ax and radar_d:
             fig, img = tcs_radar(radar_ax, radar_d)
-            st.pyplot(fig, width='stretch')
+            _show_fig(fig, width='stretch')
             st.download_button("Download radar chart", img, "tcs_radar.png", "image/png")
         else:
             st.info("Radar data not available.")
@@ -1502,6 +1541,52 @@ def page_recording():
         st.code(traceback.format_exc())
 
 
+def _render_video_qc(counts_df):
+    """Surface the detector's own refusals, which used to be computed over.
+
+    Register N8: `QC_flag` and `Confidence` were emitted on every failed vial
+    and then dropped by the converter, so a vial the detector had marked
+    unusable reached the statistics as `PI = 0.0` — the PI of a vial with half
+    its flies above the line, i.e. roughly +100 points toward normal.
+    """
+    try:
+        from modules import missingness as _MSX
+    except Exception:
+        return
+    if counts_df is None or counts_df.empty or _MSX.COLUMN not in counts_df.columns:
+        return
+    tally = _MSX.summarise(counts_df[_MSX.COLUMN].tolist())
+    n_obs = tally.pop(_MSX.OBSERVED, 0)
+    cols = st.columns(3)
+    cols[0].metric("Usable vial-timepoints", n_obs)
+    cols[1].metric("Not usable", int(sum(tally.values())))
+    if "N_start" in counts_df.columns and "N_detected" in counts_df.columns:
+        mm = (pd.to_numeric(counts_df["N_detected"], errors="coerce")
+              != pd.to_numeric(counts_df["N_start"], errors="coerce"))
+        cols[2].metric("Count mismatches", int(mm.sum()))
+    if tally:
+        st.warning(
+            "Rows with no usable measurement: "
+            + ", ".join(f"{k} × {v}" for k, v in sorted(tally.items()))
+            + ". These carry NaN, not zero — a vial that could not be scored "
+              "is not a vial in which no fly climbed. They are excluded from "
+              "every mean, and the exclusion is reported here because detector "
+              "failures are not independent of genotype: a severely impaired "
+              "cohort sitting still at the bottom of the tube is the hardest "
+              "case to detect, so dropping these rows without looking at how "
+              "they are distributed across groups biases the comparison "
+              "toward the null."
+        )
+        if "unusable_reason" in counts_df.columns:
+            bad = counts_df[counts_df[_MSX.COLUMN] != _MSX.OBSERVED]
+            keep = [c for c in ("Time", "VialID", "Genotype", "Treatment",
+                                "N_start", "N_detected", "QC_flag",
+                                _MSX.COLUMN, "unusable_reason")
+                    if c in bad.columns]
+            with st.expander(f"The {len(bad)} unusable row(s), with reasons"):
+                st.dataframe(bad[keep], width='stretch')
+
+
 def page_video_analysis():
     render_header("Video Analysis",
                   "Computer-vision fly detection and counting from video")
@@ -1560,42 +1645,133 @@ def page_video_analysis():
                 ic = st.columns(4)
                 ic[0].metric("Duration (s)",  f"{info.get('duration_sec',0):.1f}")
                 ic[1].metric("FPS",           f"{info.get('fps',0):.1f}")
-                ic[2].metric("Resolution",    info.get("resolution","N/A"))
-                ic[3].metric("Total frames",  str(info.get("total_frames",0)))
+                # `get_video_info` returns width/height/frame_count; the keys
+                # read here were "resolution" and "total_frames", which it has
+                # never returned, so the page showed "N/A" and 0 for every file.
+                ic[2].metric("Resolution",
+                             f"{info.get('width', 0)}×{info.get('height', 0)}")
+                ic[3].metric("Total frames",  str(info.get("frame_count", 0)))
 
             det_cfg = st.session_state.get("_detector_cfg", DetectorConfig())
-            n_v = st.number_input("Number of vials", 1, 24, 6, key="sv_nv")
-            vid_vc = []
-            for i in range(int(n_v)):
-                row = st.columns([2,2,2,1])
+
+            # ── Vial geometry (register N70, N9) ──────────────────────────────
+            # This page previously collected genotype/treatment/sex/n only, and
+            # passed that list to VideoAnalyzer as `vial_configs`. There is no
+            # such parameter, so the page raised on every run — and had it not,
+            # it would have had no ROI geometry at all, so the scoring line
+            # would have been a fraction of the whole frame and every bench
+            # object of fly-like area would have been counted as a fly.
+            fw = int(info.get("width") or 0) or None
+            fh = int(info.get("height") or 0) or None
+            if not (fw and fh):
+                res = str(info.get("resolution", "")).lower().replace(" ", "")
+                if "x" in res:
+                    try:
+                        fw, fh = (int(v) for v in res.split("x")[:2])
+                    except ValueError:
+                        fw = fh = None
+            if not (fw and fh):
+                st.error(
+                    "Frame size could not be read from this file, so vial "
+                    "regions cannot be placed. Nothing was analysed."
+                )
+                return
+
+            st.markdown("##### 1 — Vial regions")
+            st.caption(
+                f"Frame is {fw}×{fh} px. The regions are laid out as an even "
+                f"grid and each must contain exactly one vial, top to bottom: "
+                f"the scoring line is placed inside the region, so a region "
+                f"that includes the bench or the next vial scores the wrong "
+                f"thing. Check the preview before running."
+            )
+            gc = st.columns(3)
+            g_rows = int(gc[0].number_input("Grid rows", 1, 6, 1, key="sv_gr"))
+            g_cols = int(gc[1].number_input("Grid columns", 1, 12, 6, key="sv_gc"))
+            g_marg = int(gc[2].number_input("Margin (px)", 0, 60, 4, key="sv_gm"))
+            n_v = g_rows * g_cols
+
+            st.markdown("##### 2 — Loading record")
+            st.caption(
+                "**N loaded** is the number of flies put into each vial. It is "
+                "the only denominator used for Pct and PI: the detected count "
+                "is reported beside it as QC, never substituted for it. A vial "
+                "left at 0 is analysed for counts and its rate is refused."
+            )
+            vials = []
+            cw, rh = fw // g_cols, fh // g_rows
+            for i in range(n_v):
+                r_i, c_i = divmod(i, g_cols)
+                row = st.columns([2, 2, 2, 1])
                 g = row[0].text_input(f"Genotype {i+1}", key=f"svg_{i}")
                 t = row[1].text_input(f"Treatment {i+1}", key=f"svt_{i}")
-                s = row[2].selectbox(f"Sex {i+1}", ["Male","Female"], key=f"svs_{i}")
-                n = row[3].number_input(f"n {i+1}", 1, 50, 20, key=f"svn_{i}")
-                vid_vc.append({"Genotype":g,"Treatment":t,"Sex":s,"expected_n":int(n)})
+                s = row[2].selectbox(f"Sex {i+1}", ["Male", "Female"], key=f"svs_{i}")
+                n = row[3].number_input(f"N loaded {i+1}", 0, 100, 20, key=f"svn_{i}")
+                vials.append(VialROI(
+                    x=c_i * cw + g_marg, y=r_i * rh + g_marg,
+                    w=max(1, cw - 2 * g_marg), h=max(1, rh - 2 * g_marg),
+                    vial_id=i + 1,
+                    label=f"V{i+1}" + (f" | {g}" if g else ""),
+                    genotype=g, sex=s, treatment=t,
+                    expected_n=int(n),
+                ))
 
-            if st.button("Run Video Analysis", type="primary"):
+            st.markdown("##### 3 — Scoring timepoints")
+            tp_txt = st.text_input(
+                "Seconds after the tap, comma-separated",
+                value="10, 20, 30, 60",
+                key="sv_tps",
+                help="Every timepoint you ask for gets a row. One that is "
+                     "beyond the end of the clip comes back flagged "
+                     "unusable rather than silently disappearing.",
+            )
+            try:
+                tps = [int(float(v)) for v in tp_txt.split(",") if v.strip()]
+            except ValueError:
+                tps = []
+            if not tps:
+                st.warning("Enter at least one scoring timepoint.")
+
+            roi_ok = st.checkbox(
+                "I have checked that each region contains exactly one vial",
+                key="sv_roi_ok",
+            )
+
+            if st.button("Run Video Analysis", type="primary",
+                         disabled=not (tps and roi_ok)):
                 with st.spinner("Analysing video... this may take several minutes."):
-                    analyzer   = VideoAnalyzer(video_path=tmp_path,
-                                               detector_config=det_cfg,
-                                               vial_configs=vid_vc)
-                    counts_df  = analyzer.analyze()
+                    analyzer = VideoAnalyzer(detector_config=det_cfg)
+                    counts_df = analyzer.analyze(
+                        video_path=tmp_path,
+                        vials=vials,
+                        sample_timepoints=tps,
+                        replicate=1,
+                        session_id=Path(vid_file.name).stem,
+                    )
                 if counts_df is None or counts_df.empty:
                     st.error("No data returned. Check detector settings.")
                 else:
                     st.success(f"Analysis complete: {len(counts_df)} records.")
-                    dp_df = video_counts_to_drophenix(counts_df, vid_vc)
-                    st.dataframe(dp_df.head(100), width='stretch')
-                    st.download_button("Download counts CSV",
-                        dp_df.to_csv(index=False).encode(), "video_counts.csv", "text/csv")
-                    if st.button("Load into DroPhenix"):
-                        df_raw, warns, errs = load_data(io.StringIO(dp_df.to_csv(index=False)))
-                        st.session_state.update({
-                            "df": df_raw, "data_source": "video",
-                            "data_warnings": warns, "data_errors": errs,
-                            "run_complete": False, "base_metrics": {},
-                        })
-                        st.success("Data loaded. Go to Data Input to run the pipeline.")
+                    _render_video_qc(counts_df)
+                    st.dataframe(counts_df.head(100), width='stretch')
+                    try:
+                        dp_df = video_counts_to_drophenix(counts_df)
+                    except ValueError as _cv_err:
+                        dp_df = None
+                        st.error(f"Conversion refused: {_cv_err}")
+                    if dp_df is not None:
+                        st.download_button("Download counts CSV",
+                            dp_df.to_csv(index=False).encode(), "video_counts.csv",
+                            "text/csv")
+                        if st.button("Load into DroPhenix"):
+                            df_raw, warns, errs = load_data(
+                                io.StringIO(dp_df.to_csv(index=False)))
+                            st.session_state.update({
+                                "df": df_raw, "data_source": "video",
+                                "data_warnings": warns, "data_errors": errs,
+                                "run_complete": False, "base_metrics": {},
+                            })
+                            st.success("Data loaded. Go to Data Input to run the pipeline.")
 
     with t_batch:
         st.markdown("#### Batch Video Processing")
@@ -1606,7 +1782,54 @@ def page_video_analysis():
         if batch_files:
             st.info(f"{len(batch_files)} videos selected.")
             det_cfg = st.session_state.get("_detector_cfg", DetectorConfig())
-            if st.button("Run Batch Analysis", type="primary"):
+
+            # Register N10: this loop used to number the files 1, 2, 3... in
+            # upload order, so the replicate index was a property of the file
+            # list rather than of the experiment. Two camera angles of one
+            # vial, or a cohort recorded in two clips, became two independent
+            # biological replicates — pseudoreplication by construction, which
+            # narrows every interval and inflates every test. Only the
+            # experimenter knows which recordings share a cohort.
+            st.markdown("##### Replicate assignment")
+            st.caption(
+                "Give each recording its biological replicate number. Two "
+                "recordings of the same cohort — a second camera angle, a "
+                "re-record after a failed tap — get the **same** number; they "
+                "are one replicate, not two."
+            )
+            rep_map = {}
+            for i, vf in enumerate(batch_files):
+                rc = st.columns([3, 1])
+                rc[0].write(vf.name)
+                rep_map[vf.name] = int(rc[1].number_input(
+                    "Replicate", 1, 99, i + 1, key=f"bvrep_{i}",
+                    label_visibility="collapsed"))
+            n_declared = len(set(rep_map.values()))
+            st.caption(
+                f"{len(batch_files)} recording(s) → **{n_declared} biological "
+                f"replicate(s)**. This is the n that every interval and every "
+                f"p-value downstream will be based on."
+            )
+            st.markdown("##### Vial regions and loading record")
+            bc = st.columns(4)
+            b_rows = int(bc[0].number_input("Grid rows", 1, 6, 1, key="bv_gr"))
+            b_cols = int(bc[1].number_input("Grid columns", 1, 12, 6, key="bv_gc"))
+            b_n = int(bc[2].number_input("N loaded per vial", 0, 100, 20,
+                                         key="bv_n"))
+            b_tps_txt = bc[3].text_input("Timepoints (s)", "10, 20, 30, 60",
+                                         key="bv_tps")
+            try:
+                b_tps = [int(float(v)) for v in b_tps_txt.split(",") if v.strip()]
+            except ValueError:
+                b_tps = []
+            st.caption(
+                "The same grid and the same N loaded are applied to every "
+                "recording in the batch, so the recordings must be framed "
+                "alike. Per-vial genotypes differ between runs — use the "
+                "Single Video tab for a batch whose layout is not constant."
+            )
+            if st.button("Run Batch Analysis", type="primary",
+                         disabled=not b_tps):
                 all_dfs  = []
                 prog     = st.progress(0)
                 for i, vf in enumerate(batch_files):
@@ -1615,17 +1838,45 @@ def page_video_analysis():
                     ) as tmp:
                         tmp.write(vf.read())
                         tmp_path = tmp.name
+                    binfo = get_video_info(tmp_path) or {}
+                    bw = int(binfo.get("width") or 0)
+                    bh = int(binfo.get("height") or 0)
+                    if not (bw and bh):
+                        st.error(f"{vf.name}: frame size unreadable; skipped "
+                                 f"and recorded as not analysed.")
+                        prog.progress((i + 1) / len(batch_files))
+                        continue
+                    bcw, brh = bw // b_cols, bh // b_rows
+                    b_vials = []
+                    for k in range(b_rows * b_cols):
+                        rk, ck = divmod(k, b_cols)
+                        b_vials.append(VialROI(
+                            x=ck * bcw + 4, y=rk * brh + 4,
+                            w=max(1, bcw - 8), h=max(1, brh - 8),
+                            vial_id=k + 1, label=f"V{k+1}",
+                            expected_n=b_n,
+                        ))
                     with st.spinner(f"Analysing {vf.name}..."):
-                        an   = VideoAnalyzer(video_path=tmp_path,
-                                             detector_config=det_cfg, vial_configs=[])
-                        df_i = an.analyze()
+                        an = VideoAnalyzer(detector_config=det_cfg)
+                        df_i = an.analyze(
+                            video_path=tmp_path, vials=b_vials,
+                            sample_timepoints=b_tps,
+                            replicate=rep_map[vf.name],
+                            session_id=Path(vf.name).stem,
+                        )
                     if df_i is not None and not df_i.empty:
                         df_i["source_file"] = vf.name
                         all_dfs.append(df_i)
                     prog.progress((i + 1) / len(batch_files))
                 if all_dfs:
                     combined = pd.concat(all_dfs, ignore_index=True)
-                    st.success(f"Batch complete: {len(combined)} records.")
+                    st.success(
+                        f"Batch complete: {len(combined)} records from "
+                        f"{len(all_dfs)} recording(s), declared as "
+                        f"{combined['Replicate'].nunique()} biological "
+                        f"replicate(s)."
+                    )
+                    _render_video_qc(combined)
                     st.dataframe(combined.head(200), width='stretch')
                     st.download_button("Download batch CSV",
                         combined.to_csv(index=False).encode(),
@@ -3917,6 +4168,183 @@ def page_video_scoring():
                     "hierarchical and ranking pages need several videos combined.")
 
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Figures (register N85)
+# ══════════════════════════════════════════════════════════════════════════════
+def _show_fig(fig, **kw):
+    """
+    Render a Matplotlib figure and then release it.
+
+    Register N85. There were thirteen `st.pyplot` calls in this file against
+    one `plt.close`, and Matplotlib keeps every figure it creates in a global
+    registry until something closes it. Streamlit re-runs the whole script on
+    each interaction, so a user clicking through the pages of one session
+    accumulated figures without bound -- each holding its own canvas, and the
+    larger ones several megabytes -- until the process was killed or the
+    browser tab closed. It is not a correctness defect; it is the reason a long
+    session becomes slow and then dies, which a second laboratory experiences
+    as an unreliable tool.
+
+    Rendering goes through here so that closing cannot be forgotten at a new
+    call site. Figures built but never shown are still the caller's to close.
+    """
+    if fig is None:
+        return
+    try:
+        st.pyplot(fig, **kw)
+    finally:
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
+
+
+def _render_audit(audit, where: str = ""):
+    """
+    Show a `DataAudit` to the operator.
+
+    Register N71. The CSV Analysis page called `.get("errors", [])` on this
+    dataclass, which raises `AttributeError`, so the validation step that page
+    exists to run never executed on any file -- and because the exception was
+    raised inside the page body the page simply stopped there, having reported
+    neither errors nor warnings. Reading the dataclass's own attributes is the
+    fix; a `.get` with a default is how a skipped check hides.
+    """
+    if audit is None:
+        return True
+    errors = list(getattr(audit, "errors", []) or [])
+    warns = list(getattr(audit, "warnings", []) or [])
+    for e in errors:
+        st.error(e)
+    for w in warns:
+        st.warning(w)
+    ok = bool(getattr(audit, "ok", not errors))
+    if ok and not warns:
+        st.caption(f"Validation passed{(' — ' + where) if where else ''}: "
+                   f"no errors, no warnings.")
+    return ok
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Upload integrity (register N11/N12)
+# ══════════════════════════════════════════════════════════════════════════════
+def _correction_count(df) -> int:
+    """How many rows the parser found an invalid observation on."""
+    if df is None or getattr(df, "empty", True) or "QC_corrections" not in df.columns:
+        return 0
+    return int((df["QC_corrections"].astype(str).str.len() > 0).sum())
+
+
+def _render_upload_integrity(df, key: str = "upl"):
+    """
+    Show what the parser found, on the raw values, before anything else.
+
+    Register N12. The frame shown as "Preview (first 100 rows)" was the
+    CORRECTED one: negatives already zeroed, over-counts already capped at n,
+    duplicates already averaged. The warnings existed, but as transient toasts
+    on the page where the file happened to be uploaded, while every later page
+    read `st.session_state["df"]` with no record of what had changed, no
+    original values, and no marked cells in any export.
+
+    Now: the raw value sits beside the kept value on every affected row, the
+    rows are listed in full, corrected cells are highlighted in the preview,
+    and `_corrections_banner` repeats the count on every page for as long as
+    that dataset is open. `Count_raw`, `n_raw` and `QC_corrections` are columns,
+    so they travel into every export as well.
+    """
+    if df is None or getattr(df, "empty", True):
+        return
+    n_corr = _correction_count(df)
+    has_raw = "Count_raw" in df.columns
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Rows", str(len(df)))
+    c2.metric("Rows with an invalid value", str(n_corr))
+    c3.metric("Raw values preserved", "yes" if has_raw else "no")
+
+    if n_corr:
+        bad = df[df["QC_corrections"].astype(str).str.len() > 0]
+        st.warning(
+            f"{n_corr} of {len(df)} rows carry a value the parser could not "
+            f"accept as an observation. The raw value is kept in `Count_raw` "
+            f"and `Count` is NaN for those rows: a negative count is not an "
+            f"observation of zero climbers and a count above n is not an "
+            f"observation that every fly climbed, so neither is substituted. "
+            f"Those rows are excluded from each mean rather than contributing a "
+            f"fabricated number — which also means the groups they belong to "
+            f"rest on fewer replicates."
+        )
+        grp = [c for c in ("Genotype", "Treatment", "Sex") if c in bad.columns]
+        if grp:
+            dist = (bad.groupby(grp, dropna=False).size()
+                    .reset_index(name="rows_affected"))
+            st.caption("Where the affected rows are. If they concentrate in one "
+                       "genotype or treatment, the exclusion is not random with "
+                       "respect to the comparison being made.")
+            st.dataframe(dist, width="stretch")
+        with st.expander(f"Every affected row ({n_corr})", expanded=False):
+            cols = [c for c in ("Genotype", "Sex", "Treatment", "Replicate",
+                                "Time", "Count_raw", "Count", "n_raw", "n",
+                                "QC_corrections") if c in bad.columns]
+            st.dataframe(bad[cols], width="stretch")
+
+    with st.expander("Preview (first 100 rows, corrected cells marked)",
+                     expanded=False):
+        head = df.head(100)
+
+        def _mark(row):
+            note = str(row.get("QC_corrections", "") or "")
+            flag = len(note) > 0
+            return ["background-color: #ffe8e8" if flag and c in ("Count", "Count_raw")
+                    else "" for c in head.columns]
+
+        try:
+            st.dataframe(head.style.apply(_mark, axis=1), width="stretch")
+        except Exception:
+            st.dataframe(head, width="stretch")
+        if has_raw:
+            st.caption("`Count_raw` and `n_raw` are exactly what the file said. "
+                       "`Count` is NaN wherever the raw value could not be an "
+                       "observation; `QC_corrections` says which condition fired.")
+
+
+def _corrections_banner():
+    """A persistent, per-page record that the open dataset has excluded rows."""
+    try:
+        df = st.session_state.get("df")
+    except Exception:
+        return
+    n = _correction_count(df)
+    if n:
+        st.caption(
+            f":red[{n} row(s) in the open dataset carry a value the parser "
+            f"could not accept; `Count` is NaN there and the raw value is in "
+            f"`Count_raw`. Every statistic on this page excludes them.]"
+        )
+
+
+def _duplicate_policy_control(key: str) -> str:
+    """
+    Ask what to do with duplicated rows, instead of deciding (register N11).
+
+    Two records of the same vial at the same Time are either a transcription
+    error or two technical reads of one measurement. Averaging them writes a
+    value neither record contains -- duplicates of 4 and 5 become 4, because
+    numpy rounds half to even -- and the previous collapse also kept the FIRST
+    n, discarding one vial's loading record when the two disagreed. Which it is
+    is an experimental judgement, so it is asked for.
+    """
+    choice = st.radio(
+        "If two rows describe the same vial at the same time",
+        ["Refuse the file and tell me (recommended)",
+         "Average them (they are technical reads of one measurement)"],
+        key=f"dup_{key}", horizontal=False,
+    )
+    return "refuse" if choice.startswith("Refuse") else "mean"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 12 — CSV Upload and Analysis
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3931,19 +4359,21 @@ def page_csv_upload():
         st.info("Upload a file to begin.")
         return
 
-    df_raw, warns, errs = load_data(uploaded)
+    dup_policy = _duplicate_policy_control("csvpage")
+    df_raw, warns, errs = load_data(uploaded, duplicate_policy=dup_policy)
     if errs:
         for e in errs: st.error(e)
         return
     for w in warns: st.warning(w)
     st.success(f"File loaded: {len(df_raw)} rows.")
 
-    with st.expander("Preview (first 100 rows)"):
-        st.dataframe(df_raw.head(100), width='stretch')
+    # N12: the raw values, the corrected cells and where they fall -- before
+    # any metric is computed from them.
+    _render_upload_integrity(df_raw, key="csvpage")
 
-    val_r = validate_dataframe(df_raw)
-    for e in val_r.get("errors", []):   st.error(e)
-    for w in val_r.get("warnings", []): st.warning(w)
+    # N71: a DataAudit is a dataclass. `.get("errors", [])` on it raises, so
+    # this validation step never ran.
+    _render_audit(validate_dataframe(df_raw), where="CSV Analysis")
 
     groups = get_groups(df_raw)
     c1, c2, c3, c4 = st.columns(4)
@@ -3960,7 +4390,7 @@ def page_csv_upload():
         veh = st.selectbox("Vehicle treatment",
             ["(auto-detect)"] + sorted(groups["treatments"]), key="csv_veh")
 
-    if st.button("Load and Run Full Analysis", type="primary", use_container_width=True):
+    if st.button("Load and Run Full Analysis", type="primary", width="stretch"):
         wt_sel  = None if wt  == "(auto-detect)" else wt
         veh_sel = None if veh == "(auto-detect)" else veh
         st.session_state.update({
@@ -3974,6 +4404,29 @@ def page_csv_upload():
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 13 — Export and Download
 # ══════════════════════════════════════════════════════════════════════════════
+def _export_manifest_json(csv_exports: dict) -> str:
+    """Provenance manifest for the current export set.
+
+    Checksums every non-empty table so a reviewer can tie a CSV back to the
+    exact build, settings and inputs that produced it.
+    """
+    ss = st.session_state
+    params = {
+        "wt_genotype":       ss.get("wt_genotype"),
+        "vehicle_treatment": ss.get("vehicle_treatment"),
+        "source_file":       ss.get("source_filename"),
+        "n_rows_analysed":   int(len(ss["df"])) if ss.get("df") is not None else None,
+    }
+    inputs = {name.lower().replace(" ", "_") + ".csv": df_e
+              for name, df_e in csv_exports.items()
+              if df_e is not None and not df_e.empty}
+    if ss.get("df") is not None:
+        inputs["input_dataset.csv"] = ss["df"]
+    return _pv_manifest_json(_pv_manifest(
+        inputs=inputs, parameters=params, analysis="DroPhenix batch export",
+    ))
+
+
 def page_export():
     render_header("Export and Download",
                   "Batch export of all figures and results")
@@ -4045,9 +4498,27 @@ def page_export():
                 if df_e is not None and not df_e.empty:
                     fn = name.lower().replace(" ","_") + ".csv"
                     zf.writestr(f"csv/{fn}", df_e.to_csv(index=False))
+            # Every export carries its own provenance. Until this change the
+            # versions were written only into DataFrame.attrs, which to_csv
+            # drops, so no exported table could be attributed to a build.
+            zf.writestr("MANIFEST.json", _export_manifest_json(csv_exports))
         buf.seek(0)
         st.download_button("Download ZIP", buf.read(),
                            "drophenix_report.zip", "application/zip")
+
+    st.divider()
+    st.markdown('<p class="sec-hdr">Reproducibility Manifest</p>', unsafe_allow_html=True)
+    st.caption(
+        "Software build, dependency versions, platform, analysis parameters and a "
+        "SHA-256 of every exported table. Keep it with the data: a CSV on its own "
+        "cannot be attributed to the code that produced it."
+    )
+    _man_txt = _export_manifest_json(csv_exports)
+    st.code(_pv_line(), language=None)
+    st.download_button("Download MANIFEST.json", _man_txt.encode(),
+                       "MANIFEST.json", "application/json", key="exp_manifest")
+    with st.expander("Preview manifest"):
+        st.code(_man_txt, language="json")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4703,19 +5174,51 @@ def page_ymaze():
         alt = res["alternation"]
         alt = alt.copy()
         alt["Group"] = alt["Genotype"] + " | " + alt["Treatment"] + " | " + alt["Sex"]
+        # Register N104. The chart used to plot the RAW alternation against a
+        # fixed 50% line. A memoryless fly with turn bias b alternates at
+        # 100*(b^2+(1-b)^2) >= 50% for every b, so that line is the wrong null
+        # for any handed population and every arm cleared it. The primary panel
+        # is now the bias-corrected residual, which is the quantity the verdict
+        # uses; the raw figure and each group's own baseline are plotted beside
+        # it so the confound stays visible rather than being corrected away.
         fig = go.Figure()
         fig.add_trace(go.Bar(
-            x=alt["Group"], y=alt["Mean_alternation_pct"],
-            error_y=dict(type="data", array=alt["SEM"]),
-            marker_color="#2A7DE1", name="Mean alternation %"))
-        fig.add_hline(y=chance * 100, line_dash="dash", line_color="#C0392B",
-                      annotation_text=f"chance = {chance*100:.0f}%")
-        fig.update_layout(yaxis_title="Spontaneous alternation (%)", height=420,
-                          margin=dict(l=40, r=20, t=30, b=80))
+            x=alt["Group"], y=alt["Mean_alternation_vs_chance"],
+            error_y=dict(type="data", array=alt["SEM_vs_chance"]),
+            marker_color="#0072B2",
+            name="Alternation above the group's own turn-bias baseline"))
+        fig.add_hline(y=0.0, line_dash="dash", line_color="#D55E00",
+                      annotation_text="each fly's own chance baseline")
+        fig.update_layout(
+            yaxis_title="Alternation above own baseline (percentage points)",
+            height=420, margin=dict(l=40, r=20, t=30, b=80),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02))
         st.plotly_chart(fig, width="stretch")
+
+        fig_raw = go.Figure()
+        fig_raw.add_trace(go.Bar(
+            x=alt["Group"], y=alt["Mean_alternation_pct_raw"],
+            error_y=dict(type="data", array=alt["SEM_raw"]),
+            marker_color="#56B4E9", name="Observed alternation % (raw)"))
+        fig_raw.add_trace(go.Scatter(
+            x=alt["Group"], y=alt["Mean_own_chance_pct"], mode="markers",
+            marker=dict(symbol="diamond", size=11, color="#D55E00"),
+            name="This group's own chance baseline (from turn bias)"))
+        fig_raw.add_hline(y=chance * 100, line_dash="dot", line_color="#999999",
+                          annotation_text=f"fixed {chance*100:.0f}% (NOT the null)")
+        fig_raw.update_layout(yaxis_title="Spontaneous alternation (%)",
+                              height=380, margin=dict(l=40, r=20, t=30, b=80),
+                              legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        st.plotly_chart(fig_raw, width="stretch")
         st.dataframe(alt.drop(columns="Group"), width="stretch")
-        st.caption("One-sample test of each group's alternation vs the chance "
-                   "level (t-test if n>=8 and ~normal, else Wilcoxon).")
+        st.caption(
+            "The verdict is a one-sample test of each group's alternation "
+            "against **its own turn-bias baseline**, 100x(b2+(1-b)2) per fly, "
+            "not against a fixed 50% (t-test if n>=8 and ~normal, else "
+            "Wilcoxon). A memoryless fly with turn bias b alternates above 50% "
+            "for every b except 0.5, so a handed population clears a fixed 50% "
+            "null without any working memory at all; the dotted grey line is "
+            "shown only to make that gap visible. Register N104.")
         st.download_button("Download alternation CSV", alt.to_csv(index=False).encode(),
                            "ymaze_alternation.csv", "text/csv", key="dl_ymalt")
 
@@ -4885,19 +5388,53 @@ def page_dams():
         else:
             prof = prof.copy()
             prof["Group"] = prof["Genotype"] + " | " + prof["Treatment"] + " | " + prof["Sex"]
+
+            # THE TIME COLUMN IS NAMED BY WHAT IT MEANS, so read the name rather
+            # than assuming it. `dams.sleep_profile` returns "ZT_hour" only when
+            # lights-on could be derived from the recording's own Light channel
+            # (or was supplied); with no usable Light column it returns
+            # "Hours_since_start" instead, deliberately, so that an axis whose
+            # zero is the start of the file is never labelled as Zeitgeber time.
+            #
+            # This page hardcoded "ZT_hour" and therefore raised KeyError on
+            # exactly the recordings where that safeguard fires -- the module's
+            # honest fallback crashed the page that displays it. Found by
+            # validation/validate_app_pages.py.
+            zt_col = ("ZT_hour" if "ZT_hour" in prof.columns
+                      else "Hours_since_start")
+            if zt_col not in prof.columns:
+                st.info("The sleep profile has no time column, so it cannot be "
+                        "plotted. This is a bug; please report the recording.")
+                st.dataframe(prof, width="stretch")
+                return
+            is_zt = (zt_col == "ZT_hour")
+
             fig = go.Figure()
             for i, (g, sub) in enumerate(prof.groupby("Group")):
-                sub = sub.sort_values("ZT_hour")
-                fig.add_trace(go.Scatter(x=sub["ZT_hour"], y=sub["sleep_min"],
+                sub = sub.sort_values(zt_col)
+                fig.add_trace(go.Scatter(x=sub[zt_col], y=sub["sleep_min"],
                                          mode="lines+markers", name=g,
                                          line=dict(color=palette[i % len(palette)])))
-            fig.update_layout(xaxis_title="Zeitgeber / circadian time (h)",
+            fig.update_layout(xaxis_title=("Zeitgeber / circadian time (h)"
+                                           if is_zt else
+                                           "Hours since recording start"),
                               yaxis_title="Sleep (min per epoch)", height=420,
                               legend=dict(orientation="h", y=1.02),
                               margin=dict(l=40, r=20, t=30, b=40))
             st.plotly_chart(fig, width="stretch")
-            st.caption("Sleep across the circadian cycle. Wild-type flies show a "
-                       "bimodal profile (rest in subjective night, midday siesta).")
+            if is_zt:
+                st.caption("Sleep across the circadian cycle. Wild-type flies "
+                           "show a bimodal profile (rest in subjective night, "
+                           "midday siesta).")
+            else:
+                st.warning(
+                    "The x-axis is HOURS SINCE THE RECORDING STARTED, not "
+                    "Zeitgeber time: this recording has no usable Light "
+                    "channel, so lights-on could not be located and ZT0 is "
+                    "unknown. The dark phase is therefore NOT at a fixed place "
+                    "on this plot, and the bimodal day/night pattern cannot be "
+                    "read off it. Supply the light schedule to get a true ZT "
+                    "axis.")
 
     with t_per:
         if not do_period or "period_summary" not in res:
@@ -5417,6 +5954,14 @@ def page_grooming():
             if not r:
                 st.warning("Need >= 2 groups with >= 2 flies.")
             else:
+                # Register N21. The comparison treats each FLY as an
+                # independent observation. Where a vial identifier shows that
+                # it is not, say so above the p-value rather than below it.
+                if r.get("inference_valid") is False:
+                    st.error("This p-value is NOT valid as stated. "
+                             + str(r.get("clustering_warning", "")))
+                elif r.get("inference_valid") is None and r.get("clustering_warning"):
+                    st.warning(str(r.get("clustering_warning")))
                 st.markdown(f"**Method:** `{r.get('method','')}`")
                 pw = r.get("pairwise", pd.DataFrame())
                 if isinstance(pw, pd.DataFrame) and not pw.empty:
@@ -6053,6 +6598,28 @@ def page_hierarchical():
                 b3.metric("Converged", "yes" if bb.converged else "no")
                 if not bb.converged:
                     st.warning(f"Optimiser did not converge: {bb.message}")
+                # Register N16. The optimiser's own flag is not evidence that
+                # inference is possible: the measured failure reported
+                # converged = True with an indefinite Hessian, standard errors
+                # clipped to 0.0, z = inf and p = 0.0. `inference_valid` is the
+                # gate, and it is shown before the coefficient table.
+                if getattr(bb, "inference_valid", True) is False:
+                    st.error(
+                        "Inference is NOT valid for this fit, whatever the "
+                        "convergence flag says. "
+                        + " ".join(getattr(bb, "fit_warnings", []) or [])
+                    )
+                    st.caption(
+                        f"Hessian smallest eigenvalue "
+                        f"{getattr(bb, 'hessian_min_eigenvalue', float('nan')):.4g}; "
+                        f"condition number "
+                        f"{getattr(bb, 'hessian_cond', float('nan')):.4g}; "
+                        f"{getattr(bb, 'n_negative_variance', 0)} negative "
+                        f"parameter variance(s). The coefficients below are the "
+                        f"optimiser's final values; their standard errors, "
+                        f"z-values, p-values and intervals are NaN and must not "
+                        f"be reported."
+                    )
                 sf = bb.summary_frame()
                 st.dataframe(sf, width="stretch")
                 st.download_button("Download beta-binomial CSV",
@@ -7187,6 +7754,14 @@ def page_dose_response():
                             ("Max mortality", "max_mortality"))):
                         v = ma.get(key_, np.nan)
                         col.metric(lbl, f"{v:.4g}" if pd.notna(v) else "N/A")
+                    # Register N95: the LC50 interval is computed from a
+                    # least-squares covariance on binomial proportions and was
+                    # measured to cover 47-95% of the time, not 95%. The
+                    # metric above shows the point estimate; this is where the
+                    # user learns what the interval behind it is worth.
+                    cav = ma.get("lc50_interval_caveat")
+                    if cav:
+                        st.warning(cav)
                     pdz = ma.get("per_dose", pd.DataFrame())
                     if isinstance(pdz, pd.DataFrame) and not pdz.empty:
                         st.dataframe(pdz, width="stretch")
@@ -7908,9 +8483,40 @@ def _climbing_simple_validate():
     if not st.button("Compute MAE", type="primary", key="cbv_go"):
         return
 
-    root = Path(r"C:/Users/gkp11/Videos/HD Climbing assay")
+    # Register N117. This was hardcoded to one machine's video folder:
+    #     Path(r"C:/Users/gkp11/Videos/HD Climbing assay")
+    # Off that machine `root.exists()` is False, `lookup` stays empty, and
+    # `validation_report(..., day_lookup={})` SILENTLY drops the Day 3 / Day 7
+    # stratification -- so the day-stratified accuracy report could only ever be
+    # produced on one computer, the hosted app included, with no message saying
+    # why. It now resolves through the same discovery validation/lab_data.py
+    # uses for every other laboratory path, honours DROPHENIX_CLIMBING_ROOT, and
+    # SAYS SO when no root is found rather than degrading in silence.
     lookup = {}
-    if root.exists():
+    root = None
+    try:
+        import sys as _sys
+        _here = str(Path(__file__).resolve().parent)
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from validation import lab_data as _lab
+        root = _lab.climbing_root()
+    except Exception:
+        root = None
+    if root is None:
+        import os as _os
+        _env = _os.environ.get("DROPHENIX_CLIMBING_ROOT", "").strip()
+        if _env and Path(_env).exists():
+            root = Path(_env)
+    if root is None:
+        st.info(
+            "Day 3 / Day 7 stratification is unavailable: no climbing-video "
+            "root was found on this machine. The overall accuracy figures below "
+            "are unaffected; only the per-day breakdown is omitted. Set "
+            "DROPHENIX_CLIMBING_ROOT to the folder holding the recordings to "
+            "restore it.")
+    if root is not None and Path(root).exists():
+        root = Path(root)
         for f in root.glob("**/*.MOV"):
             s_ = str(f)
             if "3 rd day" in s_:

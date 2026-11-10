@@ -78,6 +78,119 @@ def _pval_stars(p)->str:
     return "ns"
 
 # --- 0. Significance bracket -------------------------------------------------
+
+# ── Gaps, not zeros (register N22) ───────────────────────────────────────────
+# A missing measurement used to be plotted as 0 and a missing SEM as a
+# zero-length error bar. In this platform's metrics 0 is never "no data": a
+# Performance Index of 0 is a vial with exactly half its flies above the
+# scoring line, an SDQ of 0 is "no sex difference at all", a CRI of 0 is "no
+# rescue", and a zero-width interval is a claim of perfect precision. Each of
+# those is a result, and substituting it for an absent measurement publishes a
+# finding nobody made -- in a figure, which is the form most likely to be
+# reproduced without the table beside it.
+#
+# Every figure function therefore: draws nothing where there is no number,
+# marks the gap so it is visible as a gap, counts what it could not draw in
+# `fig.drophenix_gaps`, and reports the number of INDEPENDENT units behind each
+# bar when the table carries one. The audit found the figures reported no n at
+# all, which is worse than reporting the wrong one.
+N_UNIT_COLS = ("n_rep", "n_replicates", "n_units", "n_vials_observed", "n")
+
+GAP_HATCH = "xxx"
+GAP_COLOUR = "#bbbbbb"
+
+
+def _num(row, col):
+    """A finite number from a row, or NaN. Never a substituted default."""
+    try:
+        v = row.get(col, np.nan) if hasattr(row, "get") else np.nan
+    except Exception:
+        return np.nan
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return np.nan
+    return f if np.isfinite(f) else np.nan
+
+
+def _n_units(df):
+    """The first independent-unit column the table actually carries."""
+    for c in N_UNIT_COLS:
+        if c in getattr(df, "columns", []):
+            return c
+    return None
+
+
+def _mark_gap(ax, pos, horizontal=False, label="not measured"):
+    """Draw the absence: a hatched zero-extent marker plus a text label."""
+    if horizontal:
+        ax.barh(pos, 0.0, height=0.65, color=GAP_COLOUR, hatch=GAP_HATCH,
+                edgecolor="#777", linewidth=0.5, zorder=2)
+        ax.annotate(label, (0.0, pos), textcoords="offset points", xytext=(4, 0),
+                    fontsize=FT_ANNOT, color="#777", va="center")
+    else:
+        ax.bar(pos, 0.0, width=0.72, color=GAP_COLOUR, hatch=GAP_HATCH,
+               edgecolor="#777", linewidth=0.5, zorder=2)
+        ax.annotate(label, (pos, 0.0), textcoords="offset points", xytext=(0, 4),
+                    fontsize=FT_ANNOT, color="#777", ha="center", rotation=90)
+
+
+def _attach_gaps(fig, **counts):
+    """Record on the figure what could not be drawn, and why."""
+    g = dict(counts)
+    g.setdefault("missing_metric", 0)
+    g.setdefault("missing_sem", 0)
+    g.setdefault("missing_ci", 0)
+    g.setdefault("drawn", 0)
+    g.setdefault("errorbars_drawn", 0)
+    g.setdefault("n_units_reported", False)
+    g["note"] = (
+        "Counts of values this figure could NOT draw. A gap is drawn as a "
+        "hatched zero-extent marker labelled 'not measured', never as a zero "
+        "bar, and a missing SEM or interval is drawn as no error bar rather "
+        "than as a zero-width one."
+    )
+    fig.drophenix_gaps = g
+    return fig
+
+
+def _nested_xaxis(ax, x_pos, tick_labels, groups, tick_fs=None,
+                  group_fs=None, y_rule=-0.46, y_text=-0.50):
+    """
+    Draw a TWO-LEVEL categorical x axis: treatments on the ticks, genotype as a
+    labelled band under the group of bars it spans.
+
+    Both bar charts in this module got this wrong, in opposite directions.
+    `t50_plot` packed both levels into one tick label, truncated and rotated,
+    and on twelve groups they overlapped into unreadable text. `pi_barplot`
+    labelled only the treatment, so the genotype appeared nowhere on the figure
+    and the three blocks of bars were unidentifiable.
+
+    The band sits below the rotated tick labels; `y_rule` is set low enough
+    that a long label such as "Spermine+Pantothenate" rotated 38 degrees clears
+    the rule rather than crossing it.
+
+    `groups` is a sequence of `(name, [x positions])`. The band is drawn in
+    axes-fraction coordinates below the tick labels with `clip_on=False`, so the
+    caller must leave room for it -- `fig.subplots_adjust(bottom=...)` after
+    `tight_layout`, which does not account for artists outside the axes.
+    """
+    ax.set_xticks(list(x_pos))
+    ax.set_xticklabels(list(tick_labels), rotation=38, ha="right",
+                       fontsize=tick_fs or (FT_ANNOT + 1))
+    trans = ax.get_xaxis_transform()          # x in data, y in axes fraction
+    for name, pos in groups:
+        pos = [p for p in pos if p is not None]
+        if not pos:
+            continue
+        a, b = min(pos), max(pos)
+        ax.plot([a - 0.45, b + 0.45], [y_rule, y_rule], transform=trans,
+                color="#999999", linewidth=0.8, clip_on=False, zorder=1)
+        ax.text((a + b) / 2.0, y_text, str(name), transform=trans,
+                ha="center", va="top", fontsize=group_fs or (FT_ANNOT + 1),
+                color="#222222", clip_on=False)
+
+
 def stats_annotation(ax,x1,x2,y,label,dy=1.5,lw=0.8):
     yt=y+dy
     ax.plot([x1,x1,x2,x2],[y,yt,yt,y],lw=lw,color="black")
@@ -138,7 +251,22 @@ def climbing_curves(agg_df,metric="Pct_mean",sem_col="Pct_sem",
 # --- 2. PI bar chart ---------------------------------------------------------
 def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
     title="Performance Index by Group",pairwise_df=None):
-    """Grouped bar chart PI_mean +/- SEM. Individual replicate dots (Weissgerber 2015)."""
+    """
+    Grouped bar chart PI_mean +/- SEM. Individual replicate dots (Weissgerber 2015).
+
+    Register N22. Three things changed here. A missing `PI_sem` is no longer
+    drawn as `yerr=0.0` -- a zero-length error bar is a claim that the mean is
+    known exactly, which is the opposite of what a missing SEM means. A missing
+    `PI_mean` is drawn as a labelled gap, not as a bar at 0, because PI = 0 is a
+    vial with half its flies above the line. And several rows matching one
+    (Genotype, Treatment, Sex) cell is refused instead of silently plotting
+    `.iloc[0]`: that happens when the grouping keys do not identify a cell --
+    an extra Age or Batch, say -- and quietly showing the first of them puts an
+    arbitrary subset of the experiment on the axis.
+
+    The number of independent units behind each bar is annotated when the table
+    carries one of `N_UNIT_COLS`.
+    """
     df=pi_df.copy()
     if genotypes:  df=df[df["Genotype"].isin(genotypes)]
     if treatments: df=df[df["Treatment"].isin(treatments)]
@@ -146,7 +274,21 @@ def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
     if df.empty:
         fig,ax=plt.subplots(figsize=FS_DOUBLE)
         ax.text(0.5,0.5,"No data",ha="center",va="center",transform=ax.transAxes)
-        return fig,_to_bytes(fig)
+        return _attach_gaps(fig),_to_bytes(fig)
+    _cell=df.groupby(["Genotype","Treatment","Sex"],dropna=False).size()
+    _multi=_cell[_cell>1]
+    if len(_multi):
+        raise ValueError(
+            f"{len(_multi)} (Genotype, Treatment, Sex) cell(s) match more than one "
+            f"row of the PI table: {[' | '.join(map(str,k)) for k in _multi.index[:5]]}. "
+            f"The figure used to plot the first matching row and discard the rest "
+            f"without a mark, so the bar shown was an arbitrary subset. Either the "
+            f"table has not been aggregated, or the design has a key these three "
+            f"columns do not cover (Age, Batch, Dose): aggregate it, or pass the "
+            f"extra key as a filter."
+        )
+    _nc=_n_units(df)
+    _gap_metric=_gap_sem=_drawn=_ebars=0
     trts=df["Treatment"].unique(); genos=df["Genotype"].unique()
     sxs=df["Sex"].unique()
     n_sx=len(sxs)
@@ -154,24 +296,72 @@ def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
     if n_sx==1: axes=[axes]
     for ai,sex in enumerate(sxs):
         ax=axes[ai]; sdf=df[df["Sex"]==sex]
-        x=0; x_pos=[]; x_lbl=[]
+        x=0; x_pos=[]; x_lbl=[]; _groups=[]
         for geno in genos:
+            _gpos=[]
             for ti,trt in enumerate(trts):
                 row=sdf[(sdf["Genotype"]==geno)&(sdf["Treatment"]==trt)]
                 if row.empty: x+=1; continue
-                pi_m=float(row["PI_mean"].iloc[0])
-                pi_s=float(row["PI_sem"].iloc[0]) if "PI_sem" in row.columns else 0.0
-                ax.bar(x,pi_m,yerr=pi_s,color=_col(trt,ti),width=0.72,
-                       capsize=3,error_kw={"linewidth":0.8,"ecolor":"#333"},
-                       edgecolor="black",linewidth=0.5,hatch=SEX_HATCH.get(sex,""),zorder=3)
-                if "PI_replicates" in row.columns:
-                    reps=row["PI_replicates"].iloc[0]
-                    if hasattr(reps,"__iter__"):
-                        for rv in reps: ax.scatter(x,rv,color="black",s=14,zorder=5,linewidths=0)
-                x_pos.append(x); x_lbl.append(trt[:10]); x+=1
+                r0=row.iloc[0]
+                pi_m=_num(r0,"PI_mean")
+                pi_s=_num(r0,"PI_sem")
+                if not np.isfinite(pi_m):
+                    # PI = 0 is "half the flies climbed", so an absent
+                    # measurement cannot be drawn there.
+                    _mark_gap(ax,x); _gap_metric+=1
+                else:
+                    _drawn+=1
+                    if np.isfinite(pi_s):
+                        ax.bar(x,pi_m,yerr=pi_s,color=_col(trt,ti),width=0.72,
+                               capsize=3,error_kw={"linewidth":0.8,"ecolor":"#333",
+                                 # `ecolor` colours the error bar's LINE only;
+                                 # its CAPS fall back to the default colour
+                                 # cycle, which put 60 artists at #1f77b4 on
+                                 # these figures -- the one colour on them that
+                                 # is neither the house style nor
+                                 # colour-blind-safe. Measured: `ecolor` alone
+                                 # leaves the caps at #1f77b4 and
+                                 # `markeredgecolor` does nothing -- `color` is
+                                 # the key matplotlib uses for the cap style.
+                                 "capthick":0.8,"color":"#333"},
+                               edgecolor="black",linewidth=0.5,
+                               hatch=SEX_HATCH.get(sex,""),zorder=3)
+                        _ebars+=1
+                    else:
+                        # No SEM: no error bar. A zero-length one would assert
+                        # that this mean is known exactly.
+                        #
+                        # MARKED BY ITS EDGE, NOT BY A LABEL ON EVERY BAR. This
+                        # used to annotate "SEM n/a" above each such bar: drawn
+                        # horizontally the labels collided with each other and
+                        # with the n= row, and drawn vertically they ran past
+                        # the axes and over the panel title. On this dataset
+                        # that is twelve overlapping texts carrying one fact.
+                        # A dotted edge says the same thing once per bar at no
+                        # cost in ink, and the figure note below says what it
+                        # means -- which is the ordinary convention for marking
+                        # a subset of bars.
+                        ax.bar(x,pi_m,color=_col(trt,ti),width=0.72,
+                               edgecolor="black",linewidth=0.9,linestyle=":",
+                               hatch=SEX_HATCH.get(sex,""),zorder=3)
+                        _gap_sem+=1
+                    if "PI_replicates" in row.columns:
+                        reps=r0["PI_replicates"]
+                        if hasattr(reps,"__iter__"):
+                            for rv in reps: ax.scatter(x,rv,color="black",s=14,zorder=5,linewidths=0)
+                    if _nc is not None and np.isfinite(_num(r0,_nc)):
+                        ax.annotate(f"n={int(_num(r0,_nc))}",(x,0.0),
+                                    textcoords="offset points",xytext=(0,-12),
+                                    fontsize=FT_ANNOT,color="#333",ha="center")
+                x_pos.append(x); x_lbl.append(str(trt)); _gpos.append(x); x+=1
+            if _gpos: _groups.append((geno,_gpos))
             x+=0.7
         ax.axhline(0,color="black",linewidth=0.6,linestyle="--",alpha=0.45)
-        ax.set_xticks(x_pos); ax.set_xticklabels(x_lbl,rotation=38,ha="right",fontsize=FT_ANNOT+1)
+        # The genotype was previously NOWHERE on this figure: the ticks carried
+        # the treatment alone, so the blocks of bars could not be told apart.
+        _nested_xaxis(ax,x_pos,x_lbl,_groups)
+        ax.set_xlabel("Treatment, grouped by genotype",fontsize=FT_LABEL,
+                      labelpad=46)
         ax.set_ylabel("Performance Index" if ai==0 else "",fontsize=FT_LABEL)
         ax.set_title(sex,fontsize=FT_LABEL,pad=4)
         ax.set_ylim(-110,115)
@@ -180,12 +370,44 @@ def pi_barplot(pi_df,genotypes=None,treatments=None,sexes=None,
     patches=[mpatches.Patch(color=_col(t,i),label=t) for i,t in enumerate(trts)]
     fig.legend(handles=patches,loc="lower center",ncol=len(trts),
                fontsize=FT_LEGEND,bbox_to_anchor=(0.5,-0.04),frameon=False)
+    if _nc is not None:
+        fig.text(0.01,0.01,f"n = independent units ({_nc})",fontsize=FT_ANNOT,
+                 color="#555")
+    else:
+        fig.text(0.01,0.01,"n per bar not available in this table",
+                 fontsize=FT_ANNOT,color="#a00")
+    if _gap_sem:
+        # Says once what used to be written on every affected bar.
+        fig.text(0.01,0.035,
+                 f"dotted outline: no SEM available for that bar "
+                 f"({_gap_sem} of {_drawn}); no error bar is drawn rather than "
+                 f"a zero-width one",
+                 fontsize=FT_ANNOT,color="#555")
     fig.suptitle(title,fontsize=FT_TITLE,y=1.01)
-    fig.tight_layout(); return fig,_to_bytes(fig)
+    fig.tight_layout()
+    # tight_layout does not account for artists drawn outside the axes, and the
+    # genotype band is one, so the room for it is reserved explicitly.
+    fig.subplots_adjust(bottom=0.42)
+    _attach_gaps(fig,missing_metric=_gap_metric,missing_sem=_gap_sem,
+                 drawn=_drawn,errorbars_drawn=_ebars,
+                 n_units_reported=bool(_nc is not None),n_unit_column=_nc)
+    return fig,_to_bytes(fig)
 
 # --- 3. AUC heatmap ----------------------------------------------------------
 def auc_heatmap(auc_df,sex="Male",metric="AUC_norm",title=None):
-    """Heatmap Genotype x Treatment. RdYlGn, annotated values, 300 DPI."""
+    """
+    Heatmap Genotype x Treatment, annotated values, 300 DPI.
+
+    COLORMAP: `cividis`, not the `RdYlGn` this used to use. A red-green
+    diverging map is the worst available choice for a colour-vision-deficient
+    reader -- red and green are precisely the pair deuteranopes and protanopes
+    cannot separate -- so on a figure whose entire message is carried by colour
+    it makes that message unavailable to about one man in twelve, in a module
+    whose first line claims a colour-blind-safe palette. `cividis` was designed
+    for that readership (Nunez, Anderton & Renslow 2018, PLoS ONE 13:e0199239)
+    and is perceptually uniform, so an equal step in AUC is an equal step in
+    apparent lightness.
+    """
     df=auc_df[auc_df["Sex"]==sex].copy() if "Sex" in auc_df.columns else auc_df.copy()
     if df.empty or metric not in df.columns:
         fig,ax=plt.subplots(figsize=FS_SINGLE)
@@ -195,7 +417,7 @@ def auc_heatmap(auc_df,sex="Male",metric="AUC_norm",title=None):
     nr,nc=len(piv.index),len(piv.columns)
     fig,ax=plt.subplots(figsize=(max(4.5,nc*1.5),max(3.0,nr*0.9)))
     vmin=float(piv.min().min()); vmax=float(piv.max().max())
-    im=ax.imshow(piv.values,cmap=plt.cm.RdYlGn,aspect="auto",vmin=vmin,vmax=vmax)
+    im=ax.imshow(piv.values,cmap=plt.cm.cividis,aspect="auto",vmin=vmin,vmax=vmax)
     ax.set_xticks(range(nc)); ax.set_xticklabels(piv.columns,rotation=38,ha="right",fontsize=FT_TICK)
     ax.set_yticks(range(nr)); ax.set_yticklabels(piv.index,fontsize=FT_TICK)
     rng=vmax-vmin+1e-9
@@ -203,7 +425,11 @@ def auc_heatmap(auc_df,sex="Male",metric="AUC_norm",title=None):
         for j in range(nc):
             v=piv.values[i,j]
             if not np.isnan(v):
-                tc="black" if 0.25<(v-vmin)/rng<0.75 else "white"
+                # cividis runs dark blue (low) to bright yellow (high), so
+                # readable annotation ink is white on the lower half and black
+                # on the upper -- the opposite of what a light-middle diverging
+                # map needs, and wrong text contrast is itself a legibility bug.
+                tc="white" if (v-vmin)/rng<0.55 else "black"
                 ax.text(j,i,f"{v:.2f}",ha="center",va="center",fontsize=FT_ANNOT,color=tc)
     cb=fig.colorbar(im,ax=ax,fraction=0.03,pad=0.04)
     cb.set_label("Normalised AUC",fontsize=FT_TICK); cb.ax.tick_params(labelsize=FT_TICK)
@@ -226,22 +452,40 @@ def t50_plot(t50_df,sexes=None,title="Time to 50% Climbing (t50)"):
     if n_sx==1: axes=[axes]
     for ai,sex in enumerate(sxs):
         ax=axes[ai]; sdf=df[df["Sex"]==sex]
-        x=0; x_pos=[]; x_lbl=[]
+        x=0; x_pos=[]; x_lbl=[]; _groups=[]
         for geno in genos:
+            _gpos=[]
             for ti,trt in enumerate(trts):
                 row=sdf[(sdf["Genotype"]==geno)&(sdf["Treatment"]==trt)]
                 if row.empty: x+=1; continue
                 t50_m=float(row["t50_mean"].iloc[0])
                 t50_s=float(row["t50_sem"].iloc[0]) if "t50_sem" in row.columns else 0.0
                 ax.bar(x,t50_m,yerr=t50_s,color=_col(trt,ti),width=0.72,capsize=3,
-                       error_kw={"linewidth":0.8,"ecolor":"#333"},
+                       error_kw={"linewidth":0.8,"ecolor":"#333",
+                                 # `ecolor` colours the error bar's LINE only;
+                                 # its CAPS fall back to the default colour
+                                 # cycle, which put 60 artists at #1f77b4 on
+                                 # these figures -- the one colour on them that
+                                 # is neither the house style nor
+                                 # colour-blind-safe. Measured: `ecolor` alone
+                                 # leaves the caps at #1f77b4 and
+                                 # `markeredgecolor` does nothing -- `color` is
+                                 # the key matplotlib uses for the cap style.
+                                 "capthick":0.8,"color":"#333"},
                        edgecolor="black",linewidth=0.5,hatch=SEX_HATCH.get(sex,""))
-                x_pos.append(x); x_lbl.append(geno[:6]+"\n"+trt[:8]); x+=1
+                x_pos.append(x); x_lbl.append(str(trt)); _gpos.append(x); x+=1
+            if _gpos: _groups.append((geno,_gpos))
             x+=0.6
-        ax.set_xticks(x_pos); ax.set_xticklabels(x_lbl,fontsize=FT_ANNOT,rotation=30,ha="right")
+        # Was `geno[:6] + "\n" + trt[:8]` rotated 30 degrees: twelve truncated
+        # two-line labels that overlapped into unreadable text on the demo data.
+        _nested_xaxis(ax,x_pos,x_lbl,_groups)
+        ax.set_xlabel("Treatment, grouped by genotype",fontsize=FT_LABEL,
+                      labelpad=46)
         ax.set_ylabel("t50 (s)" if ai==0 else "",fontsize=FT_LABEL)
         ax.set_title(sex,fontsize=FT_LABEL,pad=4); ax.tick_params(length=3)
-    fig.suptitle(title,fontsize=FT_TITLE); fig.tight_layout(); return fig,_to_bytes(fig)
+    fig.suptitle(title,fontsize=FT_TITLE); fig.tight_layout()
+    fig.subplots_adjust(bottom=0.42)      # room for the genotype band
+    return fig,_to_bytes(fig)
 
 # --- 5. CRI bar chart --------------------------------------------------------
 def cri_barplot(cri_df,title="Composite Rescue Index (CRI)"):
@@ -249,13 +493,24 @@ def cri_barplot(cri_df,title="Composite Rescue Index (CRI)"):
     if cri_df is None or cri_df.empty:
         fig,ax=plt.subplots(figsize=FS_SINGLE)
         ax.text(0.5,0.5,"No CRI data",ha="center",va="center",transform=ax.transAxes)
-        return fig,_to_bytes(fig)
-    df=cri_df.copy().sort_values("CRI",ascending=False).reset_index(drop=True)
+        return _attach_gaps(fig),_to_bytes(fig)
+    df=cri_df.copy().sort_values("CRI",ascending=False,na_position="last").reset_index(drop=True)
     fig,ax=plt.subplots(figsize=FS_DOUBLE)
+    _gap_metric=_drawn=0
+    _nc=_n_units(df)
     for i,row in df.iterrows():
         trt=str(row.get("Treatment","")); sex=str(row.get("Sex",""))
-        ax.bar(i,row["CRI"],color=_col(trt,i),width=0.72,
+        cri_v=_num(row,"CRI")
+        if not np.isfinite(cri_v):
+            # CRI = 0 means "no rescue", a real result; an absent CRI is not it.
+            _mark_gap(ax,i); _gap_metric+=1
+            continue
+        _drawn+=1
+        ax.bar(i,cri_v,color=_col(trt,i),width=0.72,
                edgecolor="black",linewidth=0.5,hatch=SEX_HATCH.get(sex,""),zorder=3)
+        if _nc is not None and np.isfinite(_num(row,_nc)):
+            ax.annotate(f"n={int(_num(row,_nc))}",(i,0.0),textcoords="offset points",
+                        xytext=(0,-12),fontsize=FT_ANNOT,color="#333",ha="center")
         for cc,ms,al in [("CRI_PI",14,0.55),("CRI_AUC",12,0.40),("CRI_t50",10,0.30)]:
             if cc in row and pd.notna(row[cc]):
                 ax.plot(i,row[cc],marker="_",markersize=ms,color="#222",alpha=al,zorder=4)
@@ -269,19 +524,33 @@ def cri_barplot(cri_df,title="Composite Rescue Index (CRI)"):
     ax.set_xticks(range(len(df))); ax.set_xticklabels(lbls,fontsize=FT_ANNOT,rotation=35,ha="right")
     ax.set_ylabel("CRI (%)",fontsize=FT_LABEL); ax.set_ylim(-65,120)
     ax.set_title(title,fontsize=FT_TITLE); ax.tick_params(length=3)
-    fig.tight_layout(); return fig,_to_bytes(fig)
+    fig.tight_layout()
+    _attach_gaps(fig,missing_metric=_gap_metric,drawn=_drawn,
+                 n_units_reported=bool(_nc is not None))
+    return fig,_to_bytes(fig)
 # --- 6. SDQ lollipop plot ----------------------------------------------------
 def sdq_plot(sdq_df,title="Sex Dimorphism Quotient (SDQ)"):
     """Lollipop. SDQ=0 identical response, SDQ=1 complete dimorphism."""
     if sdq_df is None or sdq_df.empty:
         fig,ax=plt.subplots(figsize=FS_SINGLE)
         ax.text(0.5,0.5,"No SDQ data",ha="center",va="center",transform=ax.transAxes)
-        return fig,_to_bytes(fig)
-    df=sdq_df.copy().sort_values("SDQ",ascending=False).reset_index(drop=True)
+        return _attach_gaps(fig),_to_bytes(fig)
+    df=sdq_df.copy().sort_values("SDQ",ascending=False,na_position="last").reset_index(drop=True)
     fig,ax=plt.subplots(figsize=FS_SINGLE)
+    _gap_metric=_drawn=0
     for i,row in df.iterrows():
         color=_col(str(row.get("Treatment","")),i)
-        sdq_v=float(row["SDQ"]) if pd.notna(row["SDQ"]) else 0.0
+        sdq_v=_num(row,"SDQ")
+        if not np.isfinite(sdq_v):
+            # SDQ = 0.0 is the strongest possible positive statement this plot
+            # can make -- "the sexes respond identically". Substituting it for a
+            # missing SDQ published that claim for every unmeasured group.
+            ax.annotate("not measured",(0.0,i),textcoords="offset points",
+                        xytext=(4,0),fontsize=FT_ANNOT,color="#777",va="center")
+            ax.scatter(0.0,i,marker="x",color="#999",s=45,zorder=4)
+            _gap_metric+=1
+            continue
+        _drawn+=1
         ax.hlines(i,0,sdq_v,colors=color,linewidth=1.4,alpha=0.55)
         ax.scatter(sdq_v,i,color=color,s=70,zorder=4,edgecolors="black",linewidth=0.5)
     ax.axvline(0.5, color="#D55E00",lw=0.9,ls="--",label="Strong dimorphism (0.5)")
@@ -291,7 +560,9 @@ def sdq_plot(sdq_df,title="Sex Dimorphism Quotient (SDQ)"):
     ax.set_xlabel("SDQ  (0 = no sex difference,  1 = complete dimorphism)",fontsize=FT_LABEL)
     ax.set_title(title,fontsize=FT_TITLE); ax.set_xlim(-0.05,1.1)
     ax.legend(fontsize=FT_LEGEND,loc="lower right",frameon=False)
-    fig.tight_layout(); return fig,_to_bytes(fig)
+    fig.tight_layout()
+    _attach_gaps(fig,missing_metric=_gap_metric,drawn=_drawn)
+    return fig,_to_bytes(fig)
 
 # --- 7. TSW horizontal bar ---------------------------------------------------
 def tsw_plot(tsw_df,title="Therapeutic Selectivity Window (TSW)"):
@@ -348,17 +619,37 @@ def tcs_ranked_bar(tcs_df,top_n=15,title="Translational Candidate Score -- Ranke
     if tcs_df is None or tcs_df.empty:
         fig,ax=plt.subplots(figsize=FS_TALL)
         ax.text(0.5,0.5,"No TCS data",ha="center",va="center",transform=ax.transAxes)
-        return fig,_to_bytes(fig)
-    df=tcs_df.nsmallest(top_n,"TCS_rank").sort_values("TCS",ascending=True)
+        return _attach_gaps(fig),_to_bytes(fig)
+    df=tcs_df.nsmallest(top_n,"TCS_rank").sort_values("TCS",ascending=True,
+                                                      na_position="first")
     fig,ax=plt.subplots(figsize=(8.5,max(4.0,len(df)*0.46)))
+    _gap_metric=_gap_ci=_drawn=_ebars=0
     for i,(_,row) in enumerate(df.iterrows()):
-        tcs_v=float(row.get("TCS",0))
-        ci_lo=float(row.get("TCS_CI_lower",tcs_v))
-        ci_hi=float(row.get("TCS_CI_upper",tcs_v))
+        tcs_v=_num(row,"TCS")
+        if not np.isfinite(tcs_v):
+            # `row.get("TCS", 0)` scored an absent candidate zero, which on this
+            # 0-100 scale is the worst possible candidate rather than an unknown.
+            _mark_gap(ax,i,horizontal=True); _gap_metric+=1
+            continue
+        _drawn+=1
+        ci_lo=_num(row,"TCS_CI_lower"); ci_hi=_num(row,"TCS_CI_upper")
         ax.barh(i,tcs_v,color=_col(str(row.get("Treatment","")),i),height=0.65,
                 edgecolor="black",linewidth=0.4,hatch=SEX_HATCH.get(str(row.get("Sex","")),""))
-        ax.errorbar(tcs_v,i,xerr=[[tcs_v-ci_lo],[ci_hi-tcs_v]],
-                    fmt="none",color="#333",capsize=3,linewidth=0.8,zorder=5)
+        if np.isfinite(ci_lo) and np.isfinite(ci_hi):
+            ax.errorbar(tcs_v,i,xerr=[[max(tcs_v-ci_lo,0.0)],[max(ci_hi-tcs_v,0.0)]],
+                        fmt="none",color="#333",capsize=3,linewidth=0.8,zorder=5)
+            _ebars+=1
+        else:
+            # The interval columns were deliberately removed upstream (the old
+            # TCS_CI was score +/- 10*std of five quantities in different units,
+            # with no coverage property). Defaulting the bounds to the estimate
+            # drew a zero-width interval on every bar: a precision claim where
+            # there is no interval at all.
+            _gap_ci+=1
+        if np.isfinite(_num(row,"n_components")):
+            ax.annotate(f"{int(_num(row,'n_components'))}/5 components",
+                        (tcs_v,i),textcoords="offset points",xytext=(4,0),
+                        fontsize=FT_ANNOT,color="#555",va="center")
     for thresh,lbl,col in [(80,"Tier 1","#005826"),(60,"Tier 2","#6b8e23"),(40,"Tier 3","#b8860b")][::-1]:
         ax.axvline(thresh,lw=0.7,ls="--",color=col,alpha=0.65)
         ax.text(thresh+0.5,-0.9,lbl,fontsize=6,color=col,va="top")
@@ -367,7 +658,13 @@ def tcs_ranked_bar(tcs_df,top_n=15,title="Translational Candidate Score -- Ranke
     ax.set_yticks(range(len(df))); ax.set_yticklabels(ylbls,fontsize=FT_ANNOT)
     ax.set_xlabel("TCS (0-100)",fontsize=FT_LABEL); ax.set_xlim(0,105)
     ax.set_title(title,fontsize=FT_TITLE); ax.tick_params(length=3)
-    fig.tight_layout(); return fig,_to_bytes(fig)
+    if _gap_ci:
+        fig.text(0.01,0.01,f"{_gap_ci} bar(s) have no interval: none is computed "
+                           f"for the TCS, so none is drawn",fontsize=FT_ANNOT,color="#a00")
+    fig.tight_layout()
+    _attach_gaps(fig,missing_metric=_gap_metric,missing_ci=_gap_ci,
+                 drawn=_drawn,errorbars_drawn=_ebars)
+    return fig,_to_bytes(fig)
 
 # --- 10. MDR decay curves ----------------------------------------------------
 def mdr_decay_curves(pi_df,mdr_df,sexes=None,title="Motor Decline Rate -- Exponential Decay Fits",
@@ -412,8 +709,15 @@ def mdr_decay_curves(pi_df,mdr_df,sexes=None,title="Motor Decline Rate -- Expone
         ax.set_xlabel(xlabel,fontsize=FT_LABEL)
         ax.set_ylabel("PI (mean)" if ai==0 else "",fontsize=FT_LABEL)
         ax.set_title(sex,fontsize=FT_LABEL,pad=4)
-        ax.legend(fontsize=FT_LEGEND-1,frameon=False); ax.tick_params(length=3)
-    fig.suptitle(title,fontsize=FT_TITLE); fig.tight_layout(); return fig,_to_bytes(fig)
+        # The legend carries one entry per group PLUS one per fit, so on a
+        # six-group panel it is twelve lines deep and inside the axes it sits
+        # on top of the data it describes. Below the panel it covers nothing.
+        ax.legend(fontsize=FT_LEGEND-1,frameon=False,ncol=2,
+                  loc="upper center",bbox_to_anchor=(0.5,-0.16))
+        ax.tick_params(length=3)
+    fig.suptitle(title,fontsize=FT_TITLE); fig.tight_layout()
+    fig.subplots_adjust(bottom=0.38)      # room for the legend below the axes
+    return fig,_to_bytes(fig)
 
 # --- 11. Trajectory dendrogram -----------------------------------------------
 def trajectory_dendrogram(cluster_result,title="DTW Trajectory Clustering -- Dendrogram"):
@@ -438,8 +742,18 @@ def trajectory_pca(cluster_result,use_umap=False,title=None):
     """2-D scatter of PCA (or UMAP) trajectory embedding, coloured by cluster."""
     key="umap_embedding" if use_umap else "pca_embedding"
     emb=cluster_result.get(key,pd.DataFrame())
+    # Register N117. When UMAP was requested but unavailable -- `umap-learn` is
+    # in neither requirements file and `trajectory_cluster.py` swallows the
+    # ImportError -- this silently substituted the PCA embedding and relabelled
+    # the axes PC1/PC2. A reader who asked for UMAP got PCA with no indication
+    # anywhere on the figure. The substitution still happens, because a figure
+    # is better than no figure, but it now says so.
+    _substituted = False
     if emb is None or (hasattr(emb,"empty") and emb.empty):
-        if use_umap: emb=cluster_result.get("pca_embedding",pd.DataFrame()); use_umap=False
+        if use_umap:
+            emb=cluster_result.get("pca_embedding",pd.DataFrame())
+            use_umap=False
+            _substituted=True
     if emb is None or (hasattr(emb,"empty") and emb.empty):
         fig,ax=plt.subplots(figsize=FS_SINGLE)
         ax.text(0.5,0.5,"No embedding data",ha="center",va="center",transform=ax.transAxes)
@@ -458,8 +772,18 @@ def trajectory_pca(cluster_result,use_umap=False,title=None):
             ax.annotate(lbl,(row[xcol],row[ycol]),fontsize=5.5,alpha=0.72,
                         xytext=(3,3),textcoords="offset points")
     ax.set_xlabel(pfx+"1",fontsize=FT_LABEL); ax.set_ylabel(pfx+"2",fontsize=FT_LABEL)
-    ax.set_title(title or "Trajectory Embedding ("+pfx+")",fontsize=FT_TITLE)
+    _ttl = title or "Trajectory Embedding ("+pfx+")"
+    if _substituted:
+        _ttl += "  [UMAP requested; umap-learn not installed, PCA shown]"
+    ax.set_title(_ttl,fontsize=FT_TITLE)
     ax.legend(fontsize=FT_LEGEND,frameon=False); ax.tick_params(length=3)
+    if _substituted:
+        # Register N117: the substitution must be legible on the figure itself,
+        # not merely in a checkbox caption the reader may never see.
+        fig.text(0.01,0.01,
+                 "UMAP was requested but `umap-learn` is not installed; the PCA "
+                 "embedding is shown and the axes are PCA axes.",
+                 fontsize=5.5,style="italic",color="#555555",ha="left")
     fig.tight_layout(); return fig,_to_bytes(fig)
 
 # --- 13. Sex comparison connected dot plot -----------------------------------
@@ -499,23 +823,47 @@ def bootstrap_ci_plot(ci_df,metric="Mean",title="Bootstrap 95% Confidence Interv
     if ci_df is None or ci_df.empty:
         fig,ax=plt.subplots(figsize=FS_SINGLE)
         ax.text(0.5,0.5,"No CI data",ha="center",va="center",transform=ax.transAxes)
-        return fig,_to_bytes(fig)
+        return _attach_gaps(fig),_to_bytes(fig)
     df=ci_df.copy().reset_index(drop=True)
     fig,ax=plt.subplots(figsize=(7.0,max(3.5,len(df)*0.5)))
+    _gap_metric=_gap_ci=_drawn=_ebars=0
     for i,row in df.iterrows():
         grp=str(row.get("Treatment",row.get("Group","Group "+str(i))))
-        mean=float(row.get(metric,row.get("Mean",0)))
-        lo=float(row.get("CI95_lo",mean)); hi=float(row.get("CI95_hi",mean))
+        mean=_num(row,metric)
+        if not np.isfinite(mean):
+            mean=_num(row,"Mean")
+        if not np.isfinite(mean):
+            # `row.get(metric, row.get("Mean", 0))` put an unmeasured group at
+            # zero -- on a forest plot of differences, exactly the position that
+            # reads as "no effect".
+            ax.annotate("not measured",(0.0,i),textcoords="offset points",
+                        xytext=(4,0),fontsize=FT_ANNOT,color="#777",va="center")
+            ax.scatter(0.0,i,marker="x",color="#999",s=45,zorder=4)
+            _gap_metric+=1
+            continue
+        _drawn+=1
+        lo=_num(row,"CI95_lo"); hi=_num(row,"CI95_hi")
         color=_col(grp,i)
-        ax.plot([lo,hi],[i,i],color=color,linewidth=2.2,solid_capstyle="round")
+        if np.isfinite(lo) and np.isfinite(hi):
+            ax.plot([lo,hi],[i,i],color=color,linewidth=2.2,solid_capstyle="round")
+            ax.scatter([lo,hi],[i,i],color=color,marker="|",s=40,linewidths=1.5,zorder=4)
+            _ebars+=1
+        else:
+            # Defaulting the bounds to the estimate drew a point interval, i.e.
+            # a bootstrap CI of zero width.
+            ax.annotate("CI n/a",(mean,i),textcoords="offset points",
+                        xytext=(6,0),fontsize=FT_ANNOT,color="#a00",va="center")
+            _gap_ci+=1
         ax.scatter(mean,i,color=color,s=60,zorder=5,edgecolors="black",linewidth=0.5)
-        ax.scatter([lo,hi],[i,i],color=color,marker="|",s=40,linewidths=1.5,zorder=4)
     ax.axvline(0,color="black",lw=0.6,ls="--",alpha=0.35)
     ylbls=[str(row.get("Treatment",row.get("Group","G"+str(i)))) for i,row in df.iterrows()]
     ax.set_yticks(range(len(df))); ax.set_yticklabels(ylbls,fontsize=FT_TICK)
     ax.set_xlabel(metric+" (95% bootstrap CI)",fontsize=FT_LABEL)
     ax.set_title(title,fontsize=FT_TITLE); ax.tick_params(length=3)
-    fig.tight_layout(); return fig,_to_bytes(fig)
+    fig.tight_layout()
+    _attach_gaps(fig,missing_metric=_gap_metric,missing_ci=_gap_ci,
+                 drawn=_drawn,errorbars_drawn=_ebars)
+    return fig,_to_bytes(fig)
 
 # --- 15. Pairwise p-value dot matrix ----------------------------------------
 def pairwise_dot_plot(pairwise_df,title="Pairwise Comparisons (BH-FDR corrected)"):
@@ -533,7 +881,7 @@ def pairwise_dot_plot(pairwise_df,title="Pairwise Comparisons (BH-FDR corrected)
             mat.loc[row["group1"],row["group2"]]=p
             mat.loc[row["group2"],row["group1"]]=p
         fig,ax=plt.subplots(figsize=(max(4.5,len(groups)*1.1),max(3.5,len(groups)*0.9)))
-        im=ax.imshow(mat.values.astype(float),cmap=plt.cm.RdYlGn_r,vmin=0,vmax=0.05,aspect="auto")
+        im=ax.imshow(mat.values.astype(float),cmap=plt.cm.cividis_r,vmin=0,vmax=0.05,aspect="auto")
         ax.set_xticks(range(len(groups))); ax.set_xticklabels(groups,rotation=40,ha="right",fontsize=FT_TICK)
         ax.set_yticks(range(len(groups))); ax.set_yticklabels(groups,fontsize=FT_TICK)
         for i in range(len(groups)):

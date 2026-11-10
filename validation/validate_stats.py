@@ -53,7 +53,14 @@ def main() -> int:
     # ── Kruskal-Wallis (published H = 7.9882, p = 0.01842) ────────────────────
     kw, _ = SE.kruskal_dunn(data)
     _check("Kruskal-Wallis H (=7.9882)", kw["H_statistic"], 7.9882, 0.01, results)
-    _check("Kruskal-Wallis p (=0.01842)", kw["p_value"], 0.01842, 0.0005, results)
+    # The published value is R `kruskal.test`'s chi-square approximation, so it
+    # is checked against the field that reproduces R. Register N107: `p_value`
+    # is now the exact permutation p, which is the valid one at small n and is
+    # NOT expected to equal the asymptotic figure -- here 0.01565 vs 0.01842.
+    _check("Kruskal-Wallis p, chi-square (=0.01842, reproduces R kruskal.test)",
+           kw["p_value_chisq"], 0.01842, 0.0005, results)
+    _check("Kruskal-Wallis p, exact permutation (the reported verdict)",
+           kw["p_value"], 0.01565, 0.0005, results)
 
     # ── Effect sizes (hand-checked) ───────────────────────────────────────────
     a = np.array([1, 2, 3, 4, 5], dtype=float)   # mean 3, sd 1.5811

@@ -5,7 +5,7 @@ High-level CV pipeline wrapping VideoAnalyzer for single and batch analysis.
 from pathlib import Path
 from typing import List, Optional
 import pandas as pd
-from modules.video_analyzer import VideoAnalyzer
+from modules.video_analyzer import VideoAnalyzer, _resolve_replicate_map
 from modules.fly_detector import VialROI, DetectorConfig
 
 
@@ -30,14 +30,32 @@ class CVPipeline:
         video_paths: List[str],
         vial_rois: List[VialROI],
         sample_timepoints: List[int],
+        replicate_map: Optional[dict] = None,
     ) -> pd.DataFrame:
         """
-        Analyse multiple video files as sequential replicates.
+        Analyse multiple video files as biological replicates.
+
+        `replicate_map` ({file name or path: replicate number}) is required.
+        Replicates were previously numbered from file order, which made two
+        camera angles of one vial — or a cohort recorded in two clips — two
+        independent biological replicates. That is pseudoreplication by
+        construction; see register N10 and
+        `video_analyzer._resolve_replicate_map`.
+
         Errors on individual videos are caught and flagged in the output
         (Error column) rather than crashing the whole batch.
         """
+        if not replicate_map:
+            raise ValueError(
+                "CVPipeline.batch_analyze: replicate_map is required. "
+                "Replicate numbers are no longer taken from file order; pass "
+                "{file name: replicate number}, repeating a number where two "
+                "recordings belong to the same biological replicate."
+            )
+        resolved = _resolve_replicate_map(video_paths, replicate_map)
         frames = []
-        for i, vp in enumerate(video_paths, start=1):
+        for vp in video_paths:
+            i = resolved[str(vp)]
             try:
                 df = self.analyzer.analyze(
                     vp, vial_rois, sample_timepoints, replicate=i

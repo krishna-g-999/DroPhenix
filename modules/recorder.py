@@ -32,6 +32,17 @@ try:
 except ImportError:
     from fly_detector import FlyDetector, VialROI, VialCount, DetectorConfig
 
+# Register N68: one decision about which capture backend to ask for, made in
+# `modules/recording.py` against OpenCV's own registry, rather than four
+# hardcoded `cv2.CAP_DSHOW` requests for a backend that had been removed from
+# it.
+try:
+    from modules.recording import (capture_backend_for, camera_backend_names,
+                                   open_capture)
+except ImportError:
+    from recording import (capture_backend_for, camera_backend_names,
+                           open_capture)
+
 DEFAULT_TIMEPOINTS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 120]
 DEFAULT_SETTLE_S   = 3.0
 DEFAULT_WIDTH      = 1280
@@ -48,12 +59,10 @@ def camera_available(index: int = 0) -> tuple:
     -------
     (ok: bool, message: str)
     """
-    cap = cv2.VideoCapture(int(index), cv2.CAP_DSHOW)
-    ok = cap.isOpened()
-    if ok:
-        ret, _ = cap.read()
-        ok = bool(ret)
-    cap.release()
+    cap = open_capture(int(index))
+    ok = cap is not None
+    if cap is not None:
+        cap.release()
     if ok:
         return True, f"Camera index {index} detected and readable."
     return False, (
@@ -86,11 +95,13 @@ def record_session(
     vid_path  = out / f"drophenix_{ts}.mp4"
     meta_path = out / f"drophenix_{ts}_meta.csv"
 
-    cap = cv2.VideoCapture(int(camera_index), cv2.CAP_DSHOW)
-    if not cap.isOpened():
+    cap = open_capture(int(camera_index))
+    if cap is None:
         raise RuntimeError(
-            f"Cannot open camera index {camera_index}. "
-            "Check connection or try a different index."
+            f"Cannot open camera index {camera_index}. Backends tried: "
+            f"{', '.join(camera_backend_names()) or 'none available'}. "
+            "Check the connection, close any other application using the "
+            "camera, or try a different index."
         )
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  int(width))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
@@ -158,8 +169,11 @@ class DroPhenixCamera:
         self._cap: Optional[cv2.VideoCapture] = None
 
     def open(self) -> bool:
-        self._cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
-        if not self._cap.isOpened():
+        # `source` may be a camera index OR an IP stream, per this class's own
+        # docstring; a camera backend is meaningless for the latter (N68).
+        self._cap = open_capture(self.source)
+        if self._cap is None or not self._cap.isOpened():
+            self._cap = None
             return False
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)

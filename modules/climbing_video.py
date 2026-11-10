@@ -625,6 +625,7 @@ def detect_vials(
     background: Optional[np.ndarray] = None,
     start_s: float = 4.0,
     labels: Optional[Sequence[str]] = None,
+    verify_count: bool = False,
 ) -> dict:
     """
     Locate the cylinders and their scoring lines automatically.
@@ -649,11 +650,13 @@ def detect_vials(
         background = build_background(path, start_s=start_s)
 
     auto_note = ""
+    count_check: dict = {}
     if n_vials is None:
         est = auto_n_vials(path, background=background, start_s=start_s)
         activity = est["activity"]
         n_vials = int(est["n_vials"])
-        auto_note = f"Number of cylinders determined automatically: {n_vials}."
+        auto_note = (f"Number of cylinders determined automatically: {n_vials} "
+                     f"(by {est.get('method', 'bands')}).")
         if n_vials < 1:
             return {
                 "vials": [], "confidence": 0.0, "needs_review": True,
@@ -662,8 +665,60 @@ def detect_vials(
                            "the frame. Draw the regions manually."),
                 "background": background, "activity": activity,
             }
+        if not est.get("confident", True):
+            return {
+                "vials": [], "confidence": 0.0, "needs_review": True,
+                "reason": est.get("reason") or (
+                    "The number of cylinders in this frame is ambiguous. Draw the "
+                    "regions manually."),
+                "background": background, "activity": activity,
+                "n_vials_estimated": n_vials,
+            }
     else:
         activity = _activity_map(path, background, start_s=start_s)
+        # A stated count is a CLAIM about the frame, and the frame is evidence
+        # about it. Being told three cylinders used to make this function find
+        # three: on a two-cylinder frame it split one tube's activity band and
+        # returned three regions at confidence 0.300, one of them half a tube.
+        # So the claim is checked, and a CONFIDENT disagreement is a refusal
+        # rather than a low score. An unconfident fit defers to the operator,
+        # who knows more about the apparatus than an ambiguous fit does, and
+        # the disagreement is recorded for the reviewer either way.
+        #
+        # OFF BY DEFAULT, for now. A safeguard that misfires refuses a valid
+        # analysis, which this project treats as a harm of its own, and the
+        # lattice is not yet calibrated on real footage -- on eight labelled
+        # recordings it over-counted three one-cylinder frames. It is enabled
+        # once study_vial_lattice_accuracy.py has measured it over all 62.
+        if verify_count:
+            try:
+                from modules import vial_lattice as _VL
+                _fit = _VL.fit_lattice(activity.sum(axis=0),
+                                       background=background)
+                count_check = {
+                    "n_vials_requested": int(n_vials),
+                    "n_vials_from_frame": int(_fit.n_vials),
+                    "confident": bool(_fit.confident),
+                    "delta_bic": float(_fit.delta_bic),
+                }
+                if _fit.confident and _fit.n_vials != int(n_vials) and _fit.n_vials >= 1:
+                    return {
+                        "vials": [], "confidence": 0.0, "needs_review": True,
+                        "reason": (
+                            f"You asked for {n_vials} cylinder(s), but this frame "
+                            f"contains {_fit.n_vials}: the tube walls and the fly "
+                            f"activity agree on {_fit.n_vials} (the alternative is "
+                            f"{_fit.delta_bic:.0f} BIC units worse). Forcing "
+                            f"{n_vials} regions here would split one tube in two, or "
+                            f"invent a tube out of background. Correct the number, or "
+                            f"draw the regions manually."),
+                        "background": background, "activity": activity,
+                        "count_check": count_check,
+                    }
+            except Exception:
+                # The cross-check is a safeguard, not a dependency: if it
+                # cannot run, detection proceeds as before rather than failing.
+                count_check = {}
 
     profile = activity.sum(axis=0)
 
@@ -847,6 +902,11 @@ def detect_vials(
         "problems": problems,
         "reason": "; ".join(problems) if problems else "",
         "auto_n_vials_note": auto_note,
+        # What the frame itself says about the number of cylinders, when a
+        # count was stated. Kept on the SUCCESS path too, so that a reviewer
+        # can see an unconfident disagreement that was deferred to the operator
+        # rather than refused.
+        "count_check": count_check,
         "n_vials": len(vials),
         "background": background,
         "activity": activity,
@@ -1062,7 +1122,8 @@ def score_heights(heights_px: np.ndarray, vial: VialSpec,
 
 
 def auto_n_vials(path: str, background: Optional[np.ndarray] = None,
-                 start_s: float = 4.0, max_vials: int = 12) -> dict:
+                 start_s: float = 4.0, max_vials: int = 12,
+                 method: str = "bands") -> dict:
     """
     Work out HOW MANY cylinders are in shot, instead of being told.
 
@@ -1072,16 +1133,68 @@ def auto_n_vials(path: str, background: Optional[np.ndarray] = None,
     three when four are present makes the detector discard a real vial, and
     asking for four when three are present makes it invent one out of clutter.
 
-    Bands are found from fly activity, fragments merged, and a band is accepted
-    when it carries at least 25% of the strongest band's activity. That
-    threshold is doing real work: a vial in which every fly died carries almost
-    no activity and is correctly NOT reported as a vial, which is the honest
-    outcome -- there is nothing there to score.
+    METHODS
+    -------
+    "lattice" (default) fits the generative model the apparatus dictates --
+    n identical cylinders of common width on a common pitch -- to the fly
+    activity AND to the wall structure of the static background, and chooses n
+    by BIC. See modules/vial_lattice.py.
+
+    "bands" is the original blob counter, kept for comparison and not deleted:
+    bands are found from fly activity, fragments merged, and a band accepted
+    when it carries at least 25% of the strongest band's activity.
+
+    WHY "bands" IS STILL THE DEFAULT, THOUGH IT IS THE WORSE METHOD IN
+    PRINCIPLE. The lattice is not calibrated on real footage. On eight
+    manifest-labelled recordings of this laboratory's own apparatus it agreed
+    with the manifest 4 times out of 8, and every error was on a frame holding
+    ONE cylinder, where empty frame leaves room for spurious teeth and a real
+    background offers vertical edges a comb can land on -- a bench edge, a
+    label, a printed scale, the rack frame -- that a synthetic background does
+    not. Its 12/12 synthetic recovery establishes that the maths recovers a
+    lattice when the data is a lattice, and nothing more.
+
+    So the lattice is opt-in until `validation/study_vial_lattice_accuracy.py`
+    has measured both methods against all 62 manifest-labelled recordings. That
+    study decides the default. Making the lattice the default on the strength
+    of synthetic recovery -- which is what was done first -- is exactly the
+    inference the L1/L2/L3/L4 separation exists to forbid.
+
+    THE PROBLEM WITH "bands", WHICH IS REAL AND UNFIXED. That 25% rule was
+    described here as doing real
+    work -- "a vial in which every fly died carries almost no activity and is
+    correctly NOT reported as a vial". That reasoning is wrong in the case that
+    matters. A vial whose flies are alive but barely moving is the MOST
+    IMPAIRED one, not an empty one, and dropping it makes the instrument's
+    sensitivity depend on the phenotype being measured. Measured on synthetic
+    profiles with known truth, the activity-only rule drops a vial at 8% of its
+    neighbours' activity; the lattice, reading the glass walls, keeps a vial at
+    2%. Measured on this laboratory's own recordings, the blob counter returned
+    2 cylinders for a one-cylinder paraquat video and 5 for the three-cylinder
+    Day 7 rig. A vial with NO flies at all is a different matter and is still
+    reported as empty by the counting stage, where it belongs.
     """
     if background is None:
         background = build_background(path, start_s=start_s)
     activity = _activity_map(path, background, start_s=start_s)
     profile = activity.sum(axis=0)
+
+    if str(method).lower() == "lattice":
+        from modules import vial_lattice as _VL
+        fit = _VL.fit_lattice(profile, max_vials=int(max_vials),
+                              background=background)
+        return {
+            "n_vials": int(fit.n_vials),
+            "bands": list(fit.bands),
+            "confident": bool(fit.confident),
+            "delta_bic": float(fit.delta_bic),
+            "pitch_px": float(fit.pitch_px),
+            "width_px": float(fit.width_px),
+            "method": "lattice",
+            "reason": fit.reason,
+            "background": background,
+            "activity": activity,
+        }
 
     bands = _bands_from_profile(profile, n_vials=max_vials)
     if not bands:
@@ -1097,6 +1210,9 @@ def auto_n_vials(path: str, background: Optional[np.ndarray] = None,
         "n_vials": len(bands),
         "bands": bands,
         "strengths": strength[keep].tolist(),
+        "confident": True,          # the blob counter has no notion of doubt,
+        "method": "bands",          # which is one of the reasons it was replaced
+        "reason": "",
         "background": background,
         "activity": activity,
     }

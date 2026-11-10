@@ -214,6 +214,16 @@ class BetaBinomialFit:
     design_info: List[str]
     converged: bool
     message: str = ""
+    # Register N16. `converged` is the OPTIMISER flag and is not evidence that
+    # inference is possible: the measured failure had converged = True with an
+    # indefinite Hessian. `inference_valid` is the gate every consumer must
+    # honour; it is True only when the numerical Hessian is positive definite
+    # and every standard error is finite.
+    inference_valid: bool = True
+    hessian_min_eigenvalue: float = float("nan")
+    hessian_cond: float = float("nan")
+    n_negative_variance: int = 0
+    fit_warnings: List[str] = field(default_factory=list)
     _design_columns: List[str] = field(default_factory=list)
 
     def summary_frame(self) -> pd.DataFrame:
@@ -228,6 +238,8 @@ class BetaBinomialFit:
         out["odds_ratio"] = np.exp(out["coef"])
         out["OR_lower"] = np.exp(out["ci_lower"])
         out["OR_upper"] = np.exp(out["ci_upper"])
+        out.attrs["inference_valid"] = bool(self.inference_valid)
+        out.attrs["fit_warnings"] = list(self.fit_warnings)
         return out
 
 
@@ -336,14 +348,21 @@ def fit_betabinomial(
     theta = res.x
     loglike = -float(res.fun)
 
-    # Standard errors from the numerical Hessian of the negative log-likelihood
+    # Standard errors from the numerical Hessian of the negative log-likelihood.
+    # Register N16: the variance is NOT clipped at zero, and inference is gated
+    # on the conditioning of the Hessian rather than on the optimiser flag.
     try:
         H = _numerical_hessian(
             lambda t: _betabinom_negloglike(t, X, y, n), theta
         )
-        cov = np.linalg.inv(H)
-        se = np.sqrt(np.clip(np.diag(cov), 0.0, np.inf))
-    except Exception:
+        hinfo = _ses_from_hessian(H)
+    except Exception as exc:
+        hinfo = {"se": np.full(theta.shape, np.nan), "inference_valid": False,
+                 "min_eigenvalue": np.nan, "cond": np.nan,
+                 "n_negative_variance": 0,
+                 "reason": f"The Hessian could not be formed: {exc}"}
+    se = np.asarray(hinfo["se"], dtype=float)
+    if se.shape != theta.shape:                         # pragma: no cover
         se = np.full(theta.shape, np.nan)
 
     k = X.shape[1]
@@ -386,8 +405,103 @@ def fit_betabinomial(
         design_info=colnames,
         converged=bool(res.success),
         message=str(res.message),
+        inference_valid=bool(hinfo["inference_valid"]),
+        hessian_min_eigenvalue=float(hinfo["min_eigenvalue"]),
+        hessian_cond=float(hinfo["cond"]),
+        n_negative_variance=int(hinfo["n_negative_variance"]),
+        fit_warnings=([str(hinfo["reason"])] if hinfo["reason"] else []),
         _design_columns=colnames,
     )
+
+
+def _ses_from_hessian(H: np.ndarray) -> dict:
+    """
+    Standard errors from a numerical Hessian, with the conditioning reported.
+
+    Register N16. This used to be
+
+        se = np.sqrt(np.clip(np.diag(cov), 0.0, np.inf))
+
+    and the clip is the defect. A NEGATIVE diagonal entry of inv(H) is not a
+    rounding artefact to be tidied away: it is the only evidence available that
+    the numerical Hessian is INDEFINITE, i.e. that the optimiser stopped at a
+    point which is not a maximum of the likelihood. Clipping it to 0 produces a
+    standard error of exactly 0.0, hence z = +/-inf and p = 0.0, with an
+    odds-ratio interval of zero width -- while the optimiser still reports
+    convergence, so nothing in the output reveals the failure. The measured
+    case in the register is diag(inv H) = [-44831, 191336, -833622], which
+    yielded bse = [0.0, 437.4] and p = 0.0 with converged = True.
+
+    What is done instead. A negative variance propagates as NaN, so every
+    quantity derived from it is NaN rather than infinitely precise, and the
+    conditioning of H is reported separately. Inference is gated on that
+    conditioning -- on whether the Hessian is positive definite -- NOT on the
+    optimiser success flag, which is the thing already known to be unreliable
+    here. The external reviewer proposed checking convergence; that safeguard
+    would not have caught this.
+
+    Returns a dict with `se`, `cov`, `inference_valid`, `min_eigenvalue`,
+    `cond`, `n_negative_variance` and `reason`.
+    """
+    H = np.asarray(H, dtype=float)
+    p = H.shape[0]
+    nan = np.full(p, np.nan)
+    out = {"se": nan, "cov": None, "inference_valid": False,
+           "min_eigenvalue": np.nan, "cond": np.nan,
+           "n_negative_variance": 0, "reason": ""}
+
+    if not np.all(np.isfinite(H)):
+        out["reason"] = ("The numerical Hessian contains non-finite entries, so no "
+                         "standard error can be computed. Inference is withheld.")
+        return out
+
+    try:
+        eig = np.linalg.eigvalsh(0.5 * (H + H.T))
+        out["min_eigenvalue"] = float(np.min(eig))
+        amax = float(np.max(np.abs(eig)))
+        amin = float(np.min(np.abs(eig)))
+        out["cond"] = float(amax / amin) if amin > 0 else np.inf
+    except Exception:                                   # pragma: no cover
+        out["reason"] = "The numerical Hessian could not be decomposed."
+        return out
+
+    try:
+        cov = np.linalg.inv(H)
+    except np.linalg.LinAlgError:
+        out["reason"] = ("The numerical Hessian is singular, so the parameters are "
+                         "not identified by these data. Inference is withheld.")
+        return out
+
+    out["cov"] = cov
+    var = np.diag(cov)
+    neg = int(np.sum(var < 0))
+    out["n_negative_variance"] = neg
+    # No clip. A negative variance has no square root, and saying so is the
+    # whole point of this function.
+    se = np.where(var >= 0, np.sqrt(np.where(var >= 0, var, 0.0)), np.nan)
+    out["se"] = se
+
+    pos_def = bool(out["min_eigenvalue"] > 0) and neg == 0
+    out["inference_valid"] = pos_def and bool(np.all(np.isfinite(se)))
+    if not out["inference_valid"]:
+        bits = []
+        if neg:
+            bits.append(f"{neg} of {p} parameter variances are negative")
+        if not (out["min_eigenvalue"] > 0):
+            bits.append(f"the smallest Hessian eigenvalue is "
+                        f"{out['min_eigenvalue']:.4g}, so the Hessian is not "
+                        f"positive definite")
+        if np.isfinite(out["cond"]) and out["cond"] > 1e10:
+            bits.append(f"the Hessian condition number is {out['cond']:.3g}")
+        out["reason"] = (
+            "The numerical Hessian does not support inference: "
+            + "; ".join(bits) + ". The optimiser may still report success -- it "
+            "does in the measured case -- so the convergence flag is not "
+            "evidence. Standard errors, z-values, p-values and intervals for "
+            "the affected parameters are NaN rather than zero-width. Simplify "
+            "the model, add replicates, or rescale the predictors."
+        )
+    return out
 
 
 def _numerical_hessian(f, x: np.ndarray, eps: float = 1e-5) -> np.ndarray:
@@ -651,6 +765,50 @@ def fit_mixed_logit(
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. THE HEADLINE DIAGNOSTIC
 # ═══════════════════════════════════════════════════════════════════════════
+def _icc_cluster_bootstrap(grp_a: pd.DataFrame, grp_b: pd.DataFrame,
+                           cluster_col: str, count_col: str, total_col: str,
+                           n_boot: int = 2000, seed: int = 7
+                           ) -> Tuple[float, float]:
+    """
+    Percentile CI for the pooled ICC, resampling VIALS rather than flies.
+
+    The ICC is a statement about vials, so the vial is the resampling unit: a
+    bootstrap over flies would hold the vial structure fixed and report an
+    interval far too narrow. Each replicate draws vials with replacement within
+    each group, recomputes the raw (untruncated) rho_A per group, averages, and
+    the percentiles of that distribution form the interval. The RAW estimator is
+    bootstrapped on purpose -- truncating inside the loop would push the whole
+    interval upward, which is the bias this exists to expose (register N108).
+
+    Returns (lo, hi) at 95%, or (nan, nan) when there are too few vials.
+    """
+    try:
+        per = []
+        for g in (grp_a, grp_b):
+            c = g.groupby(cluster_col)[count_col].sum().to_numpy(dtype=float)
+            t = g.groupby(cluster_col)[total_col].sum().to_numpy(dtype=float)
+            if len(c) < 2:
+                return np.nan, np.nan
+            per.append((c, t))
+        rng = np.random.default_rng(seed)
+        draws = np.empty(n_boot, dtype=float)
+        for b in range(n_boot):
+            vals = []
+            for c, t in per:
+                idx = rng.integers(0, len(c), len(c))
+                est = estimate_icc(c[idx], t[idx])
+                r = est.get("icc_raw", np.nan)
+                if np.isfinite(r):
+                    vals.append(r)
+            draws[b] = np.mean(vals) if vals else np.nan
+        ok = draws[np.isfinite(draws)]
+        if ok.size < max(50, n_boot // 20):
+            return np.nan, np.nan
+        return (float(np.percentile(ok, 2.5)), float(np.percentile(ok, 97.5)))
+    except Exception:
+        return np.nan, np.nan
+
+
 def pseudoreplication_report(
     df: pd.DataFrame,
     group_col: str = "Treatment",
@@ -732,10 +890,42 @@ def pseudoreplication_report(
         grp_b.groupby(cluster_col)[count_col].sum(),
         grp_b.groupby(cluster_col)[total_col].sum(),
     )
-    iccs = [v["icc"] for v in (icc_a, icc_b) if np.isfinite(v.get("icc", np.nan))]
-    icc_pooled = float(np.mean(iccs)) if iccs else np.nan
+    # ── Averaging the ICCs: average RAW, clip ONCE (register N108) ──────────
+    # `estimate_icc` returns both `icc_raw` (which can be negative, when vials
+    # are more homogeneous than binomial) and `icc` (truncated at zero, because
+    # a negative ICC is not usable in a design effect). Truncating is right for
+    # a single estimate; averaging the ALREADY-TRUNCATED values is not, because
+    # E[max(rho_hat, 0)] > 0 even when rho = 0. Measured over 4,000 draws of
+    # 3 vials x 10 flies of PURE BINOMIAL data with no vial effect at all:
+    #
+    #     mean icc_raw      = -0.0039   (correct: ~0)
+    #     mean icc clipped  = +0.0362
+    #     DEFF from the clipped mean = 1.326 -> "SEs 15% larger than naive",
+    #                                          "30 flies carry the information
+    #                                           of 22.6 independent flies"
+    #     DEFF averaging raw, clipping once = 1.000
+    #
+    # Those strings are what `verdict` prints, so the report manufactured a
+    # design effect out of noise. The error was CONSERVATIVE -- it inflates
+    # sample-size requirements rather than manufacturing significance -- but a
+    # verdict derived from noise is still a wrong number.
+    iccs_raw = [v["icc_raw"] for v in (icc_a, icc_b)
+                if np.isfinite(v.get("icc_raw", np.nan))]
+    icc_pooled_raw = float(np.mean(iccs_raw)) if iccs_raw else np.nan
+    icc_pooled = (max(icc_pooled_raw, 0.0) if np.isfinite(icc_pooled_raw)
+                  else np.nan)
 
-    mean_m = float(work.groupby(cluster_col)[total_col].sum().mean())
+    # ── Vial size: information-weighted, not arithmetic (register N108) ─────
+    # The design-effect multiplier is 1 + (m - 1) * rho with m the
+    # INFORMATION-weighted cluster size, sum(n^2)/sum(n), not the arithmetic
+    # mean. They coincide only when every vial holds the same number of flies;
+    # when sizes vary the arithmetic mean is smaller, so DEFF and the SE
+    # inflation were understated. `estimate_icc` already computes this as `m0`.
+    m_sizes = work.groupby(cluster_col)[total_col].sum().to_numpy(dtype=float)
+    m_sizes = m_sizes[np.isfinite(m_sizes) & (m_sizes > 0)]
+    mean_m_arith = float(m_sizes.mean()) if m_sizes.size else np.nan
+    mean_m = (float((m_sizes ** 2).sum() / m_sizes.sum())
+              if m_sizes.size and m_sizes.sum() > 0 else np.nan)
     deff = design_effect(mean_m, icc_pooled)
     n_total = float(work[total_col].sum())
     n_eff = effective_sample_size(n_total, mean_m, icc_pooled)
@@ -768,14 +958,55 @@ def pseudoreplication_report(
         else np.nan
     )
 
+    # ── An INTERVAL for the ICC, because a point estimate from a handful of
+    # vials is not a number (register N108) ─────────────────────────────────
+    # Averaging the raw ICCs and truncating once removes half the upward bias,
+    # but not all of it: E[max(mean(rho_hat), 0)] is still > 0, because the
+    # mean of two estimates from three vials each is itself very noisy.
+    # Measured on PURE BINOMIAL data with no vial effect, 300 reports:
+    # truncating per group gave a mean reported ICC of +0.036 and DEFF 1.33;
+    # averaging raw and truncating once gave +0.025 and DEFF 1.23. Better, and
+    # still a design effect conjured from noise.
+    #
+    # The defect is not the arithmetic, it is reporting a point estimate at
+    # all. So the ICC is bootstrapped over CLUSTERS -- resampling vials, not
+    # flies, which is the unit the correlation is about -- and the verdict is
+    # driven by whether the interval excludes zero. When it does not, the
+    # report says the design cannot establish clustering and gives the
+    # interval's UPPER limit as the cautious planning figure, rather than
+    # printing a point inflation as though it were measured.
+    icc_lo, icc_hi = _icc_cluster_bootstrap(
+        grp_a, grp_b, cluster_col, count_col, total_col)
+    icc_resolves = bool(np.isfinite(icc_lo) and icc_lo > 0.0)
+    deff_hi = design_effect(mean_m, icc_hi) if np.isfinite(icc_hi) else {
+        "deff": np.nan, "se_inflation": np.nan}
+
     verdict_bits = []
     if np.isfinite(icc_pooled):
-        verdict_bits.append(f"Intra-vial correlation ICC = {icc_pooled:.3f}")
-    if np.isfinite(deff["deff"]):
+        if icc_resolves:
+            verdict_bits.append(
+                f"Intra-vial correlation ICC = {icc_pooled:.3f} "
+                f"(95% cluster-bootstrap CI {icc_lo:.3f} to {icc_hi:.3f})")
+        else:
+            verdict_bits.append(
+                f"Intra-vial correlation is NOT RESOLVED by this design: "
+                f"ICC point estimate {icc_pooled:.3f}, 95% cluster-bootstrap "
+                f"CI {icc_lo:.3f} to {icc_hi:.3f}, which includes zero. With "
+                f"{int(work[cluster_col].nunique())} vials the ICC cannot be "
+                f"distinguished from no clustering, so the point estimate is "
+                f"not evidence of pseudoreplication")
+    if icc_resolves and np.isfinite(deff["deff"]):
         verdict_bits.append(
             f"design effect {deff['deff']:.2f} (standard errors {(deff['se_inflation'] - 1) * 100:.0f}% larger than naive)"
         )
-    if np.isfinite(n_eff):
+    elif np.isfinite(deff_hi["deff"]):
+        verdict_bits.append(
+            f"design effect is not established; for PLANNING use the interval's "
+            f"upper limit, design effect {deff_hi['deff']:.2f} "
+            f"(standard errors up to {(deff_hi['se_inflation'] - 1) * 100:.0f}% "
+            f"larger), and do not treat the point estimate as measured"
+        )
+    if icc_resolves and np.isfinite(n_eff):
         verdict_bits.append(
             f"{n_total:.0f} flies carry the information of {n_eff:.0f} independent flies"
         )
@@ -795,7 +1026,25 @@ def pseudoreplication_report(
         "p_ratio": inflation,
         "chi2_naive": float(chi2) if np.isfinite(chi2) else np.nan,
         "icc": icc_pooled,
+        # Register N108: both forms are reported so the truncation is visible.
+        # `icc_raw_pooled` can be negative; `icc` is it truncated at zero, once.
+        "icc_raw_pooled": icc_pooled_raw,
+        "icc_ci_lo": icc_lo,
+        "icc_ci_hi": icc_hi,
+        "icc_resolved": icc_resolves,
+        "design_effect_upper": deff_hi["deff"],
         "icc_by_group": {str(a): icc_a.get("icc"), str(b): icc_b.get("icc")},
+        "icc_raw_by_group": {str(a): icc_a.get("icc_raw"),
+                             str(b): icc_b.get("icc_raw")},
+        "icc_n_clusters_by_group": {str(a): icc_a.get("n_clusters"),
+                                    str(b): icc_b.get("n_clusters")},
+        "icc_note": (
+            "The ICC is averaged across groups BEFORE truncation at zero and "
+            "truncated once. Averaging the already-truncated values gives a "
+            "positive mean even when the true ICC is zero, which manufactured "
+            "a design effect of 1.33 from pure binomial data (register N108). "
+            "An ICC from a handful of vials is very imprecise: read it with "
+            "`icc_n_clusters_by_group` beside it."),
         "icc_betabinomial": rho_bb,
         "design_effect": deff["deff"],
         "se_inflation": deff["se_inflation"],
@@ -803,6 +1052,17 @@ def pseudoreplication_report(
         "n_effective": n_eff,
         "n_clusters": int(work[cluster_col].nunique()),
         "mean_flies_per_cluster": mean_m,
+        # Information-weighted (sum n^2 / sum n), which is the correct design-
+        # effect multiplier; the arithmetic mean is kept beside it because it is
+        # what a reader expects the phrase to mean, and they differ whenever
+        # vial sizes vary.
+        "mean_flies_per_cluster_arithmetic": mean_m_arith,
+        "cluster_size_note": (
+            "`mean_flies_per_cluster` is the INFORMATION-weighted cluster size "
+            "sum(n^2)/sum(n), which is the correct multiplier in "
+            "1 + (m-1)*rho. It equals the arithmetic mean only when every vial "
+            "holds the same number of flies; otherwise the arithmetic mean "
+            "understates the design effect (register N108)."),
         "conclusion_changes": bool(
             np.isfinite(p_naive) and np.isfinite(p_clustered)
             and (p_naive < 0.05) != (p_clustered < 0.05)

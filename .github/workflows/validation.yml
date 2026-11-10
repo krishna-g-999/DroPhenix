@@ -1,0 +1,91 @@
+# DroPhenix — the validation suite, run on every push and pull request.
+#
+# WHY THIS EXISTS
+# ---------------
+# Until now the only evidence that the suite passed was someone saying so. A
+# reviewer looking at a pull request could see 20,000 lines of new code and no
+# indication that any of it had been run. This makes the claim checkable by
+# whoever is reading, which is the whole point of having the suite.
+#
+# WHAT IT ESTABLISHES, AND WHAT IT CANNOT
+# ---------------------------------------
+# `validation/run_all.py` reports a suite whose data is absent as SKIPPED rather
+# than failed, and it says so in its summary. A GitHub runner has none of this
+# laboratory's own recordings -- no climbing videos, no DAM monitor files, no
+# hand counts -- so the suites built around those SKIP here and establish
+# nothing on CI. That is by design and is why the summary prints the skip count.
+#
+# A green check therefore means: every suite that could run on a clean machine
+# with no laboratory data passed. It does NOT mean the video pipeline or the
+# detector accuracy measurements were exercised; those run locally, on the
+# machine that holds the recordings.
+name: validation
+
+on:
+  # `push: ["**"]` plus `pull_request` runs the whole suite TWICE for every
+  # commit on a branch that has a pull request open -- same commit, same
+  # result, twice the minutes. Pushes are therefore watched only on the
+  # default branch, where there is no pull request to cover them, and
+  # everything else is covered by the pull_request trigger.
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes the previous run on the same ref; there is no point
+  # finishing a 30-minute suite for a commit that has already been replaced.
+  group: validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: validation suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install the application's dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install the independent reference implementations
+        # lifelines, astropy and pyboat are used by the cross-package comparison
+        # suites as INDEPENDENT reimplementations to check our numbers against.
+        # The repository deliberately does not require them to run the app, and
+        # run_all.py reports a suite whose imports are missing as SKIPPED. So a
+        # failure to install one must not fail the job -- it must leave those
+        # suites skipped and visible as skipped, which is what the summary says.
+        continue-on-error: true
+        run: pip install -r requirements-validation.txt
+
+      - name: Report the environment
+        run: |
+          python -c "import sys; print(sys.version)"
+          pip list
+
+      - name: Run the validation suite
+        # run_all.py exits 1 when any suite that ACTUALLY RAN failed. Skipped
+        # suites do not affect the exit code, because a suite that could not run
+        # has neither passed nor failed.
+        run: python validation/run_all.py
+
+      - name: Summarise what ran and what was skipped
+        if: always()
+        run: |
+          echo "A skipped suite establishes nothing. This runner has none of"
+          echo "the laboratory's own recordings, so the video, DAM and"
+          echo "hand-count suites skip here by design and are exercised only"
+          echo "on the machine that holds the data."

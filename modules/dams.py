@@ -102,7 +102,14 @@ def load_dams(df: pd.DataFrame) -> pd.DataFrame:
             "Sex": df[col["Sex"]].astype(str),
             "FlyID": df[col["FlyID"]].astype(str),
             "Time_min": pd.to_numeric(t, errors="coerce"),
-            "Activity": pd.to_numeric(df[col["Activity"]], errors="coerce").fillna(0.0),
+            # NO .fillna(0.0) HERE. `dam_reader.read_monitor` writes NaN for every
+            # minute whose monitor status was not OK, precisely so a fault is not
+            # read as stillness. Zero-filling it here undid that one function
+            # downstream, on every production path, and scored a 60-minute
+            # monitor fault as a 60-minute sleep bout with Minutes_missing = 0.
+            # `sleep_per_fly` is nan-aware by design (see its NaN note): a
+            # missing minute breaks a bout but does not destroy the totals.
+            "Activity": pd.to_numeric(df[col["Activity"]], errors="coerce"),
         })
     else:
         raise ValueError(
@@ -110,7 +117,9 @@ def load_dams(df: pd.DataFrame) -> pd.DataFrame:
             "Genotype, Treatment, Sex, FlyID, Time_min, Activity.")
     # Preserve the light channel when the caller has one: it is the only way to
     # place ZT0 at lights-on rather than at the first row of the file.
-    for extra in ("Light", "Monitor", "Channel"):
+    # Session must survive too: a bout scored across a monitor restart splices
+    # two recordings into one biological observation.
+    for extra in ("Light", "Monitor", "Channel", "Session"):
         if extra in df.columns:
             out[extra] = df[extra].to_numpy()
     out = out.dropna(subset=["Time_min"]).sort_values(
@@ -236,8 +245,34 @@ def sleep_per_fly(long_df: pd.DataFrame,
         if len(act) < 2:
             continue
         bin_min = _bin_minutes(t)
-        total_min = len(act) * bin_min
-        n_days = max(total_min / day_length_min, 1e-9)
+        # Rates are per OBSERVED day, not per elapsed day.
+        #
+        # A minute the monitor did not read is not a minute of anything. Before
+        # this correction `load_dams` turned those minutes into zeros, so they
+        # were scored as sleep; removing the zero-fill without changing the
+        # denominator would have traded that for the opposite error -- real
+        # sleep divided by elapsed time that was never observed, which
+        # understates every rate in proportion to the fault.
+        #
+        # So: elapsed time is reported (n_bins x bin_min), valid coverage is
+        # reported, and every per-day rate is divided by the OBSERVED days. With
+        # complete data the two are identical, so this changes nothing for a
+        # clean recording.
+        #
+        # LIMIT OF THIS COVERAGE FIGURE, stated so it is not over-trusted:
+        # it counts NaN *within the rows present*. A monitor gap that produces
+        # no rows at all is invisible to it -- `len(act)` cannot see a minute
+        # that was never written -- so Coverage_frac reads 1.0 for a recording
+        # with an hour missing from its timestamps. Detecting that needs the
+        # elapsed span of Time_min compared against the expected bin count, and
+        # it is tracked as a separate (P1) correction rather than folded in
+        # here, because it changes n_days for gappy recordings and that must be
+        # a deliberate, separately validated change.
+        finite = np.isfinite(act)
+        total_min = len(act) * bin_min                      # elapsed
+        valid_min = float(np.count_nonzero(finite)) * bin_min   # observed
+        coverage = (valid_min / total_min) if total_min > 0 else 0.0
+        n_days = max(valid_min / day_length_min, 1e-9)
 
         bouts = _zero_run_bouts(act, bin_min, sleep_min)
         # Per-bin sleep mask (1 if the bin is part of a sleep bout)
@@ -283,6 +318,15 @@ def sleep_per_fly(long_df: pd.DataFrame,
         # nan-aware.
         waking = act[~sleep_mask]
         waking = waking[np.isfinite(waking)]
+        # Waking activity is declared in `counts/waking min` (dam_pipeline.py).
+        # `act` holds counts per BIN, so the mean of `waking` is counts per
+        # waking BIN, and dividing by `bin_min` is what makes the figure the
+        # declared unit -- and bin-width invariant, so the same fly on a 5-min
+        # monitor no longer reads ~5x the same fly on a 1-min monitor. The
+        # defect survived because the only test of it used 1-min bins, where
+        # the two quantities coincide; `validate_dam_parameters` A9b now checks
+        # invariance across bin widths. Register N105.
+        waking_per_min = waking / float(bin_min) if bin_min else waking
         n_missing = int(np.count_nonzero(~np.isfinite(act)))
         rec = dict(zip(keys, kv if isinstance(kv, tuple) else (kv,)))
         rec.update({
@@ -306,11 +350,21 @@ def sleep_per_fly(long_df: pd.DataFrame,
                 t - day_start_min, sleep_mask, bin_min, 0.0,
                 day_length_min, photoperiod_min), 1),
             "Sleep_pct": round(100.0 * sleep_mask.mean(), 1),
-            "Waking_activity": round(float(np.mean(waking)), 3) if len(waking) else 0.0,
+            "Waking_activity": round(float(np.mean(waking_per_min)), 3) if len(waking_per_min) else 0.0,
             "Total_activity_per_day": round(float(np.nansum(act)) / n_days, 1),
             "Day_activity_per_day": round(float(np.nansum(act[is_day])) / n_days, 1),
             "Night_activity_per_day": round(float(np.nansum(act[~is_day])) / n_days, 1),
             "Minutes_missing": n_missing,
+            # Elapsed vs observed, reported separately so a reader can see how
+            # much of the record the rates above are actually based on, and can
+            # see whether the loss was symmetric across the light cycle.
+            "Minutes_elapsed": round(total_min, 1),
+            "Minutes_observed": round(valid_min, 1),
+            "Coverage_frac": round(coverage, 4),
+            "Coverage_day_frac": round(
+                float(np.count_nonzero(finite & is_day)) / max(int(np.count_nonzero(is_day)), 1), 4),
+            "Coverage_night_frac": round(
+                float(np.count_nonzero(finite & ~is_day)) / max(int(np.count_nonzero(~is_day)), 1), 4),
             # A bin wider than the sleep criterion cannot resolve the rule: a
             # single zero 60-min bin is scored as a 60-min sleep bout whatever
             # happened inside it. Activity sums stay exact (addition is
@@ -328,23 +382,100 @@ def _empty_per_fly(per_fly: pd.DataFrame) -> bool:
     return per_fly is None or per_fly.empty or "Genotype" not in per_fly.columns
 
 
+# Which summary columns are SLEEP measurements, and therefore only meaningful
+# for a fly whose bin width can resolve the sleep criterion, and which are
+# activity measurements, which are exact at any bin width because addition is
+# associative.
+_SLEEP_METRICS = ["Total_sleep_min_per_day", "Day_sleep_min_per_day",
+                  "Night_sleep_min_per_day", "N_bouts_per_day",
+                  "Mean_bout_min"]
+_ACTIVITY_METRICS = ["Total_activity_per_day"]
+
+
 def sleep_summary(per_fly: pd.DataFrame) -> pd.DataFrame:
-    """Per-group mean +/- SEM of the key sleep metrics."""
+    """
+    Per-group mean +/- SEM of the key sleep metrics.
+
+    Register N81. `sleep_per_fly` computes `Sleep_scoreable` -- False whenever
+    the recording's bin width is wider than the sleep criterion, because a
+    single zero 60-minute bin is scored as a 60-minute sleep bout whatever
+    happened inside it -- and this function then averaged those very columns
+    without reading the flag. The flag was computed, documented, covered by a
+    test, and ignored by its only consumer. An unread flag reads as a safeguard
+    in review and is not one.
+
+    Measured on this laboratory's own 25th-day recording, degrading 1-minute
+    data to 60-minute bins loses 85% of the sleep (median 928 -> 142 min/day),
+    so the numbers the flag guards are wrong by that order, not by a little.
+
+    What happens now: the sleep columns are averaged over the flies whose
+    records can resolve the rule, the count of those flies is reported as
+    `n_flies_sleep_scoreable`, and when none can the sleep means are NaN with
+    `Sleep_note` saying why. The activity columns are averaged over every fly
+    regardless, because summing activity is exact at any bin width -- losing
+    them too would be a different error.
+    """
     if _empty_per_fly(per_fly):
         return pd.DataFrame()
-    metrics = ["Total_sleep_min_per_day", "Day_sleep_min_per_day",
-               "Night_sleep_min_per_day", "N_bouts_per_day", "Mean_bout_min",
-               "Total_activity_per_day"]
+    metrics = _SLEEP_METRICS + _ACTIVITY_METRICS
+    have_flag = "Sleep_scoreable" in per_fly.columns
     rows = []
     for kv, sub in per_fly.groupby(GROUP_KEYS, sort=False):
         rec = dict(zip(GROUP_KEYS, kv if isinstance(kv, tuple) else (kv,)))
         rec["n_flies"] = int(len(sub))
+
+        if have_flag:
+            flag = sub["Sleep_scoreable"].astype(bool)
+        else:
+            # No flag at all: treat the records as scoreable, which is what the
+            # function did before, but say that the claim is unverified.
+            flag = pd.Series(True, index=sub.index)
+        scoreable = sub[flag]
+        rec["n_flies_sleep_scoreable"] = int(len(scoreable))
+
         for m in metrics:
-            v = pd.to_numeric(sub[m], errors="coerce").dropna().to_numpy()
+            if m not in sub.columns:
+                rec[m] = np.nan
+                rec[m + "_SEM"] = np.nan
+                continue
+            src = scoreable if m in _SLEEP_METRICS else sub
+            v = pd.to_numeric(src[m], errors="coerce").dropna().to_numpy()
             rec[m] = round(float(np.mean(v)), 1) if len(v) else np.nan
-            rec[m + "_SEM"] = round(float(np.std(v, ddof=1) / np.sqrt(len(v))), 1) if len(v) > 1 else np.nan
+            rec[m + "_SEM"] = (round(float(np.std(v, ddof=1) / np.sqrt(len(v))), 1)
+                               if len(v) > 1 else np.nan)
+
+        n_un = int(len(sub)) - int(len(scoreable))
+        if not have_flag:
+            rec["Sleep_note"] = (
+                "No Sleep_scoreable column on the per-fly table, so the bin "
+                "width could not be checked against the sleep criterion; the "
+                "sleep columns assume every record can resolve it.")
+        elif len(scoreable) == 0:
+            rec["Sleep_note"] = (
+                f"None of the {len(sub)} flies in this group has a recording "
+                f"whose bin width can resolve the sleep criterion, so every "
+                f"sleep column here is withheld as NaN. A bin wider than the "
+                f"criterion scores a single zero bin as a sleep bout of that "
+                f"whole bin, whatever happened inside it; degrading 1-minute "
+                f"data to 60-minute bins loses 85% of the sleep on this "
+                f"laboratory's own recording. Activity columns are unaffected "
+                f"and are reported. Re-export the recording at 1-minute bins "
+                f"to obtain sleep.")
+        elif n_un:
+            rec["Sleep_note"] = (
+                f"{n_un} of {len(sub)} flies have a bin width that cannot "
+                f"resolve the sleep criterion and are excluded from the sleep "
+                f"columns only; those columns rest on "
+                f"{len(scoreable)} fly/flies, the activity columns on all "
+                f"{len(sub)}. Mixing bin widths within a group makes the two "
+                f"sets of columns describe different samples.")
+        else:
+            rec["Sleep_note"] = ""
         rows.append(rec)
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    out.attrs["sleep_metrics"] = list(_SLEEP_METRICS)
+    out.attrs["activity_metrics"] = list(_ACTIVITY_METRICS)
+    return out
 
 
 def light_channel_report(long_df: pd.DataFrame) -> pd.DataFrame:
@@ -615,19 +746,69 @@ def chi_square_periodogram(activity: np.ndarray, bin_min: float,
 
 
 def lomb_scargle_period(activity: np.ndarray, bin_min: float,
-                        period_lo_h: float = 16.0, period_hi_h: float = 32.0) -> float:
-    """Independent period estimate via the Lomb-Scargle periodogram (hours)."""
+                        period_lo_h: float = 16.0, period_hi_h: float = 32.0,
+                        time_min: Optional[np.ndarray] = None) -> float:
+    """
+    Independent period estimate via the Lomb-Scargle periodogram (hours).
+
+    Two defects are fixed here.
+
+    Register N43 -- the search floor was returned as a measurement. `x.mean()`
+    of an array containing a single NaN is NaN, so `x` became all-NaN;
+    `np.allclose(x, 0)` is False for NaN, so the guard did not fire; the
+    periodogram was then all-NaN and `np.argmax` of an all-NaN array returns
+    index 0, which is `period_lo_h`. One invalid minute in a six-day recording
+    therefore produced `Period_h_lombscargle = 16.000` -- the lowest value the
+    grid can express -- silently, and that number entered the group mean. The
+    input is now reduced to its finite samples, there must be at least ten of
+    them, and a periodogram with no finite value returns NaN.
+
+    Register N44 -- regular sampling was assumed. `t = arange(n) * bin_min`
+    asserts that the samples are evenly spaced, which is the one assumption
+    Lomb-Scargle exists to relax; it is also exactly what fails on the records
+    this platform reads, where a monitor restart or a dropped bin leaves a gap.
+    Under that assumption every sample after a gap is relabelled with an
+    earlier time, which shifts the apparent period. The real timestamps are now
+    accepted in `time_min` and used; `bin_min` is only the fallback spacing
+    when no timestamps are supplied, and the header's claim that this is an
+    "independent cross-check" of the chi-square periodogram only holds when
+    they are, because otherwise both methods rest on the same regularity
+    assumption.
+
+    `time_min` must be in MINUTES, matching `bin_min`.
+    """
     from scipy.signal import lombscargle
     x = np.asarray(activity, dtype=float)
-    x = x - x.mean()
     n = len(x)
-    if n < 10 or np.allclose(x, 0):
+    t = (np.arange(n, dtype=float) * float(bin_min) if time_min is None
+         else np.asarray(time_min, dtype=float))
+    if t.shape != x.shape:
+        raise ValueError(
+            f"lomb_scargle_period: time_min has {t.shape} samples but activity "
+            f"has {x.shape}. The timestamps must correspond one-to-one to the "
+            f"activity bins."
+        )
+
+    ok = np.isfinite(x) & np.isfinite(t)
+    x, t = x[ok], t[ok]
+    if x.size < 10:
+        # Too few usable samples. Previously an all-NaN input reached the
+        # periodogram and came back as the grid floor.
         return np.nan
-    t = np.arange(n) * bin_min               # minutes
+    x = x - x.mean()
+    if not np.any(np.abs(x) > 0):
+        return np.nan
+    if np.ptp(t) <= 0:
+        return np.nan
+
     periods_h = np.linspace(period_lo_h, period_hi_h, 600)
     ang = 2 * np.pi / (periods_h * 60.0)     # angular freq (per minute)
-    pgram = lombscargle(t, x, ang, normalize=True)
-    return round(float(periods_h[np.argmax(pgram)]), 3)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pgram = lombscargle(t, x, ang, normalize=True)
+    pgram = np.asarray(pgram, dtype=float)
+    if not np.any(np.isfinite(pgram)):
+        return np.nan
+    return round(float(periods_h[int(np.nanargmax(pgram))]), 3)
 
 
 def period_per_fly(long_df: pd.DataFrame,
@@ -649,12 +830,21 @@ def period_per_fly(long_df: pd.DataFrame,
         if factor > 1:
             K = len(act) // factor
             act_rs = act[:K * factor].reshape(K, factor).sum(axis=1)
+            # The real time of each resampled bin: the first raw timestamp it
+            # contains (register N44). Carried through so Lomb-Scargle is not
+            # told that the bins are evenly spaced when the record says
+            # otherwise -- a monitor restart or a dropped bin leaves a gap, and
+            # assuming it away is what makes this "cross-check" dependent on
+            # the same regularity as the chi-square periodogram.
+            t_rs = t[:K * factor].reshape(K, factor)[:, 0]
             bin_used = raw_bin * factor
         else:
             act_rs = act
+            t_rs = t
             bin_used = raw_bin
         cp = chi_square_periodogram(act_rs, bin_used, period_lo_h, period_hi_h, alpha)
-        ls = lomb_scargle_period(act_rs, bin_used, period_lo_h, period_hi_h)
+        ls = lomb_scargle_period(act_rs, bin_used, period_lo_h, period_hi_h,
+                                 time_min=t_rs)
         rec = dict(zip(keys, kv if isinstance(kv, tuple) else (kv,)))
         rec.update({
             "Period_h_chisq": cp["peak_period_h"],

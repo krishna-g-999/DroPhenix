@@ -229,7 +229,8 @@ class NormalMixture:
 # 2. BUILDING THE MAP PRIOR
 # ═══════════════════════════════════════════════════════════════════════════
 def _arm_logit_summaries(
-    successes: Sequence[float], totals: Sequence[float]
+    successes: Sequence[float], totals: Sequence[float],
+    design_effect: Optional[Sequence[float]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Empirical-logit point estimate and its variance for each historical arm.
@@ -244,6 +245,18 @@ def _arm_logit_summaries(
     n = np.asarray(totals, dtype=float)
     y = np.log((s + 0.5) / (n - s + 0.5))
     v = 1.0 / (s + 0.5) + 1.0 / (n - s + 0.5)
+    # Register N110. That variance is the one for `n` INDEPENDENT flies. Flies
+    # share a vial, so an arm of n flies in m vials with intra-vial correlation
+    # rho carries the information of only n / (1 + (m0 - 1) * rho) independent
+    # flies. Without this the arm is treated as far more precise than it is, the
+    # prior-to-data comparison is miscalibrated, and the simulated type I error
+    # understates the real one. `design_effect` is the inflation factor; 1.0
+    # (the default) reproduces the previous behaviour exactly, so a caller with
+    # no vial structure is unaffected.
+    if design_effect is not None:
+        d = np.asarray(design_effect, dtype=float)
+        d = np.where(np.isfinite(d) & (d >= 1.0), d, 1.0)
+        v = v * d
     return y, v
 
 
@@ -668,6 +681,49 @@ def _vectorised_conflict_p(prior: NormalMixture, y: np.ndarray,
     return 2.0 * np.minimum(tail, 1.0 - tail)
 
 
+def _design_effect_for(n_total: float, flies_per_vial: float,
+                       icc: float) -> float:
+    """
+    1 + (m - 1) * rho, the factor by which clustering inflates an arm's variance.
+
+    With equal vial sizes the information-weighted cluster size is just the vial
+    size, so m = `flies_per_vial`. Returns 1.0 when there is no clustering or
+    the inputs are unusable, so the no-vial case is unchanged (register N110).
+    """
+    try:
+        m = float(flies_per_vial)
+        r = float(icc)
+        if not np.isfinite(m) or not np.isfinite(r) or m <= 1 or r <= 0:
+            return 1.0
+        m = min(m, float(n_total)) if np.isfinite(n_total) and n_total > 0 else m
+        return float(1.0 + (m - 1.0) * r)
+    except Exception:
+        return 1.0
+
+
+def _clustered_arm(rng: np.random.Generator, n_total: int, p: float,
+                   n_sim: int, icc: float, flies_per_vial: int) -> np.ndarray:
+    """
+    Draw `n_sim` arm totals for an arm of `n_total` flies held in vials.
+
+    At `icc <= 0` this is `rng.binomial(n_total, p, n_sim)` -- the i.i.d. case,
+    reproduced exactly so existing results do not move. Above zero, each vial
+    gets its own probability from Beta(a, b) with mean `p` and
+    rho = 1 / (a + b + 1), and the arm total is the sum over vials. This is the
+    beta-binomial representation of intra-vial correlation, and it is what makes
+    the simulated type I error reflect a real experiment (register N110).
+    """
+    if not np.isfinite(icc) or icc <= 0 or flies_per_vial <= 0:
+        return rng.binomial(n_total, p, size=n_sim)
+    n_vials = max(int(round(n_total / float(flies_per_vial))), 1)
+    per = int(round(n_total / n_vials))
+    conc = (1.0 - icc) / icc                    # a + b
+    a = max(p * conc, 1e-6)
+    b = max((1.0 - p) * conc, 1e-6)
+    pv = rng.beta(a, b, size=(n_sim, n_vials))
+    return rng.binomial(per, pv).sum(axis=1)
+
+
 def operating_characteristics(
     historical_successes: Sequence[float],
     historical_totals: Sequence[float],
@@ -680,6 +736,8 @@ def operating_characteristics(
     n_sim: int = 4000,
     tau_prior_scale: float = 0.5,
     seed: int = 0,
+    vial_icc: float = 0.0,
+    flies_per_vial: int = 10,
 ) -> pd.DataFrame:
     """
     Simulate the whole borrowing procedure across a grid of DRIFT between the
@@ -723,12 +781,29 @@ def operating_characteristics(
         p_c = float(p_c)
         p_t = float(expit(logit(p_c) + true_effect_logit))
 
-        yc = rng.binomial(n_control, p_c, size=n_sim)
-        yt = rng.binomial(n_treat, p_t, size=n_sim)
+        # Register N110. These arms used to be `rng.binomial(n, p)` -- i.i.d.
+        # flies. Real arms are vials of flies, and the extra-binomial spread
+        # that creates is the single biggest influence on the type I error this
+        # function exists to report. `vial_icc` > 0 generates each vial's own
+        # climbing probability from a beta with the requested intra-vial
+        # correlation (the beta-binomial representation: rho = 1/(a+b+1)), so
+        # the arm total is a sum of correlated vials rather than independent
+        # flies. `vial_icc = 0.0` reproduces the previous i.i.d. behaviour
+        # exactly.
+        yc = _clustered_arm(rng, n_control, p_c, n_sim, vial_icc, flies_per_vial)
+        yt = _clustered_arm(rng, n_treat, p_t, n_sim, vial_icc, flies_per_vial)
+
+        # The arm's likelihood variance must be inflated by the same clustering
+        # the data were generated with, otherwise the analysis is handed a
+        # precision the design does not have -- which is exactly the defect.
+        deff_c = _design_effect_for(n_control, flies_per_vial, vial_icc)
+        deff_t = _design_effect_for(n_treat, flies_per_vial, vial_icc)
 
         # arm-level normal approximations, vectorised over simulations
-        y_c, v_c = _arm_logit_summaries(yc, np.full(n_sim, n_control))
-        y_t, v_t = _arm_logit_summaries(yt, np.full(n_sim, n_treat))
+        y_c, v_c = _arm_logit_summaries(yc, np.full(n_sim, n_control),
+                                        design_effect=np.full(n_sim, deff_c))
+        y_t, v_t = _arm_logit_summaries(yt, np.full(n_sim, n_treat),
+                                        design_effect=np.full(n_sim, deff_t))
 
         for name, prior in methods.items():
             if prior is None:
@@ -783,11 +858,26 @@ def recommended_design(
     decision_threshold: float = 0.975,
     n_sim: int = 3000,
     seed: int = 0,
+    vial_icc: float = 0.0,
+    flies_per_vial: int = 10,
 ) -> dict:
     """
     Find the smallest concurrent control arm whose borrowed analysis keeps type
     I error below `max_type_I` across drift up to +/- `tolerable_drift`, and
     report the fly saving.
+
+    THE VIAL IS PART OF THE DESIGN (register N110)
+    ----------------------------------------------
+    This function prints a fly count that someone will put in a protocol, and it
+    used to derive that count from a simulation in which flies were INDEPENDENT.
+    They are not: they share a vial. With clustered arms analysed as independent
+    flies the real type I error was measured at 0.045 at a vial ICC of 0.05 and
+    0.094 at 0.15 -- already past the 0.075 cap BEFORE any reduction was applied.
+    Pass `vial_icc` (estimate it with `hierarchical.estimate_icc` on the
+    laboratory's own vial-level counts) and `flies_per_vial`, and both the
+    generating model and the arm-level variance account for it. The default 0.0
+    reproduces the old i.i.d. behaviour, so a caller who has not measured an ICC
+    gets the same answer as before -- and the returned dict says so.
 
     A concurrent control is never eliminated: without one, drift is undetectable
     and the prior-data conflict check -- the safety mechanism of the whole
@@ -813,6 +903,7 @@ def recommended_design(
             p_control_true_grid=grid, true_effect_logit=0.0,
             robust_weight=robust_weight, decision_threshold=decision_threshold,
             n_sim=n_sim, seed=seed,
+            vial_icc=vial_icc, flies_per_vial=flies_per_vial,
         )
         worst = float(oc[oc["method"] == "robust_map"]["rejection_rate"].max())
         # The simulated rate is an estimate, and the search picks the SMALLEST arm
@@ -852,8 +943,25 @@ def recommended_design(
             "prior-data conflict check cannot run."
         )
 
+    # Register N110. A fly count derived from an i.i.d. simulation is not a
+    # recommendation for an experiment run in vials. Say so on the number
+    # itself, not in a docstring, whenever no ICC was supplied.
+    if chosen and not (np.isfinite(vial_icc) and vial_icc > 0):
+        verdict += (
+            " CAVEAT: this was simulated with flies treated as INDEPENDENT "
+            "(vial_icc = 0). Flies share a vial, and with a vial ICC of 0.05 "
+            "the measured type I error of the un-corrected procedure was 0.045, "
+            "and 0.094 at an ICC of 0.15 -- past this cap before any reduction "
+            "is applied. Estimate the ICC from your own vial-level counts with "
+            "hierarchical.estimate_icc and pass it as `vial_icc` before acting "
+            "on this number."
+        )
+
     return {
         "recommended_n_control": chosen,
+        "vial_icc_assumed": float(vial_icc),
+        "flies_per_vial_assumed": int(flies_per_vial),
+        "clustering_accounted_for": bool(np.isfinite(vial_icc) and vial_icc > 0),
         "standard_n_control": int(n_control_standard),
         "flies_saved_per_experiment": int(saving),
         "search_table": tab,

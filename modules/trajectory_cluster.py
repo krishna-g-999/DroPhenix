@@ -72,15 +72,110 @@ def dtw_distance_matrix(
     return mat, labels
 
 
+# ─── The clustering axis (register N31) ───────────────────────────────────────
+# What this module clusters was the within-assay SECONDS axis: `Time`, the
+# scoring timepoints of a single negative-geotaxis run. The archetype names it
+# then applied -- "Progressive Rescue", "Declining Performer", "Early Rescue
+# Late Decline" -- are statements about how a cohort changes as it AGES over
+# days or weeks. Clustering one axis and naming the other is a category error,
+# and it is the same one `motor_decline._normalize_pi_table` and the app's MDR
+# page explicitly refuse: MDR is the decline of performance over age, not the
+# climbing kinetics over seconds (Gargano et al. 2005; Jahromi & Grotewiel
+# 2008).
+#
+# The consequence is not subtle. Within a 60-second run every healthy cohort's
+# curve RISES steeply, because flies keep crossing the line as the run
+# proceeds; so untreated wild type was labelled "Progressive Rescue", and that
+# label was fed into the Trajectory component of the Translational Candidate
+# Score. The default axis is therefore `Age`, with the same refusal
+# `motor_decline` uses when age data is absent, and the axis is recorded in
+# every result. Clustering the seconds axis remains available, explicitly, but
+# it is climbing-kinetics clustering and does not borrow the longitudinal
+# vocabulary.
+AGE_ALIASES = ("age", "age_days", "age_d", "agedays", "day", "days",
+               "age_in_days")
+SECONDS_ALIASES = ("time", "time_s", "time_sec", "seconds", "timepoint",
+                   "time_used")
+
+LONGITUDINAL_ARCHETYPES = (
+    "Sustained Rescue", "Motor Responder", "High Performer",
+    "Progressive Rescue", "Transient Rescue", "Early Rescue Late Decline",
+    "Declining Performer", "Progressive Decline", "Moderate Decline",
+)
+
+
+def resolve_time_col(df, time_col: str = "Age") -> str:
+    """
+    Find the requested clustering axis in a PI table, or refuse.
+
+    `time_col="Age"` (the default) resolves any of `AGE_ALIASES`, and raises
+    when none is present -- the same `requires_age_data` refusal
+    `motor_decline` makes, for the same reason. `time_col="Time"` resolves the
+    within-assay seconds axis, which is a legitimate thing to cluster but a
+    different question.
+    """
+    if df is None:
+        raise ValueError("trajectory_cluster: no PI table supplied.")
+    lut = {str(c).strip().lower(): c for c in df.columns}
+    want = str(time_col).strip().lower()
+    cands = AGE_ALIASES if want in AGE_ALIASES or want == "age" else (
+        SECONDS_ALIASES if want in SECONDS_ALIASES else (want,))
+    for a in cands:
+        if a in lut:
+            return lut[a]
+    if cands is AGE_ALIASES:
+        raise ValueError(
+            f"trajectory_cluster: no Age column in the PI table (looked for "
+            f"{list(AGE_ALIASES)}; columns present: {list(df.columns)}). "
+            f"Trajectory clustering is a statement about how a cohort changes "
+            f"as it AGES, and its archetype names say so -- 'Progressive "
+            f"Rescue', 'Declining Performer'. Clustering the within-assay "
+            f"seconds axis instead and applying those names is a category "
+            f"error: inside a single 60 s run every healthy cohort's curve "
+            f"rises steeply, because flies keep crossing the line as the run "
+            f"proceeds, so untreated wild type comes out as 'Progressive "
+            f"Rescue'. Supply a longitudinal table with an Age column, or ask "
+            f"for climbing-kinetics clustering explicitly with "
+            f"time_col='Time'."
+        )
+    raise ValueError(
+        f"trajectory_cluster: no {time_col!r} column in the PI table "
+        f"(columns present: {list(df.columns)})."
+    )
+
+
+def axis_note(axis_label: str) -> str:
+    """One sentence saying what the clustered axis is, carried in the result."""
+    if str(axis_label).strip().lower() in AGE_ALIASES:
+        return (
+            "Clustered on AGE (days): these are longitudinal decline "
+            "trajectories, which is what the archetype names describe."
+        )
+    return (
+        f"Clustered on {axis_label!r}, the WITHIN-ASSAY axis -- this is "
+        f"climbing-kinetics clustering, not a decline trajectory. A cohort's "
+        f"curve rises over the seconds of a single run whether or not it is "
+        f"declining over days, so the longitudinal archetype names "
+        f"(Progressive Rescue, Declining Performer, ...) do not apply and are "
+        f"not assigned."
+    )
+
+
 # ─── Trajectory extraction ────────────────────────────────────────────────────
 def build_trajectory_dict(
     pi_df: pd.DataFrame,
     common_timepoints: Optional[List[int]] = None,
     interpolate: bool = True,
+    time_col: str = "Age",
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, dict]]:
     """
-    Build {label: PI_array} dict from PI summary table.
-    FIX: aggregates replicates to mean per timepoint before building arrays.
+    Build {label: PI_array} dict from a PI summary table, along `time_col`.
+
+    `time_col` defaults to "Age": these are longitudinal decline trajectories,
+    and the module refuses a table without an age axis rather than silently
+    clustering the within-assay seconds axis under longitudinal archetype names
+    (register N31; see `resolve_time_col`). Replicates are collapsed to a mean
+    per axis value before the arrays are built.
     """
     if pi_df is None or pi_df.empty:
         return {}, {}
@@ -89,10 +184,10 @@ def build_trajectory_dict(
 
     if "PI_mean" not in df.columns and "PI" in df.columns:
         df = df.rename(columns={"PI": "PI_mean"})
-    if "Time" not in df.columns and "Time_used" in df.columns:
-        df = df.rename(columns={"Time_used": "Time"})
 
-    required = {"Genotype", "Treatment", "Sex", "Time", "PI_mean"}
+    axis = resolve_time_col(df, time_col)
+
+    required = {"Genotype", "Treatment", "Sex", "PI_mean"}
     if not required.issubset(df.columns):
         raise ValueError(
             f"trajectory_cluster: PI table missing: {required - set(df.columns)}"
@@ -106,15 +201,15 @@ def build_trajectory_dict(
     ):
         # FIX: collapse replicates → single mean PI per timepoint
         grp_mean = (
-            grp.groupby("Time", as_index=False)["PI_mean"]
+            grp.groupby(axis, as_index=False)["PI_mean"]
                .mean()
-               .sort_values("Time")
+               .sort_values(axis)
                .dropna(subset=["PI_mean"])
         )
         if len(grp_mean) < 2:
             continue
 
-        times = grp_mean["Time"].astype(float).values.ravel()  # FIX: 1-D
+        times = grp_mean[axis].astype(float).values.ravel()  # FIX: 1-D
         pis   = grp_mean["PI_mean"].astype(float).values.ravel()  # FIX: 1-D
 
         if interpolate and common_timepoints is not None:
@@ -132,6 +227,10 @@ def build_trajectory_dict(
             "Treatment": treat,
             "Sex": sex,
             "n_timepoints": len(grp_mean),
+            # The axis is part of the result, not an implicit convention
+            # (register N31): a trajectory means nothing without it.
+            "time_axis": axis,
+            "axis_range": [float(times.min()), float(times.max())],
         }
 
     return trajectories, metadata
@@ -257,13 +356,25 @@ def cluster_trajectories(
     dtw_window: Optional[int] = None,
     bootstrap_reps: int = 100,
     seed: int = 42,
+    time_col: str = "Age",
 ) -> dict:
-    """Full DTW-based trajectory clustering pipeline."""
+    """
+    Full DTW-based trajectory clustering pipeline, along `time_col`.
+
+    Default "Age": longitudinal decline trajectories. Pass time_col="Time" for
+    climbing-kinetics clustering on the within-assay axis, which is a different
+    question and does not receive the longitudinal archetype names (register
+    N31). The axis used is reported as `time_axis`, with `axis_note`.
+    """
     rng = np.random.default_rng(seed)
 
     trajectories, metadata = build_trajectory_dict(
-        pi_df, common_timepoints=common_timepoints, interpolate=True
+        pi_df, common_timepoints=common_timepoints, interpolate=True,
+        time_col=time_col,
     )
+    axis_used = (list(metadata.values())[0]["time_axis"] if metadata
+                 else str(time_col))
+    _axis = {"time_axis": axis_used, "axis_note": axis_note(axis_used)}
 
     n = len(trajectories)
     if n < 3:
@@ -282,6 +393,7 @@ def cluster_trajectories(
             "stability": np.nan,
             "linkage_matrix": np.array([]),
             "error": "Fewer than 3 trajectories — clustering not possible.",
+            **_axis,
         }
 
     dist_matrix, labels = dtw_distance_matrix(trajectories, window=dtw_window)
@@ -388,16 +500,30 @@ def cluster_trajectories(
         "stability": stability,
         "linkage_matrix": Z,
         "error": None,
+        **_axis,
     }
 
 
 # ─── Cluster interpretation ───────────────────────────────────────────────────
-def interpret_clusters(cluster_table: pd.DataFrame, archetypes: dict) -> pd.DataFrame:
+def interpret_clusters(cluster_table: pd.DataFrame, archetypes: dict,
+                       time_axis: Optional[str] = None) -> pd.DataFrame:
     """
     Assign biological archetype names to each cluster.
 
     FIX: takes 2 positional arguments (cluster_table, archetypes)
          and ALWAYS returns pd.DataFrame (never a list).
+
+    `time_axis` is the axis the clustering ran on, as reported by
+    `cluster_trajectories`. The archetype names below describe how a cohort
+    changes as it AGES, so they are assigned only when that axis is an age axis
+    (register N31). On the within-assay seconds axis the clusters are
+    climbing-kinetics groups: they are numbered, an `Axis_note` column says
+    what they are, and no longitudinal name is applied -- a rising curve over
+    the seconds of one run is what every healthy cohort does, and calling it
+    "Progressive Rescue" is how untreated wild type came to be labelled a
+    responder. Passing `time_axis=None` (the old signature) keeps the
+    longitudinal naming, so existing callers are unchanged, but
+    `cluster_trajectories` now reports the axis and callers should pass it.
 
     Archetype naming (biologically grounded):
     PI mean >= 60, flat slope        → High Performer
@@ -412,9 +538,23 @@ def interpret_clusters(cluster_table: pd.DataFrame, archetypes: dict) -> pd.Data
     if cluster_table is None or cluster_table.empty:
         return pd.DataFrame()
 
+    longitudinal = (time_axis is None
+                    or str(time_axis).strip().lower() in AGE_ALIASES)
+
     if not archetypes:
         ct = cluster_table.copy()
         ct["Archetype"] = "Unclassified"
+        ct["Axis_note"] = axis_note(time_axis) if time_axis else ""
+        return ct
+
+    if not longitudinal:
+        # Kinetics clusters are real and useful; they are simply not decline
+        # trajectories, so they get descriptive numbers and a note instead of
+        # a vocabulary that asserts a longitudinal claim.
+        ct = cluster_table.copy()
+        ct["Archetype"] = ("Climbing-kinetics cluster "
+                           + ct["Cluster"].astype(str))
+        ct["Axis_note"] = axis_note(time_axis)
         return ct
 
     archetype_names: Dict[int, str] = {}
@@ -448,6 +588,7 @@ def interpret_clusters(cluster_table: pd.DataFrame, archetypes: dict) -> pd.Data
 
     ct = cluster_table.copy()
     ct["Archetype"] = ct["Cluster"].map(archetype_names).fillna("Undetermined")
+    ct["Axis_note"] = axis_note(time_axis) if time_axis else ""
     return ct   # FIX: always returns pd.DataFrame
 
 

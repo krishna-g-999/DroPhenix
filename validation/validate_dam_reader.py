@@ -321,18 +321,53 @@ def test_F_channel_map() -> None:
 def test_G_plausibility() -> None:
     print("\nG. Implausible results are flagged against published ranges")
     # Barely-moving flies: sleep will come out near the ceiling.
-    quiet = pd.DataFrame({
+    # A channel that is NOT READING: sleep at the ceiling with almost no
+    # activity. That conjunction is the signature of a dead fly or a dead beam,
+    # and it is what the gate must flag.
+    dead_beam = pd.DataFrame({
         "Genotype": ["WT"] * 20, "Sex": ["Male"] * 10 + ["Female"] * 10,
-        "Total_sleep_min_per_day": np.r_[np.full(20, 1290.0)],
-        "Day_sleep_min_per_day": np.r_[np.full(10, 640.0), np.full(10, 700.0)],
-        "Total_activity_per_day": np.full(20, 220.0),
+        "Total_sleep_min_per_day": np.r_[np.full(20, 1430.0)],
+        "Day_sleep_min_per_day": np.r_[np.full(10, 710.0), np.full(10, 720.0)],
+        "Total_activity_per_day": np.full(20, 12.0),
     })
-    rep = DR.plausibility_report(quiet)
-    check("sleep above the published range is flagged",
+    rep = DR.plausibility_report(dead_beam)
+    check("high sleep WITH low activity is flagged",
           not rep["ok"] and any("above the" in f for f in rep["flags"]),
-          f"median {rep['median_sleep_min_per_day']:.0f} min/day")
+          f"median {rep['median_sleep_min_per_day']:.0f} min/day on "
+          f"{rep.get('sleep_by_group', {}).get('WT / Male', {}).get('median_activity', float('nan')):.0f} counts/day")
     check("the flag names the mechanisms that mimic sleep",
           any("died" in f or "beam" in f for f in rep["flags"]), "")
+
+    # The SAME high sleep with NORMAL activity must NOT be flagged. This was
+    # the defect: on real single-beam DAM data (Selkrig 2018) the old
+    # sleep-only ceiling flagged 255 of 371 healthy flies, a 68.7% false-alarm
+    # rate, because one beam cannot tell an awake fly that is not crossing it
+    # from a sleeping one. It is reported as a note instead.
+    quiet_but_active = pd.DataFrame({
+        "Genotype": ["WT"] * 20, "Sex": ["Male"] * 10 + ["Female"] * 10,
+        "Total_sleep_min_per_day": np.r_[np.full(20, 1430.0)],
+        # males above females in daytime sleep, so the channel-map tripwire
+        # (a separate check) does not fire and confuse this one
+        "Day_sleep_min_per_day": np.r_[np.full(10, 730.0), np.full(10, 690.0)],
+        "Total_activity_per_day": np.full(20, 520.0),
+    })
+    rep_q = DR.plausibility_report(quiet_but_active)
+    check("the same sleep with HEALTHY activity is not flagged, but is noted",
+          rep_q["ok"] and not any("above the" in f for f in rep_q["flags"])
+          and len(rep_q["notes"]) > 0,
+          f"ok={rep_q['ok']}, {len(rep_q['flags'])} flags, "
+          f"{len(rep_q['notes'])} notes")
+    check("and the note explains why a single beam cannot tell the difference",
+          any("single beam" in n or "not crossing" in n for n in rep_q["notes"]),
+          "")
+    check("the reference interval used is reported, with its method",
+          rep_q.get("acquisition") == "dam_single_beam"
+          and rep_q.get("sleep_reference_interval") == (450.0, 1400.0),
+          f"{rep_q.get('acquisition')} {rep_q.get('sleep_reference_interval')}")
+    check("an unknown acquisition method is refused, not guessed",
+          not DR.plausibility_report(quiet_but_active,
+                                     acquisition="video")["ok"],
+          "")
     check("a reversed male/female daytime sleep difference is flagged",
           any("channel map" in f for f in rep["flags"]),
           f"male - female = {rep.get('male_minus_female_day_sleep', float('nan')):+.0f} min/day")

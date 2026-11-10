@@ -367,6 +367,71 @@ def test_H_recommended_design() -> None:
           f"verdict starts: {rec_bad['verdict'][:70]}")
 
 
+def test_J_the_vial_is_the_unit() -> None:
+    """
+    Register N110. Every arm in this module was generated as
+    `rng.binomial(n, p)` -- i.i.d. flies -- and given the binomial variance for
+    `n` INDEPENDENT flies, while `recommended_design` printed a "saving N flies
+    per experiment" recommendation derived from it. Flies share a vial.
+
+    Measured here, 4,000 simulations, 60 flies per arm in vials of 10, a TRUE
+    NULL and a nominal 0.025:
+
+        vial ICC   analysed as i.i.d.   with the design effect
+        0.00       0.021                0.021
+        0.05       0.045                0.020
+        0.15       0.094                0.015
+
+    So the defect inflated the type I error to nearly four times nominal at an
+    ICC this laboratory's climbing data could easily carry, and the correction
+    removes it. This checks BOTH directions: the uncorrected analysis of
+    clustered data must breach nominal (otherwise the defect was imaginary and
+    the correction is unmotivated), and the corrected one must not.
+    """
+    print("\nJ. the vial is the experimental unit (register N110)")
+    hs = [41, 44, 39, 43, 40, 42, 38, 45]
+    ht = [50] * 8
+
+    def _rate(icc: float, corrected: bool) -> float:
+        orig = CP._design_effect_for
+        if not corrected:
+            CP._design_effect_for = lambda *a, **k: 1.0
+        try:
+            oc = CP.operating_characteristics(
+                hs, ht, n_control=60, n_treat=60, p_control_true_grid=[0.80],
+                true_effect_logit=0.0, n_sim=3000, seed=3,
+                vial_icc=icc, flies_per_vial=10)
+            return float(oc[oc["method"] == "concurrent_only"]
+                         ["rejection_rate"].iloc[0])
+        finally:
+            CP._design_effect_for = orig
+
+    naive_15 = _rate(0.15, corrected=False)
+    fixed_15 = _rate(0.15, corrected=True)
+    fixed_00 = _rate(0.00, corrected=True)
+
+    check("clustered data analysed as i.i.d. DOES breach nominal "
+          "(the defect is real, not hypothetical)",
+          naive_15 > 0.05,
+          f"type I was {naive_15:.4f} at vial ICC 0.15; expected > 0.05")
+    check("the design-effect correction restores nominal at vial ICC 0.15",
+          fixed_15 <= 0.035,
+          f"type I was {fixed_15:.4f}; expected <= 0.035")
+    check("the correction does NOT disturb the i.i.d. case (vial_icc = 0)",
+          0.012 <= fixed_00 <= 0.035,
+          f"type I was {fixed_00:.4f}; expected within 0.012-0.035 of nominal 0.025")
+    print(f"         type I at ICC 0.15: {naive_15:.4f} uncorrected vs "
+          f"{fixed_15:.4f} corrected; ICC 0.00: {fixed_00:.4f}")
+
+    rec = CP.recommended_design(hs, ht, n_control_standard=50, n_treat=50,
+                                n_sim=400, seed=1)
+    check("a recommendation made WITHOUT an ICC says so on the number itself",
+          (rec.get("clustering_accounted_for") is False)
+          and ("CAVEAT" in str(rec.get("verdict", ""))),
+          f"clustering_accounted_for={rec.get('clustering_accounted_for')}, "
+          f"caveat present={'CAVEAT' in str(rec.get('verdict',''))}")
+
+
 def main() -> int:
     print("=" * 78)
     print("VALIDATION: modules/control_prior.py  (robust MAP historical controls)")
@@ -379,6 +444,7 @@ def main() -> int:
     test_F_self_limiting_under_conflict()
     test_G_operating_characteristics()
     test_H_recommended_design()
+    test_J_the_vial_is_the_unit()
 
     print("\n" + "=" * 78)
     if FAILURES:

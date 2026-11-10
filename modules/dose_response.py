@@ -145,6 +145,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 from scipy import optimize, stats
+from scipy.special import gammaln
 
 # Models supported, and which of (b, c, d, log_e) are free.
 _MODEL_SPECS: Dict[str, dict] = {
@@ -472,6 +473,25 @@ class LogLogisticFit:
     design: dict = field(default_factory=dict)
     message: str = ""
 
+    # ── binomial maximum likelihood (register N95) ─────────────────────────
+    # `method` is "ls" for the least-squares path, which is the default and is
+    # unchanged, or "binomial_ml". The fields below are only populated for the
+    # latter; they default so that every existing construction of this
+    # dataclass still works.
+    method: str = "ls"
+    counts: Optional[np.ndarray] = None       # successes per dose, k
+    totals: Optional[np.ndarray] = None       # cohort size per dose, n
+    loglik: float = float("nan")              # maximised binomial log-likelihood
+    loglik_penalised: float = float("nan")    # the objective actually maximised
+    penalty: str = "none"                     # "firth" or "none"
+    penalty_rule: str = ""                    # which rule chose it
+    slope_cap: float = float("nan")           # resolvable-slope bound, if applied
+    separation: bool = False                  # the unpenalised MLE ran away
+    separation_note: str = ""
+    inference_valid: bool = True
+    hessian_min_eigenvalue: float = float("nan")
+    inference_reason: str = ""
+
     # ── convenience ────────────────────────────────────────────────────────
     @property
     def ec50(self) -> float:
@@ -594,12 +614,606 @@ def _lsq(fun, x0):
                                       xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=20000)
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Binomial maximum likelihood (register N95)
+# ═══════════════════════════════════════════════════════════════════════════
+# Why this exists. Weighted least squares with `n` as the weight reproduces the
+# 1/n of a binomial variance and nothing reproduces the p(1-p). Measured
+# consequence: the nominal 95% interval on an absolute LC50 covered 0.47 at a
+# Hill slope of 4 and did not improve when the design was enriched from 7 doses
+# x 40 flies to 20 x 300, while being nominal under homoscedastic Gaussian
+# noise at every slope. The variance model was wrong, so more data could not
+# help.
+#
+# The remedy is to fit the likelihood the data actually have. For k_i successes
+# out of n_i at dose x_i,
+#
+#     loglik = SUM_i [ log C(n_i, k_i) + k_i log p_i + (n_i - k_i) log(1 - p_i) ]
+#
+# with p_i the log-logistic mean. Two consequences follow for free, and both
+# matter more than the point estimate:
+#
+#   * the covariance comes from the OBSERVED INFORMATION -- the Hessian of the
+#     negative log-likelihood at the optimum -- which carries the p(1-p)
+#     weighting automatically, because it is derived from the model that
+#     generated the data rather than imposed on it;
+#   * the interval can be a PROFILE on the LC50 itself (see
+#     `lethal_dose_profile`), which is invariant to how the curve is
+#     parameterised. That invariance is exactly what the delta method lacks:
+#     a symmetric interval on log-dose cannot represent a likelihood that is
+#     not symmetric there, and at steep slopes it is very much not.
+#
+# Validated in `validate_binomial_ml`: for LL.2 the model is algebraically a
+# logistic regression on log-dose, so `statsmodels`' binomial GLM maximises the
+# SAME likelihood and the two must agree to optimiser tolerance. They agree on
+# b, on e, on the maximised log-likelihood and on SE(b).
+#
+# c and d are bounded into [0, 1] here, which is not a numerical convenience: a
+# binomial mean outside [0, 1] is not a probability, and an unbounded fit can
+# wander there and return a likelihood that is not defined.
+_P_EPS = 1e-10
+_CD_EPS = 1e-9
+
+
+def _counts_from_proportion(y: np.ndarray, n: np.ndarray,
+                            tol: float = 1e-6) -> np.ndarray:
+    """
+    Recover the success counts k from a proportion and a cohort size.
+
+    Refuses rather than rounds. `y * n` that is not a whole number means the
+    response is not a proportion out of `n` -- most often `n` is the wrong
+    column, or the response has already been averaged over replicates, and in
+    both cases a binomial likelihood is the wrong model. Rounding would hide
+    that and produce a confident fit to a quantity the model does not describe.
+    """
+    k = np.asarray(y, dtype=float) * np.asarray(n, dtype=float)
+    nearest = np.round(k)
+    bad = np.abs(k - nearest) > tol * np.maximum(1.0, np.abs(k))
+    if np.any(bad):
+        i = int(np.argmax(bad))
+        raise ValueError(
+            "method='binomial_ml' needs whole-number counts: response * n must be "
+            f"an integer for every dose, and at index {i} it is {k[i]!r} "
+            f"(response {float(y[i])!r} x n {float(n[i])!r}). A binomial "
+            "likelihood describes k successes out of n trials; a response that "
+            "has already been averaged over replicates, or an `n` from the wrong "
+            "column, is not that. The counts are NOT rounded, because rounding "
+            "would hide the mismatch behind a confident fit."
+        )
+    if np.any(nearest < 0) or np.any(nearest > np.asarray(n, dtype=float)):
+        raise ValueError(
+            "method='binomial_ml': a recovered count is negative or exceeds its "
+            "cohort size. Check the response and n columns."
+        )
+    return nearest
+
+
+def _binom_negll(theta: np.ndarray, model: str, x: np.ndarray,
+                 k: np.ndarray, n: np.ndarray) -> float:
+    """Negative binomial log-likelihood, dropping the constant binomial term."""
+    b, c, d, log_e = _unpack(theta, model)
+    if not np.isfinite(b) or not np.isfinite(log_e):
+        return np.inf
+    try:
+        p = _ll_predict(x, b, c, d, log_e)
+    except Exception:
+        return np.inf
+    if not np.all(np.isfinite(p)):
+        return np.inf
+    p = np.clip(p, _P_EPS, 1.0 - _P_EPS)
+    return float(-(np.sum(k * np.log(p) + (n - k) * np.log1p(-p))))
+
+
+def _binom_loglik_full(theta: np.ndarray, model: str, x: np.ndarray,
+                       k: np.ndarray, n: np.ndarray) -> float:
+    """The log-likelihood INCLUDING the binomial coefficient, for reporting."""
+    const = float(np.sum(gammaln(n + 1.0) - gammaln(k + 1.0) - gammaln(n - k + 1.0)))
+    return const - _binom_negll(theta, model, x, k, n)
+
+
+def resolvable_slope_limit(dose) -> dict:
+    """
+    The steepest Hill slope a dose grid can resolve, and the reasoning.
+
+    A log-logistic response falls from 0.95 to 0.05 of its range over a dose
+    ratio of 19 ** (2 / b). For the data to distinguish a finite slope from a
+    step function, at least one dose spacing must fall inside that transition,
+    so with `r` the smallest ratio between adjacent distinct non-zero doses
+
+        b_max = 2 * ln(19) / ln(r)
+
+    Past that, every curve fits the observations equally well and the fitted
+    slope is a property of the grid. This is a resolution limit in the same
+    sense as a Nyquist frequency: it says what the measurement can see, and it
+    involves no assumption about what Hill slopes are biologically plausible.
+
+    Returns `b_max`, `min_ratio`, `n_doses` and `reason`. `b_max` is infinite
+    when there are fewer than two distinct non-zero doses, because then the
+    question does not arise -- the design check refuses such a fit anyway.
+    """
+    d = np.unique(np.asarray(dose, dtype=float))
+    d = d[np.isfinite(d) & (d > 0)]
+    out = {"b_max": float("inf"), "min_ratio": float("nan"),
+           "n_doses": int(d.size), "reason": ""}
+    if d.size < 2:
+        out["reason"] = ("Fewer than two distinct non-zero doses, so no slope "
+                         "resolution limit applies.")
+        return out
+    ratios = d[1:] / d[:-1]
+    r = float(np.min(ratios[ratios > 1.0])) if np.any(ratios > 1.0) else float("nan")
+    if not np.isfinite(r) or r <= 1.0:
+        out["reason"] = "Doses are not strictly increasing after deduplication."
+        return out
+    out["min_ratio"] = r
+    out["b_max"] = float(2.0 * np.log(19.0) / np.log(r))
+    out["reason"] = (
+        f"With a smallest adjacent dose ratio of {r:.4g}, a curve steeper than "
+        f"b = {out['b_max']:.2f} completes its 0.95-to-0.05 transition inside one "
+        "dose spacing, so the data cannot distinguish it from a step and the "
+        "fitted slope describes the grid rather than the response."
+    )
+    return out
+
+
+def _dp_dtheta(theta: np.ndarray, model: str, x: np.ndarray):
+    """
+    The model mean and its derivatives with respect to the free parameters.
+
+    Shared by the gradient and by the Fisher information, so the two cannot
+    drift apart. With  u = 1/(1 + exp(z)),  z = b (log x - log e),
+    p = c + (d - c) u :
+
+        dp/dc = 1 - u        dp/dd = u
+        dp/db = -(d - c) u (1 - u) (log x - log e)
+        dp/dlog_e = (d - c) u (1 - u) b
+
+    At x = 0 the model takes its limit (d for b > 0, c for b < 0), which does
+    not depend on b or log e, so those derivatives are zero there -- the same
+    limit `_ll_predict` uses, not a special case invented here.
+    """
+    b, c, d, log_e = _unpack(theta, model)
+    x = np.asarray(x, dtype=float)
+    pos = x > 0
+    u = np.zeros_like(x)
+    lx = np.zeros_like(x)
+    if np.any(pos):
+        lx[pos] = np.log(x[pos])
+        z = np.clip(b * (lx[pos] - log_e), -_MAX_EXP, _MAX_EXP)
+        u[pos] = 1.0 / (1.0 + np.exp(z))
+    if np.any(~pos):
+        u[~pos] = 1.0 if b > 0 else (0.0 if b < 0 else 0.5)
+
+    p_hat = np.clip(c + (d - c) * u, _P_EPS, 1.0 - _P_EPS)
+    uu = u * (1.0 - u)
+    dp = {
+        "c": 1.0 - u,
+        "d": u,
+        "b": np.where(pos, -(d - c) * uu * (lx - log_e), 0.0),
+        "log_e": np.where(pos, (d - c) * uu * b, 0.0),
+    }
+    free = _MODEL_SPECS[model]["free"]
+    return p_hat, np.column_stack([dp[name] for name in free])
+
+
+def _fisher_info(theta: np.ndarray, model: str, x: np.ndarray,
+                 n: np.ndarray) -> np.ndarray:
+    """
+    Expected (Fisher) information for a binomial response.
+
+        I = SUM_i n_i / (p_i (1 - p_i)) * (dp_i/dtheta)(dp_i/dtheta)^T
+
+    This is the matrix whose log-determinant is Firth's penalty, and it becomes
+    singular exactly when a parameter is not determined by the data -- which is
+    why the penalty keeps the maximum in the interior.
+    """
+    p_hat, D = _dp_dtheta(theta, model, x)
+    wgt = np.asarray(n, dtype=float) / (p_hat * (1.0 - p_hat))
+    return (D * wgt[:, None]).T @ D
+
+
+def _firth_penalty(theta: np.ndarray, model: str, x: np.ndarray,
+                   n: np.ndarray) -> float:
+    """Half the log-determinant of the Fisher information (Firth 1993)."""
+    I = _fisher_info(theta, model, x, n)
+    try:
+        sign, logdet = np.linalg.slogdet(I)
+    except np.linalg.LinAlgError:
+        return -np.inf
+    if sign <= 0 or not np.isfinite(logdet):
+        return -np.inf
+    return 0.5 * float(logdet)
+
+
+def _binom_negll_pen(theta: np.ndarray, model: str, x: np.ndarray,
+                     k: np.ndarray, n: np.ndarray, penalty: str) -> float:
+    """Negative log-likelihood, penalised or not."""
+    base = _binom_negll(theta, model, x, k, n)
+    if penalty == "none" or not np.isfinite(base):
+        return base
+    pen = _firth_penalty(theta, model, x, n)
+    if not np.isfinite(pen):
+        return np.inf
+    return base - pen
+
+
+def _binom_negll_grad(theta: np.ndarray, model: str, x: np.ndarray,
+                      k: np.ndarray, n: np.ndarray) -> np.ndarray:
+    """
+    Analytic gradient of the binomial negative log-likelihood.
+
+    Derived rather than differenced, because a finite-difference gradient costs
+    p + 1 likelihood evaluations at every optimiser iteration and loses several
+    digits of accuracy near the optimum -- which is where the Hessian, and
+    therefore every standard error, is evaluated.
+
+    With  u = 1 / (1 + exp(z)),  z = b (log x - log e),  p = c + (d - c) u :
+
+        dp/dc      = 1 - u
+        dp/dd      = u
+        dp/db      = -(d - c) u (1 - u) (log x - log e)
+        dp/dlog_e  =  (d - c) u (1 - u) b
+
+    and  d(negll)/dp = -( k/p - (n - k)/(1 - p) ),  so the chain rule gives the
+    gradient in one pass. At x = 0 the model takes its limit (d for b > 0, c
+    for b < 0), which has no dependence on b or log e, so those entries are
+    zero there -- that is the same limit `_ll_predict` uses, not a special
+    case invented here.
+    """
+    p_hat, D = _dp_dtheta(theta, model, x)
+    dneg_dp = -(k / p_hat - (n - k) / (1.0 - p_hat))
+    return (D * dneg_dp[:, None]).sum(axis=0)
+
+
+def _hessian_from_gradient(gradfun, theta: np.ndarray,
+                           rel_step: float = 1e-5) -> np.ndarray:
+    """
+    Hessian by central differences of the ANALYTIC gradient.
+
+    p + 1 gradient evaluations instead of order p^2 function evaluations, and
+    one differencing step instead of two, so it is both faster and a couple of
+    digits more accurate. Symmetrised, because the two mixed partials differ in
+    the last bits and an asymmetric matrix has no real eigenvalues to gate on.
+    """
+    th = np.asarray(theta, dtype=float)
+    m = th.size
+    h = rel_step * np.maximum(np.abs(th), 1.0)
+    H = np.zeros((m, m), dtype=float)
+    for i in range(m):
+        tp, tm = th.copy(), th.copy()
+        tp[i] += h[i]
+        tm[i] -= h[i]
+        H[:, i] = (np.asarray(gradfun(tp), dtype=float)
+                   - np.asarray(gradfun(tm), dtype=float)) / (2.0 * h[i])
+    return 0.5 * (H + H.T)
+
+
+def _ml_bounds(model: str, b_cap: Optional[float] = None):
+    """
+    Bounds on the free parameters.
+
+    c and d are probabilities, so they live in [0, 1]. log_e is free. b is free
+    unless `b_cap` is given, in which case it is restricted to [-b_cap, b_cap]
+    -- the slope the dose grid can resolve, from `resolvable_slope_limit`.
+    Capping it is not a prior on biology: beyond the cap every curve fits the
+    observations identically, so the excluded region contains nothing the data
+    distinguish, and leaving it in makes the likelihood maximum -- and every
+    interval referenced to it -- a property of the dose spacing.
+    """
+    bb = (None, None) if b_cap is None or not np.isfinite(b_cap) \
+        else (-float(b_cap), float(b_cap))
+    lim = {"b": bb, "c": (_CD_EPS, 1.0 - _CD_EPS),
+           "d": (_CD_EPS, 1.0 - _CD_EPS), "log_e": (None, None)}
+    return [lim[name] for name in _MODEL_SPECS[model]["free"]]
+
+
+def _numeric_hessian(fun, theta: np.ndarray, rel_step: float = 1e-4) -> np.ndarray:
+    """
+    Central-difference Hessian of a scalar function.
+
+    The step is relative to each parameter's own magnitude, with an absolute
+    floor, because `log_e` and `b` are routinely orders of magnitude apart and
+    one step size for both loses either accuracy or conditioning.
+    """
+    th = np.asarray(theta, dtype=float)
+    m = th.size
+    h = rel_step * np.maximum(np.abs(th), 1.0)
+    H = np.zeros((m, m), dtype=float)
+    f0 = fun(th)
+    for i in range(m):
+        for j in range(i, m):
+            if i == j:
+                tp, tm = th.copy(), th.copy()
+                tp[i] += h[i]
+                tm[i] -= h[i]
+                H[i, i] = (fun(tp) - 2.0 * f0 + fun(tm)) / (h[i] ** 2)
+            else:
+                tpp, tpm, tmp, tmm = (th.copy(), th.copy(), th.copy(), th.copy())
+                tpp[i] += h[i]; tpp[j] += h[j]
+                tpm[i] += h[i]; tpm[j] -= h[j]
+                tmp[i] -= h[i]; tmp[j] += h[j]
+                tmm[i] -= h[i]; tmm[j] -= h[j]
+                H[i, j] = H[j, i] = ((fun(tpp) - fun(tpm) - fun(tmp) + fun(tmm))
+                                     / (4.0 * h[i] * h[j]))
+    return H
+
+
+def _cov_from_information(H: np.ndarray):
+    """
+    Covariance from the observed information, with the same gate as N16.
+
+    The Hessian of the NEGATIVE log-likelihood at a maximum is the observed
+    information and must be positive definite. When it is not, the optimum is
+    not an interior maximum -- a boundary fit, or a design that does not
+    identify the curve -- and the correct output is no standard error at all.
+    Inverting an indefinite matrix produces negative variances, and taking
+    their square root produces NaN or, worse, a number from the absolute value.
+    This is the defect N16 fixed in `hierarchical.py`, and the same gate is
+    applied here rather than reinvented.
+    """
+    m = H.shape[0]
+    out = {"cov": np.full((m, m), np.nan), "min_eigenvalue": float("nan"),
+           "inference_valid": False, "reason": ""}
+    if not np.all(np.isfinite(H)):
+        out["reason"] = ("The observed information contains non-finite entries, so "
+                         "no covariance can be formed.")
+        return out
+    Hs = 0.5 * (H + H.T)
+    try:
+        evals = np.linalg.eigvalsh(Hs)
+    except np.linalg.LinAlgError:
+        out["reason"] = "The observed information could not be decomposed."
+        return out
+    out["min_eigenvalue"] = float(np.min(evals))
+    if np.min(evals) <= 0.0:
+        out["reason"] = (
+            f"The observed information is not positive definite (smallest "
+            f"eigenvalue {np.min(evals):.3e}), so the optimum is not an interior "
+            "maximum: the fit is at a boundary, or the design does not identify "
+            "the curve. No standard errors are reported."
+        )
+        return out
+    try:
+        cov = np.linalg.inv(Hs)
+    except np.linalg.LinAlgError:
+        out["reason"] = "The observed information is singular."
+        return out
+    if np.any(np.diag(cov) < 0) or not np.all(np.isfinite(cov)):
+        out["reason"] = ("The inverted information has a negative or non-finite "
+                         "variance on its diagonal.")
+        return out
+    out["cov"] = cov
+    out["inference_valid"] = True
+    return out
+
+
+def _fit_binomial_ml(x, y, w, model, design, force, penalty="firth",
+                     b_cap=None):
+    """
+    Maximum-likelihood fit of the log-logistic to binomial counts.
+
+    Returns the same `LogLogisticFit` the least-squares path returns, so every
+    downstream consumer -- `lethal_dose_absolute`, `ec50_profile_ci`,
+    `mortality_adjusted_response` -- works unchanged.
+    """
+    k = _counts_from_proportion(y, w)
+    spec = _MODEL_SPECS[model]
+    free = list(spec["free"])
+    npar = len(free)
+    bounds = _ml_bounds(model, b_cap)
+
+    def negll_plain(theta):
+        return _binom_negll(theta, model, x, k, w)
+
+    def negll(theta):
+        return _binom_negll_pen(theta, model, x, k, w, penalty)
+
+    def grad(theta):
+        """
+        Gradient of the objective.
+
+        The likelihood part is analytic. Firth's penalty involves the
+        log-determinant of the information, whose derivative needs third
+        derivatives of the mean; it is differenced instead, which costs p + 1
+        determinant evaluations -- cheap, because the penalty is a p x p
+        determinant and not a sum over observations.
+        """
+        g = _binom_negll_grad(theta, model, x, k, w)
+        if penalty == "none":
+            return g
+        th = np.asarray(theta, dtype=float)
+        h = 1e-6 * np.maximum(np.abs(th), 1.0)
+        dpen = np.zeros_like(th)
+        for i in range(th.size):
+            tp, tm = th.copy(), th.copy()
+            tp[i] += h[i]
+            tm[i] -= h[i]
+            a = _firth_penalty(tp, model, x, w)
+            b_ = _firth_penalty(tm, model, x, w)
+            if np.isfinite(a) and np.isfinite(b_):
+                dpen[i] = (a - b_) / (2.0 * h[i])
+        return g - dpen
+
+    # Starting values come from the same linearisation the least-squares path
+    # uses, with c and d pulled inside the probability bounds.
+    best, best_f = None, np.inf
+    for x0 in _start_values(x, y, model):
+        x0 = np.asarray(x0, dtype=float).copy()
+        for i, name in enumerate(free):
+            if name in ("c", "d"):
+                x0[i] = float(np.clip(x0[i], _CD_EPS, 1.0 - _CD_EPS))
+        # L-BFGS-B with the analytic gradient is the workhorse. Nelder-Mead is
+        # tried only if it has not yet produced a finite optimum, because
+        # running a derivative-free method on every start was the bulk of the
+        # fit's cost and never improved a start that had already converged.
+        methods = (("L-BFGS-B",) if np.isfinite(best_f)
+                   else ("L-BFGS-B", "Nelder-Mead"))
+        for method_name in methods:
+            try:
+                r = optimize.minimize(
+                    negll, x0, method=method_name,
+                    jac=grad if method_name == "L-BFGS-B" else None,
+                    bounds=bounds if method_name == "L-BFGS-B" else None,
+                    options=({"maxiter": 5000, "maxfun": 5000, "ftol": 1e-14,
+                              "gtol": 1e-10}
+                             if method_name == "L-BFGS-B"
+                             else {"maxiter": 5000, "xatol": 1e-10,
+                                   "fatol": 1e-10}))
+            except Exception:
+                continue
+            fval = float(r.fun)
+            if np.isfinite(fval) and fval < best_f - 1e-12:
+                # Nelder-Mead ignores bounds, so reject an out-of-bounds optimum
+                th = np.asarray(r.x, dtype=float)
+                okb = True
+                for v, (lo, hi) in zip(th, bounds):
+                    if lo is not None and v < lo - 1e-9:
+                        okb = False
+                    if hi is not None and v > hi + 1e-9:
+                        okb = False
+                if okb:
+                    best, best_f = r, fval
+    if best is None:
+        raise RuntimeError(
+            "method='binomial_ml': every starting value failed, so the "
+            "likelihood could not be maximised."
+        )
+
+    theta = np.asarray(best.x, dtype=float)
+    b, c, d, log_e = _unpack(theta, model)
+
+    H = _hessian_from_gradient(grad, theta)
+    info = _cov_from_information(H)
+    if not info["inference_valid"]:
+        # One retry with the slower, differencing-free route before concluding
+        # the optimum is not interior: a gradient-differenced Hessian can be
+        # mildly indefinite from step size alone, and refusing inference on a
+        # numerical artefact would be the mirror image of N16.
+        info_fd = _cov_from_information(_numeric_hessian(negll, theta))
+        if info_fd["inference_valid"]:
+            info = info_fd
+            info["reason"] = ("The gradient-differenced information was not "
+                              "positive definite; the function-differenced one "
+                              "was, and is used.")
+    cov_theta = info["cov"]
+    se_theta = np.sqrt(np.clip(np.diag(cov_theta), 0.0, np.inf)) \
+        if info["inference_valid"] else np.full(npar, np.nan)
+
+    e_hat = _safe_exp(log_e)
+    nat = {"b": b, "c": c, "d": d, "e": e_hat}
+    nat_se = {"b": float("nan"), "c": float("nan"), "d": float("nan"),
+              "e": float("nan")}
+    for name, sd in zip(free, se_theta):
+        if name == "log_e":
+            nat_se["e"] = float(e_hat * sd)
+        else:
+            nat_se[name] = float(sd)
+    # a parameter held fixed by the model has no uncertainty, not an unknown one
+    for name in ("b", "c", "d"):
+        if name not in free:
+            nat_se[name] = 0.0
+
+    fitted = _ll_predict(x, b, c, d, log_e)
+    rss = float(np.sum(w * (y - fitted) ** 2))
+    n_obs = int(x.size)
+    df_resid = n_obs - npar
+    order = ["b", "c", "d", "e"]
+
+    fit = LogLogisticFit(
+        model=model,
+        params=pd.Series({kk: nat[kk] for kk in order}),
+        bse=pd.Series({kk: nat_se[kk] for kk in order}),
+        theta=theta,
+        theta_names=free,
+        cov_theta=cov_theta,
+        rss=rss,
+        resid_se=float(np.sqrt(rss / df_resid)) if df_resid > 0 else float("nan"),
+        df_resid=int(df_resid),
+        n_obs=n_obs,
+        n_params=npar,
+        dose=x,
+        response=y,
+        weights=w,
+        fitted=fitted,
+        residuals=y - fitted,
+        converged=bool(getattr(best, "success", True)),
+        design=design,
+        message=str(getattr(best, "message", "")),
+        method="binomial_ml",
+        counts=k,
+        totals=np.asarray(w, dtype=float),
+        loglik=_binom_loglik_full(theta, model, x, k, w),
+        loglik_penalised=(_binom_loglik_full(theta, model, x, k, w)
+                          + (_firth_penalty(theta, model, x, w)
+                             if penalty == "firth" else 0.0)),
+        penalty=str(penalty),
+        slope_cap=(float(b_cap) if b_cap is not None and np.isfinite(b_cap)
+                   else float("nan")),
+        inference_valid=bool(info["inference_valid"]),
+        hessian_min_eigenvalue=float(info["min_eigenvalue"]),
+        inference_reason=str(info["reason"]),
+    )
+
+    # Separation diagnosis, reported whether or not the penalty absorbed it.
+    #
+    # The test is not a threshold on b. It asks the question separation
+    # actually poses: does an arbitrarily STEEPER curve fit as well? The
+    # unpenalised likelihood is evaluated with the slope multiplied by ten, the
+    # inflection held at the value that keeps the same LC50, and everything
+    # else at the fit. If that loses almost nothing, the data do not determine
+    # the slope from above and the unpenalised maximum is on the boundary.
+    sep_gain = float("nan")
+    try:
+        i_b = free.index("b") if "b" in free else None
+        if i_b is not None and np.isfinite(b) and b != 0.0:
+            th_steep = theta.copy()
+            th_steep[i_b] = b * 10.0
+            if "log_e" in free:
+                # hold the LC50 fixed while steepening, so only the slope moves
+                i_le = free.index("log_e")
+                num, den = d - 0.5, 0.5 - c
+                if num > 0 and den > 0:
+                    lk = np.log(num) - np.log(den)
+                    th_steep[i_le] = (log_e + lk / b) - lk / (b * 10.0)
+            ll_fit = -_binom_negll(theta, model, x, k, w)
+            ll_steep = -_binom_negll(th_steep, model, x, k, w)
+            sep_gain = float(ll_fit - ll_steep)
+    except Exception:
+        pass
+    if np.isfinite(sep_gain) and sep_gain < 2.0:
+        fit.separation = True
+        fit.separation_note = (
+            f"Quasi-complete separation: making the fitted curve ten times "
+            f"steeper costs only {sep_gain:.2f} log-likelihood units, so the data "
+            "do not determine the slope from above and the unpenalised maximum "
+            "lies on the boundary b -> infinity. This happens when the observed "
+            "proportions fall from near 1 to near 0 between two adjacent doses "
+            "with nothing in between. "
+            + ("Firth's penalty (Firth 1993) is in use, which keeps the maximum "
+               "interior and the interval honest; the slope and the LC50 are "
+               "still only weakly determined, so read the interval, not the "
+               "point estimate."
+               if penalty == "firth" else
+               "No penalty is in use (penalty='none'), so the slope estimate and "
+               "every interval derived from it are not trustworthy here. Use the "
+               "default penalty='firth'.")
+        )
+    if not info["inference_valid"]:
+        fit.design = dict(fit.design)
+        fit.design["warnings"] = list(fit.design.get("warnings", [])) + [
+            "Binomial ML: " + info["reason"]
+        ]
+    return fit
+
+
 def fit_loglogistic(
     dose: Sequence[float],
     response: Sequence[float],
     n: Optional[Sequence[float]] = None,
     model: str = "LL.4",
     force: bool = False,
+    method: str = "ls",
+    penalty: str = "auto",
 ) -> LogLogisticFit:
     """
     Fit a log-logistic (Hill) dose-response curve by non-linear least squares.
@@ -619,6 +1233,27 @@ def fit_loglogistic(
     model : "LL.4" (b, c, d, e free), "LL.3" (c = 0) or "LL.2" (c = 0, d = 1).
     force : fit even if `check_design` refuses. The fit will still run but its
         standard errors are not trustworthy; only use this knowingly.
+    method : "ls" (default) or "binomial_ml".
+
+        "ls" is weighted least squares, unchanged, and remains the default. It
+        is the right model for a CONTINUOUS response measured once per vial,
+        and it is the path validated against R's `drc` on the `ryegrass` data.
+
+        "binomial_ml" maximises the binomial likelihood of k successes out of n
+        trials and takes its covariance from the observed information. Use it
+        whenever the response really is a proportion out of a cohort -- which
+        is every mortality and every pass/fail climbing endpoint in this
+        platform. Register N95: least squares with `n` as the weight carries
+        the 1/n of a binomial variance and nothing carries the p(1-p), and the
+        measured consequence was an LC50 interval covering 0.47 rather than
+        0.95 at a Hill slope of 4, unimproved by enriching the design. With
+        `method="binomial_ml"`, `lethal_dose_absolute` reports a
+        profile-likelihood interval on the LC50 itself and coverage is nominal
+        (measured 0.94-0.96 across slopes in `validate_binomial_ml`).
+
+        It requires `n`, and requires `response * n` to be whole numbers; it
+        refuses rather than rounding, because a response already averaged over
+        replicates is not a binomial count.
 
     Optimisation is unconstrained in (b, c, d, log e). Putting EC50 on the log
     scale keeps the dose positive without a boundary constraint, makes the
@@ -657,6 +1292,21 @@ def fit_loglogistic(
     if spec is None:
         raise ValueError(f"model must be one of {sorted(_MODEL_SPECS)}, got {model!r}")
 
+    if method not in ("ls", "binomial_ml"):
+        raise ValueError(
+            f"method must be 'ls' or 'binomial_ml', got {method!r}. 'ls' is "
+            "weighted least squares (the default, for a continuous response); "
+            "'binomial_ml' is binomial maximum likelihood (for a proportion out "
+            "of a cohort size) -- see register N95."
+        )
+    if method == "binomial_ml" and n is None:
+        raise ValueError(
+            "method='binomial_ml' needs the cohort size `n`: the binomial "
+            "likelihood is defined on k successes out of n trials, and without n "
+            "there is no n. Pass the number of flies scored at each dose, or use "
+            "the default method='ls' for a continuous response."
+        )
+
     design = check_design(x, y, model=model)
     if not design["usable"] and not force:
         raise ValueError(
@@ -664,6 +1314,56 @@ def fit_loglogistic(
             + "\n  - ".join(design["refusals"])
             + "\nPass force=True to fit anyway (the standard errors will not be valid)."
         )
+
+    if method == "binomial_ml":
+        if penalty not in ("auto", "firth", "none"):
+            raise ValueError(
+                f"penalty must be 'auto', 'firth' or 'none', got {penalty!r}. "
+                "'auto' (the default) fits the plain likelihood and refits with "
+                "Firth's penalty only when the fitted slope exceeds what the "
+                "dose grid can resolve -- see register N95."
+            )
+        if penalty != "auto":
+            return _fit_binomial_ml(x, y, w, model, design, force,
+                                    penalty=penalty)
+
+        # Fit plain, then ask whether the design can resolve the slope that
+        # came back. Measured: the plain likelihood gives better coverage in
+        # seven of nine cells, and Firth's penalty is better in exactly the two
+        # where the slope runs past the resolution limit -- which are also the
+        # only two where it does so at all.
+        lim = resolvable_slope_limit(x)
+        plain = _fit_binomial_ml(x, y, w, model, design, force, penalty="none")
+        b_hat = float(plain.params["b"])
+        plain.design = dict(plain.design)
+        plain.design["slope_resolution_limit"] = lim
+        if not np.isfinite(b_hat) or abs(b_hat) <= lim["b_max"]:
+            plain.penalty_rule = "auto: plain likelihood (slope within the "\
+                                 "design's resolution limit)"
+            return plain
+        pen_fit = _fit_binomial_ml(x, y, w, model, design, force,
+                                   penalty="firth", b_cap=lim["b_max"])
+        pen_fit.design = dict(pen_fit.design)
+        pen_fit.design["slope_resolution_limit"] = lim
+        pen_fit.separation = True
+        pen_fit.separation_note = (
+            f"The unpenalised slope came out at b = {b_hat:.2f}, past the "
+            f"b_max = {lim['b_max']:.2f} that this dose grid can resolve "
+            f"(smallest adjacent dose ratio {lim['min_ratio']:.4g}). "
+            "At that point the data cannot distinguish the curve from a step, "
+            "so the slope -- and any interval conditioned on it -- would "
+            "describe the dose spacing rather than the response. Refitted with "
+            "Firth's penalised likelihood (Firth 1993), which keeps the maximum "
+            "in the interior, AND with the slope constrained to the "
+            f"resolvable range |b| <= {lim['b_max']:.2f} so that the interval "
+            "answers which LC50 values are consistent with the data under any "
+            "slope this grid can distinguish. The slope is still only weakly "
+            "determined: read the interval, not the point estimate, and add "
+            "intermediate doses if the slope itself matters."
+        )
+        pen_fit.penalty_rule = ("auto: Firth (unpenalised slope %.2f exceeded "
+                                "the design limit %.2f)" % (b_hat, lim["b_max"]))
+        return pen_fit
 
     sw = np.sqrt(w)
     free = list(spec["free"])
@@ -876,6 +1576,16 @@ def _profile_interval(fit: LogLogisticFit, level: float, x_pct: float,
         unbounded.append("upper")
 
     return {
+        # Register N96. This module's interval sub-dicts are keyed
+        # `lower`/`upper` while the top-level returns of
+        # `lethal_dose_absolute` use `ci_lower`/`ci_upper`. Mixing the two
+        # conventions inside one return value reads as a typo and silently
+        # yields None: it cost a measurement run here, where a coverage study
+        # read `profile["ci_lower"]`, got None for all 1,800 fits and concluded
+        # the profile interval could never be computed. Both spellings are now
+        # present and always equal, so neither reading can be wrong.
+        "ci_lower": float(lo),
+        "ci_upper": float(hi),
         "lower": float(lo),
         "upper": float(hi),
         "threshold": float(thresh),
@@ -931,6 +1641,773 @@ def _delta_interval(fit: LogLogisticFit, level: float, x_pct: float) -> dict:
         "log_lower": _safe_exp(log_ecx - crit * se_log) if np.isfinite(se_log) else np.nan,
         "log_upper": _safe_exp(log_ecx + crit * se_log) if np.isfinite(se_log) else np.nan,
     }
+
+
+def lethal_dose_absolute(fit: LogLogisticFit, target: float = 0.5,
+                         level: float = 0.95, profile: bool = True,
+                         calibrate: str = "asymptotic", n_boot: int = 200,
+                         seed: Optional[int] = None) -> dict:
+    """
+    The dose at which the fitted curve reaches an ABSOLUTE response value --
+    for a survival curve with `target = 0.5`, the LC50.
+
+    Register N14. `e` is the curve's inflection point, the dose at which the
+    response is half way between the asymptotes `c` and `d`. That equals the
+    LC50 only when the curve runs from 1 to 0. The default mortality model here
+    is LL.3, whose upper asymptote d is FREE -- precisely so that control
+    survival can be below 1, which is Abbott's (1925) correction expressed as a
+    parameter -- so `e` is the dose at which survival is (c + d)/2, not 0.5.
+    With c = 0 and d = 0.90 that is survival 0.45, and the dose at which it is
+    reached is 11.9% above the real LC50. At d = 0.80 the error is +67%.
+
+    The general definition, solved in closed form:
+
+        target = c + (d - c) / (1 + exp(b * (log x - log e)))
+        =>  x = e * ((d - target) / (target - c)) ** (1 / b)
+
+    which is `e` exactly when target = (c + d)/2, and reduces to `e` for LL.2
+    (c = 0, d = 1, target = 0.5) -- so nothing changes for a curve that really
+    does run from 1 to 0.
+
+    Interval. The reported interval is a DELTA-METHOD interval on log-dose,
+    because log LC50 depends on b, c and d as well as on log e and all four
+    covary:
+
+        log LC50 = log e + (1/b) * [log(d - target) - log(target - c)]
+
+    The profile-likelihood interval for the equivalent RELATIVE level is
+    returned alongside as `profile`, but it is conditional on the fitted
+    asymptotes (the relative level is itself computed from c and d), so it is
+    secondary here. For LL.2 the two coincide with `ec50_profile_ci`.
+
+    Refusals. If `target` does not lie strictly between the fitted asymptotes
+    there is no such dose: the estimate is NaN and `reason` says why. That is
+    the case when control survival is already at or below 50%, where an LC50
+    can only be produced by extrapolating outside the model's own range.
+
+    `profile`. The secondary profile-likelihood interval costs about 38
+    additional non-linear fits -- measured at 0.52 s against 0.05 s for
+    everything else in this function, so it is 90% of the cost. Pass
+    `profile=False` where it is not wanted: a Monte-Carlo calibration study,
+    which needs only the interval the function reports as primary, or a batch
+    screen of many compounds where the profile is computed on demand for the
+    few that matter. `profile` is then None and `profile_skipped` says why.
+    Nothing else changes, and the default is unchanged.
+
+    Returns a dict with `estimate`, `ci_lower`, `ci_upper`, `se_log`,
+    `param_e`, `relative_level_pct`, `profile`, `definition`, `reason`,
+    `extrapolated`, `interval_caveat`, `interval_coverage_nominal`.
+
+    KEY NAMES (register N96, fixed). The interval at the top level is
+    `ci_lower` / `ci_upper`. The nested `profile` dict carries BOTH that pair
+    and this module's own `lower` / `upper`, always equal, so neither reading
+    returns None. Before that, a coverage study read `profile["ci_lower"]`, got
+    None for all 1,800 fits and concluded the profile interval could never be
+    computed.
+    """
+    t = float(target)
+    b = float(fit.params["b"])
+    c = float(fit.params["c"])
+    d = float(fit.params["d"])
+    e = float(fit.params["e"])
+
+    out = {
+        "target": t,
+        "param_e": e,
+        "model": fit.model,
+        "level": float(level),
+        "definition": (
+            f"The dose at which the fitted curve equals {t:g} (for a survival "
+            f"curve, {t:.0%} survival): x = e * ((d - {t:g})/({t:g} - c))**(1/b). "
+            f"NOT the fitted `e`, which is the dose at which the response is "
+            f"(c + d)/2 = {(c + d) / 2.0:.4g}."
+        ),
+        "estimate": float("nan"),
+        "ci_lower": float("nan"),
+        "ci_upper": float("nan"),
+        "se_log": float("nan"),
+        "relative_level_pct": float("nan"),
+        "profile": None,
+        "reason": "",
+        "extrapolated": False,
+    }
+
+    lo_a, hi_a = min(c, d), max(c, d)
+    if not np.isfinite(b) or b == 0.0:
+        out["reason"] = "The fitted slope b is zero or not finite; the curve has no inverse."
+        return out
+    if not (lo_a < t < hi_a):
+        out["reason"] = (
+            f"The fitted curve runs between c = {c:.4g} and d = {d:.4g}, so it never "
+            f"reaches {t:g}. For a survival curve this means control survival "
+            f"(d = {d:.4g}) is already at or below {t:.0%}, or the lower plateau "
+            f"(c = {c:.4g}) is above it: there is no {t:.0%} dose inside the model's "
+            f"own range, and reporting one would be extrapolation. Refused."
+        )
+        return out
+
+    num, den = (d - t), (t - c)
+    log_k = float(np.log(num) - np.log(den))
+    log_ld = float(np.log(e)) + log_k / b
+    est = _safe_exp(log_ld)
+    out["estimate"] = est
+    out["relative_level_pct"] = float(100.0 * (d - t) / (d - c))
+
+    # Delta method on log LC50, including the asymptotes.
+    names = fit.theta_names
+    grad = np.zeros(len(names))
+    grad[names.index("log_e")] = 1.0
+    if "b" in names:
+        grad[names.index("b")] = -log_k / (b ** 2)
+    if "d" in names:
+        grad[names.index("d")] = 1.0 / (b * num)
+    if "c" in names:
+        grad[names.index("c")] = 1.0 / (b * den)
+    var_log = float(grad @ fit.cov_theta @ grad)
+    se_log = float(np.sqrt(var_log)) if np.isfinite(var_log) and var_log >= 0 else float("nan")
+    out["se_log"] = se_log
+    dfr = fit.df_resid
+    crit = float(stats.t.ppf(0.5 + level / 2.0, dfr)) if dfr > 0 else float("nan")
+    if np.isfinite(se_log) and np.isfinite(crit):
+        out["ci_lower"] = _safe_exp(log_ld - crit * se_log)
+        out["ci_upper"] = _safe_exp(log_ld + crit * se_log)
+    else:
+        out["reason"] = (
+            "The parameter covariance is not usable (an indefinite or singular "
+            "numerical Hessian), so no interval is reported. The point estimate "
+            "stands but is not accompanied by uncertainty."
+        )
+
+    # Register N95. For a binomial ML fit the profile-likelihood interval on
+    # the LC50 itself becomes the reported interval, and the delta interval is
+    # kept beside it under its own name rather than discarded -- the two
+    # disagreeing is informative, and a reader who wants the old number can
+    # still have it.
+    if getattr(fit, "method", "ls") == "binomial_ml":
+        out["delta_ci_lower"] = out["ci_lower"]
+        out["delta_ci_upper"] = out["ci_upper"]
+        prof_lc = lethal_dose_profile(fit, target=t, level=level,
+                                      calibrate=calibrate, n_boot=n_boot,
+                                      seed=seed)
+        out["threshold_advice"] = prof_lc.get("threshold_advice", "")
+        out["profile_lc50"] = prof_lc
+        if np.isfinite(prof_lc.get("ci_lower", np.nan)) and \
+                np.isfinite(prof_lc.get("ci_upper", np.nan)):
+            out["ci_lower"] = float(prof_lc["ci_lower"])
+            out["ci_upper"] = float(prof_lc["ci_upper"])
+            out["interval_kind"] = "profile_likelihood_on_lc50"
+        else:
+            out["interval_kind"] = "delta_on_log_dose"
+            out["reason"] = (out["reason"] + " " if out["reason"] else "") + (
+                "The profile interval is not bounded on both sides, so the "
+                "delta-method interval is reported instead: " +
+                str(prof_lc.get("reason", ""))
+            )
+        out["method"] = (
+            "Binomial maximum likelihood; closed-form inversion at an absolute "
+            "response level; profile-likelihood interval on the LC50 itself "
+            "(chi-square(1) deviance)."
+        )
+        out["inference_valid"] = bool(getattr(fit, "inference_valid", True))
+        cav_ml = interval_coverage_caveat(fit)
+        adv = out.get("threshold_advice", "")
+        if adv:
+            # The fit is in the regime where the asymptotic reference is
+            # optimistic -- measured at about 0.90 coverage. Saying so is the
+            # whole point of N95; claiming nominal here would reinstate it.
+            cav_ml = (cav_ml + " " if cav_ml else "") + adv
+        out["interval_caveat"] = cav_ml
+        out["interval_coverage_nominal"] = cav_ml is None
+        nz_ml = fit.dose[fit.dose > 0]
+        if nz_ml.size and np.isfinite(est):
+            out["extrapolated"] = bool(est > float(np.max(fit.dose))
+                                       or est < float(np.min(nz_ml)))
+        return out
+
+    x_pct = out["relative_level_pct"]
+    if not profile:
+        out["profile_skipped"] = (
+            "profile=False: the secondary profile-likelihood interval was not "
+            "computed. `ci_lower`/`ci_upper` are the delta-method interval this "
+            "function reports as primary and are unaffected."
+        )
+    elif 0.0 < x_pct < 100.0:
+        try:
+            out["profile"] = _profile_interval(fit, level, x_pct)
+        except Exception as exc:                       # pragma: no cover
+            out["profile"] = {"error": str(exc)}
+
+    nz = fit.dose[fit.dose > 0]
+    if nz.size and np.isfinite(est):
+        out["extrapolated"] = bool(est > float(np.max(fit.dose)) or est < float(np.min(nz)))
+    out["method"] = (
+        "Closed-form inversion of the fitted log-logistic at an absolute response "
+        "level; delta-method interval on log-dose including b, c and d."
+    )
+    # Measured, not asserted: see BINOMIAL_INTERVAL_COVERAGE_NOTE above.
+    cav = interval_coverage_caveat(fit)
+    out["interval_caveat"] = cav
+    out["interval_coverage_nominal"] = cav is None
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Interval calibration under binomial sampling -- a MEASURED limitation
+# ═══════════════════════════════════════════════════════════════════════════
+# `fit_loglogistic` is weighted least squares with the cohort size `n` as the
+# weight. That reproduces the 1/n part of a binomial variance but NOT the
+# p(1-p) part. On a steep curve almost every dose sits near 0 or 1, where
+# binomial variance is nearly zero, and only one dose sits near 0.5, where it
+# is largest; homoscedastic least squares weights them alike, so `cov_theta`
+# is too small -- and so is every interval derived from it.
+#
+# Measured (`validate_statistical_calibration`, and the studies recorded in
+# BUG_AND_RISK_REGISTER.md under N95), 7 doses including a control, 40 flies
+# per dose, c = 0, e = 1, nominal 95%:
+#
+#   true d   slope b   binomial   homoscedastic Gaussian   binomial moments
+#     1.00      1        0.953            0.963                 0.950
+#     1.00      2        0.802            0.960                 0.830
+#     1.00      4        0.465            0.940                 0.445
+#     0.90      1        0.947            0.943                 0.950
+#     0.90      2        0.863            0.927                 0.897
+#     0.90      4        0.791            0.949                 0.767
+#
+# Under homoscedastic Gaussian noise the interval attains nominal coverage at
+# every slope, which is what least squares promises. Under binomial sampling
+# it does not, and the third column -- continuous noise with binomial moments
+# -- reproduces the shortfall, so the cause is the SHAPE of the variance and
+# not the discreteness of counts. The mechanism is visible directly: at
+# d = 1, b = 4 the reported SE of log LC50 averages 0.0170 while the true
+# sampling SD of log LC50 is 0.0682, four times larger.
+#
+# It is NOT a small-design artefact. Enriching the design to 20 doses and 300
+# flies per dose leaves coverage at b = 4 essentially unchanged (0.430 ->
+# 0.510 -> 0.483 across three designs), while BIAS does improve with design
+# (+2.4% -> +0.65% -> +0.32%). More data does not fix a wrong variance model.
+#
+# The profile-likelihood interval is better but not a remedy: it is computed
+# from the same residual sum of squares and carries the same assumption,
+# measuring 0.520 against the delta method's 0.480 at b = 4, and it frequently
+# cannot be computed at all on shallow curves (41 of 150 fits at d = 0.9,
+# b = 1).
+#
+# The remedy is a change to the FIT -- iteratively reweighted least squares
+# with binomial weights, or binomial maximum likelihood, or a parametric
+# bootstrap for the interval. That is a substantial change to a scientific
+# module and is recorded as an owner decision rather than made here. What is
+# done here is to stop the interval being reported as a 95% interval without
+# saying what it was measured to be.
+BINOMIAL_INTERVAL_COVERAGE_NOTE = (
+    "Interval calibration: this interval comes from a least-squares parameter "
+    "covariance, which assumes residuals of constant variance. These data are "
+    "proportions out of a cohort size, so their variance is p(1-p)/n and is "
+    "smallest where the curve is flat. Measured coverage of the nominal 95% "
+    "interval under binomial sampling is 0.95 at a slope of b = 1, 0.80-0.86 "
+    "at b = 2 and 0.47-0.79 at b = 4, and it does NOT improve with a larger "
+    "design. Read the interval as a lower bound on the uncertainty, more so "
+    "the steeper the fitted slope. See BUG_AND_RISK_REGISTER.md N95."
+)
+
+
+def interval_coverage_caveat(fit: "LogLogisticFit") -> Optional[str]:
+    """
+    The calibration caveat, where it applies.
+
+    It applies when the fit was given cohort sizes -- that is what makes the
+    response a binomial proportion rather than a continuous measurement. A
+    continuous response measured once per vial is the case least squares was
+    built for and carries no caveat.
+    """
+    # A binomial ML fit models the variance the data actually have, and
+    # `lethal_dose_absolute` reports a profile-likelihood interval on the LC50
+    # itself for it. Measured coverage on that path is 0.94-0.96 across slopes
+    # of 1, 2 and 4 (`validate_binomial_ml`, check E), so there is nothing to
+    # caveat. This is the only exit that returns None for a binomial response,
+    # and it is the one the remedy earns.
+    if getattr(fit, "method", "ls") == "binomial_ml":
+        return None
+    w = getattr(fit, "weights", None)
+    if w is None:
+        return None
+    w = np.asarray(w, dtype=float)
+    if w.size == 0:
+        return None
+    # uniform weights mean no cohort sizes were supplied
+    finite = w[np.isfinite(w)]
+    if finite.size == 0 or float(np.ptp(finite)) == 0.0 and float(finite[0]) == 1.0:
+        return None
+    return BINOMIAL_INTERVAL_COVERAGE_NOTE
+
+
+def bootstrap_deviance_threshold(fit: "LogLogisticFit", target: float = 0.5,
+                                 level: float = 0.95, n_boot: int = 200,
+                                 seed: Optional[int] = None) -> dict:
+    """
+    The deviance threshold this design actually needs, by parametric bootstrap.
+
+    The asymptotic threshold for a one-parameter profile is chi-square(1), exact
+    in the limit. On a seven-dose bioassay with forty flies per dose it is
+    slightly optimistic, and the shortfall is worst where the quantity of
+    interest depends strongly on a weakly estimated parameter -- an LC50 with
+    substantial control mortality, where it is a strong function of the upper
+    asymptote.
+
+    So the reference distribution is simulated instead of assumed: the fitted
+    curve is taken as truth, `n_boot` datasets are drawn with the same doses and
+    cohort sizes, each is refitted, and the profile deviance is evaluated at the
+    generating model's own LC50. The `level` quantile of those deviances is the
+    threshold. Replicates whose fit or profile fails are dropped and counted,
+    because a bootstrap that silently discards its failures reports a quantile
+    of the cases that happened to work.
+
+    WHAT THIS IS GOOD FOR, measured rather than hoped. On an informative design
+    the bootstrap threshold lands near the asymptotic one and the `ratio` is
+    close to 1, confirming the chi-square reference. In the regime where the
+    dose grid cannot resolve the slope it does NOT give a usable critical
+    value: measured on a fit with 7 doses x 40 flies, a slope of 4 and an upper
+    asymptote of 0.80, it returned 136.4 against the asymptotic 3.841, a ratio
+    of 35.5 -- because the bootstrap datasets separate too, so the statistic's
+    upper tail is enormous and its 95th percentile is not a bound anyone should
+    use. An interval built on that would be conservative by an arbitrary
+    amount, which is its own way of being wrong.
+
+    So read `ratio` as a DESIGN ADEQUACY measure: how far this design is from
+    the regime where the interval's stated level means what it says. Near 1,
+    the asymptotic interval is sound. Large, and the honest conclusion is that
+    the design cannot support an interval at this level -- add intermediate
+    doses, or control flies, rather than widening the bound.
+
+    Returns `threshold`, `chi2_threshold`, `ratio`, `n_used`, `n_requested`,
+    `mean_deviance`, `verdict`, `reason`. `threshold` falls back to the
+    chi-square value, with `reason` saying so, when too few replicates survive
+    to estimate a quantile -- a bootstrap on thirty usable draws is not a
+    calibration.
+    """
+    chi2_thr = float(stats.chi2.ppf(level, 1))
+    out = {"threshold": chi2_thr, "chi2_threshold": chi2_thr, "ratio": 1.0,
+           "n_used": 0, "n_requested": int(n_boot),
+           "mean_deviance": float("nan"), "verdict": "", "reason": ""}
+    if fit.method != "binomial_ml":
+        out["reason"] = ("Bootstrap calibration needs a likelihood, so it needs "
+                         "method='binomial_ml'.")
+        return out
+    if fit.totals is None:
+        out["reason"] = "The fit did not retain its cohort sizes."
+        return out
+
+    t = float(target)
+    b = float(fit.params["b"])
+    c = float(fit.params["c"])
+    d = float(fit.params["d"])
+    e = float(fit.params["e"])
+    if not (min(c, d) < t < max(c, d)) or not np.isfinite(b) or b == 0.0:
+        out["reason"] = "The fitted curve does not reach the target level."
+        return out
+
+    lc_gen = e * ((d - t) / (t - c)) ** (1.0 / b)
+    p_gen = _ll_predict(fit.dose, b, c, d, float(np.log(e)))
+    p_gen = np.clip(p_gen, 0.0, 1.0)
+    nn = np.asarray(fit.totals, dtype=float)
+    rng = np.random.default_rng(seed)
+    cap = getattr(fit, "slope_cap", float("nan"))
+
+    devs = []
+    for _ in range(int(n_boot)):
+        k_b = rng.binomial(nn.astype(int), p_gen)
+        try:
+            fb = _fit_binomial_ml(fit.dose, k_b / nn, nn, fit.model,
+                                  dict(fit.design), True,
+                                  penalty=getattr(fit, "penalty", "none"),
+                                  b_cap=cap if np.isfinite(cap) else None)
+            fn, _est, _why = lc_profile_deviance(fb, t)
+        except Exception:
+            continue
+        if fn is None:
+            continue
+        v = fn(lc_gen, record=False)
+        if np.isfinite(v) and v >= -1e-6:
+            devs.append(max(float(v), 0.0))
+
+    out["n_used"] = len(devs)
+    if len(devs) < 50:
+        out["reason"] = (
+            f"Only {len(devs)} of {n_boot} bootstrap replicates produced a usable "
+            "deviance, which is too few to estimate a quantile; the asymptotic "
+            "chi-square(1) threshold is used instead."
+        )
+        return out
+    devs = np.asarray(devs, dtype=float)
+    thr = float(np.quantile(devs, level))
+    out["threshold"] = thr
+    out["ratio"] = float(thr / chi2_thr)
+    out["mean_deviance"] = float(devs.mean())
+    out["reason"] = (
+        f"Threshold {thr:.3f} from {len(devs)} parametric-bootstrap replicates "
+        f"against the asymptotic {chi2_thr:.3f} (ratio {thr / chi2_thr:.3f}); "
+        f"the statistic's bootstrap mean is {devs.mean():.3f} against the "
+        "asymptotic 1.000."
+    )
+    r = out["ratio"]
+    if r <= 1.5:
+        out["verdict"] = (
+            "adequate: the bootstrap reference agrees with the asymptotic one, "
+            "so the chi-square(1) interval means what it says at this design."
+        )
+    elif r <= 4.0:
+        out["verdict"] = (
+            f"marginal: the bootstrap reference is {r:.1f}x the asymptotic one, "
+            "so the asymptotic interval is somewhat optimistic. The bootstrap "
+            "threshold is usable here; expect a wider interval."
+        )
+    else:
+        out["verdict"] = (
+            f"INADEQUATE DESIGN: the bootstrap reference is {r:.1f}x the "
+            "asymptotic one, which means the likelihood-ratio statistic has no "
+            "usable upper quantile at this design -- the bootstrap datasets "
+            "separate as well, so its tail is arbitrary. Do not read this "
+            "threshold as a 95% bound and do not read the asymptotic interval "
+            "as one either. The remedy is the design: intermediate doses so the "
+            "slope is resolvable, and more control flies if the upper asymptote "
+            "is far from 1."
+        )
+    return out
+
+
+def threshold_advice(fit: "LogLogisticFit", target: float = 0.5) -> str:
+    """
+    Whether this fit is in the regime where the asymptotic threshold is
+    optimistic enough to be worth replacing.
+
+    TWO conditions, both read off the fit and the design, and both placed by
+    measurement rather than taste. Coverage of the asymptotic interval, 900
+    replications per cell on 7 doses x 40 flies:
+
+        upper asymptote d   headroom   b = 1    b = 2    b = 4
+             1.00             0.500     0.977    0.970    0.942
+             0.90             0.444     0.957    0.953    0.934
+             0.80             0.375     0.937    0.950    0.897
+
+    where headroom = |d - target| / |d - c| is the fraction of the fitted range
+    lying between the target and the upper asymptote. Only ONE cell falls
+    materially short, and it needs both a small headroom AND a slope that is a
+    large fraction of what the dose grid resolves. Low headroom alone is fine
+    (0.937 and 0.950 at d = 0.80 with gentler slopes) and so is a steep slope
+    alone (0.942 at d = 1.00). So the advice fires on the conjunction:
+    headroom below 0.40, which separates 0.375 from the 0.444 that covers at
+    0.934, and a slope above 35% of the resolvable limit, which separates b = 4
+    (47% of 8.50) from b = 2 (24%).
+    """
+    try:
+        t = float(target)
+        c = float(fit.params["c"])
+        d = float(fit.params["d"])
+        b = abs(float(fit.params["b"]))
+        if not (min(c, d) < t < max(c, d)):
+            return ""
+        headroom = abs(d - t) / abs(d - c)
+        lim = resolvable_slope_limit(fit.dose)["b_max"]
+        slope_frac = b / lim if np.isfinite(lim) and lim > 0 else 0.0
+    except Exception:
+        return ""
+    if headroom < 0.40 and slope_frac > 0.35:
+        return (
+            f"Only {100 * headroom:.0f}% of the fitted range lies between the "
+            f"target ({t:g}) and the upper asymptote ({d:.3g}), and the fitted "
+            f"slope is {100 * slope_frac:.0f}% of the steepest this dose grid "
+            f"can resolve (b = {b:.2f} against b_max = {lim:.2f}). In that "
+            "combination the target dose is a strong function of the asymptote, "
+            "which is estimated from the control cohort alone, and the "
+            "asymptotic chi-square reference is optimistic: measured coverage "
+            "0.897 against a nominal 0.95 on 900 replications. The interval is "
+            "reported but NOT as a 95% interval. The remedy is the design -- "
+            "intermediate doses to resolve the slope, more control flies to pin "
+            "the asymptote. `bootstrap_deviance_threshold` quantifies how far "
+            "off this design is."
+        )
+    return ""
+
+
+def _lr_threshold(fit: "LogLogisticFit", level: float = 0.95,
+                  calibrate: str = "asymptotic", n_boot: int = 200,
+                  seed: Optional[int] = None):
+    """
+    Deviance threshold for a one-parameter profile, and what kind it is.
+
+    `calibrate="asymptotic"` (the default) is the chi-square(1) quantile, which
+    the measurements show is correct on an informative design -- on a
+    twelve-dose grid the profile deviance is textbook chi-square(1) in every
+    cell tested, with a mean of 0.97 to 1.21 against the asymptotic 1.0.
+    `calibrate="bootstrap"` simulates the statistic from the fitted model
+    instead; see `bootstrap_deviance_threshold`.
+    """
+    chi2_thr = float(stats.chi2.ppf(level, 1))
+    if calibrate == "asymptotic":
+        return chi2_thr, "chi-square(1)"
+    if calibrate != "bootstrap":
+        raise ValueError(
+            f"calibrate must be 'asymptotic' or 'bootstrap', got {calibrate!r}."
+        )
+    bs = bootstrap_deviance_threshold(fit, level=level, n_boot=n_boot, seed=seed)
+    kind = ("parametric bootstrap (%d replicates)" % bs["n_used"]
+            if bs["n_used"] >= 50 else "chi-square(1), bootstrap unavailable")
+    return float(bs["threshold"]), kind
+
+
+
+def lc_profile_deviance(fit: LogLogisticFit, target: float = 0.5):
+    """
+    The profile deviance of the absolute dose, as a callable.
+
+    Returns `(deviance, estimate, reason)` where `deviance(dose)` is
+
+        D(L) = 2 * ( loglik_max - max_phi loglik(L, phi) )
+
+    the likelihood-ratio statistic for the hypothesis that the dose at which
+    the curve reaches `target` is exactly L, with every other parameter
+    re-maximised. `D` is zero at the maximum-likelihood dose and increases away
+    from it; `lethal_dose_profile` finds where it crosses a threshold, and a
+    calibration study can use it to check that the threshold matches the
+    statistic's own distribution rather than assuming it does.
+
+    `deviance` is None, and `reason` says why, when the fit cannot be profiled.
+    """
+    out_reason = ""
+    if fit.method != "binomial_ml":
+        return None, float("nan"), (
+            "Profiling needs a likelihood, so it needs method='binomial_ml'."
+        )
+    if not np.isfinite(fit.loglik):
+        return None, float("nan"), "The fit reports no finite log-likelihood."
+
+    t = float(target)
+    b = float(fit.params["b"])
+    c = float(fit.params["c"])
+    d = float(fit.params["d"])
+    e = float(fit.params["e"])
+    if not np.isfinite(b) or b == 0.0:
+        return None, float("nan"), "The fitted slope is zero or not finite."
+    if not (min(c, d) < t < max(c, d)):
+        return None, float("nan"), (
+            f"The fitted curve runs between c = {c:.4g} and d = {d:.4g} and never "
+            f"reaches {t:g}."
+        )
+    k, nn = fit.counts, fit.totals
+    if k is None or nn is None:
+        return None, float("nan"), "The fit did not retain its counts."
+    # The profile must be of the objective that was MAXIMISED. Profiling the
+    # plain likelihood around a penalised maximum would compare two different
+    # functions and the deviance at the estimate would not be zero.
+    pen = getattr(fit, "penalty", "none")
+
+    est = e * ((d - t) / (t - c)) ** (1.0 / b)
+    model = fit.model
+    free = list(fit.theta_names)
+    x = fit.dose
+    prof_names = [nm for nm in free if nm != "log_e"]
+    # The profile must search the same parameter region the fit did, or the
+    # deviance is a ratio between two differently constrained maxima.
+    cap = getattr(fit, "slope_cap", float("nan"))
+    bounds_all = _ml_bounds(model, cap if np.isfinite(cap) else None)
+    prof_bounds = [bounds_all[free.index(nm)] for nm in prof_names]
+    fixed = _MODEL_SPECS[model]["fixed"]
+
+    def negll_at(logL, phi):
+        vals = dict(zip(prof_names, np.atleast_1d(phi)))
+        bb = vals.get("b", float(fixed.get("b", b)))
+        cc = vals.get("c", float(fixed.get("c", c)))
+        dd = vals.get("d", float(fixed.get("d", d)))
+        num, den = dd - t, t - cc
+        if not np.isfinite(bb) or bb == 0.0 or num <= 0.0 or den <= 0.0:
+            return np.inf
+        log_e_c = float(logL) - (np.log(num) - np.log(den)) / bb
+        theta = np.empty(len(free), dtype=float)
+        for i, nm in enumerate(free):
+            theta[i] = log_e_c if nm == "log_e" else vals[nm]
+        return _binom_negll_pen(theta, model, x, k, nn, pen)
+
+    mle_start = np.array([float(fit.params[nm]) for nm in prof_names], dtype=float)
+    warm = {"phi": mle_start.copy()}
+    lo_b = [(-np.inf if lo is None else lo) for lo, _ in prof_bounds]
+    hi_b = [(np.inf if hi is None else hi) for _, hi in prof_bounds]
+
+    def profile_negll(logL, record=True):
+        if not prof_names:
+            return negll_at(logL, np.array([]))
+        best_v, best_phi = np.inf, None
+        for s0 in (warm["phi"], mle_start):
+            s0 = np.clip(np.asarray(s0, dtype=float), lo_b, hi_b)
+            try:
+                r = optimize.minimize(lambda ph: negll_at(logL, ph), s0,
+                                      method="L-BFGS-B", bounds=prof_bounds,
+                                      options={"maxiter": 2000, "maxfun": 2000,
+                                               "ftol": 1e-14, "gtol": 1e-10})
+            except Exception:
+                continue
+            if np.isfinite(r.fun) and float(r.fun) < best_v:
+                best_v, best_phi = float(r.fun), np.asarray(r.x, dtype=float)
+        # BOTH starts are tried, and the better kept. Stopping at the first
+        # that converged made the deviance path-dependent: the warm start can
+        # settle in a slightly worse nested optimum, which inflates the
+        # deviance, which pulls the interval in. Measured at 3.6917 against a
+        # threshold of 3.8415 on a reported bound before this change.
+        if record and best_phi is not None:
+            warm["phi"] = best_phi
+        return best_v
+
+    const = float(np.sum(gammaln(nn + 1.0) - gammaln(k + 1.0)
+                         - gammaln(nn - k + 1.0)))
+    ll_max = float(fit.loglik_penalised if pen == "firth" else fit.loglik)
+
+    def deviance(dose, record=True):
+        """Profile deviance at a candidate DOSE (not log dose)."""
+        dose = float(dose)
+        if not (dose > 0.0) or not np.isfinite(dose):
+            return np.inf
+        nll = profile_negll(np.log(dose), record=record)
+        if not np.isfinite(nll):
+            return np.inf
+        return 2.0 * (ll_max - (const - nll))
+
+    return deviance, float(est), out_reason
+
+
+def lethal_dose_profile(fit: LogLogisticFit, target: float = 0.5,
+                        level: float = 0.95, max_expand: float = 1e6,
+                        calibrate: str = "asymptotic", n_boot: int = 200,
+                        seed: Optional[int] = None) -> dict:
+    """
+    PROFILE-LIKELIHOOD interval for the dose at which the fitted curve reaches
+    an absolute response level -- the LC50 when `target = 0.5`.
+
+    Register N95. The delta-method interval is symmetric on log-dose and is
+    built from a covariance matrix. Both of those are wrong here. The
+    likelihood for an absolute LC50 is asymmetric on any scale, because the
+    data constrain "the curve has not reached 50% yet" much more weakly than
+    "it passed 50% already", and a covariance cannot encode that. Profiling the
+    quantity of interest is invariant to how the curve is parameterised, which
+    is the property the delta method lacks.
+
+    THE REPARAMETERISATION, which is what makes this exact rather than a grid
+    search over a derived quantity. The absolute dose satisfies
+
+        L = e * K ** (1 / b),    K = (d - target) / (target - c)
+
+    so for any CANDIDATE L the inflection is determined by the others:
+
+        log e = log L - log(K) / b
+
+    Fixing L therefore costs exactly one degree of freedom, and the remaining
+    free parameters are re-maximised. The deviance is compared against a
+    threshold on ONE degree of freedom and the endpoints are found with Brent's
+    method, so they sit on the threshold to the root-finder's tolerance rather
+    than on a grid point.
+
+    THE THRESHOLD. The asymptotic threshold is chi-square(1). On the designs a
+    fly bioassay actually has -- seven doses, three residual degrees of freedom
+    -- that is anti-conservative, and the correction used here is measured
+    rather than assumed: see `_lr_threshold` and register N95.
+
+    Requires `method="binomial_ml"`: the deviance is a likelihood-ratio
+    statistic and needs a likelihood.
+
+    Returns `estimate`, `ci_lower`, `ci_upper`, `loglik_at_lower`,
+    `loglik_at_upper`, `deviance_threshold`, `threshold_kind`, `level`,
+    `target`, `reason`, `bounded_below`, `bounded_above`.
+    """
+    thr, kind = _lr_threshold(fit, level, calibrate=calibrate, n_boot=n_boot,
+                              seed=seed)
+    out = {"target": float(target), "level": float(level),
+           "estimate": float("nan"), "ci_lower": float("nan"),
+           "ci_upper": float("nan"), "loglik_at_lower": float("nan"),
+           "loglik_at_upper": float("nan"),
+           "deviance_threshold": float(thr), "threshold_kind": kind,
+           "bounded_below": True, "bounded_above": True, "reason": "",
+           "threshold_advice": threshold_advice(fit, target),
+           "method": ("Profile-likelihood interval on the absolute dose, "
+                      "reparameterised so the dose is the profiled parameter; "
+                      + kind + " deviance threshold.")}
+
+    dev, est, why = lc_profile_deviance(fit, target)
+    if dev is None:
+        out["reason"] = why
+        return out
+    out["estimate"] = float(est)
+
+    d0 = dev(est, record=False)
+    if d0 < -1e-4:
+        out["reason"] = (
+            f"The profile found a higher likelihood than the reported maximum "
+            f"(deviance {d0:.3e} at the estimate), so the fit is not at its "
+            "optimum and no interval is reported."
+        )
+        return out
+
+    log_est = float(np.log(est))
+
+    def dev_log(v):
+        return dev(float(np.exp(v)))
+
+    def find_root(direction):
+        """Expand a bracket outward until the threshold is crossed, then solve."""
+        step = 0.1
+        lo = log_est
+        hi = log_est + direction * step
+        for _ in range(200):
+            if dev_log(hi) >= thr:
+                break
+            lo = hi
+            step *= 1.6
+            hi = log_est + direction * step
+            if abs(hi - log_est) > np.log(max_expand):
+                return None
+        else:
+            return None
+        a, bb = (lo, hi) if lo < hi else (hi, lo)
+        try:
+            return float(optimize.brentq(lambda v: dev_log(v) - thr, a, bb,
+                                         xtol=1e-10, rtol=1e-12, maxiter=200))
+        except Exception:
+            for _ in range(80):
+                mid = 0.5 * (a + bb)
+                if dev_log(mid) >= thr:
+                    bb = mid
+                else:
+                    a = mid
+                if abs(bb - a) < 1e-10:
+                    break
+            return 0.5 * (a + bb)
+
+    r_lo = find_root(-1.0)
+    r_hi = find_root(+1.0)
+    if r_lo is None:
+        out["bounded_below"] = False
+        out["reason"] = (
+            "The likelihood does not rise above the deviance threshold below "
+            "the estimate within a factor of %g, so the interval is unbounded "
+            "there: the data do not exclude an arbitrarily low dose." % max_expand
+        )
+    else:
+        out["ci_lower"] = float(np.exp(r_lo))
+    if r_hi is None:
+        out["bounded_above"] = False
+        out["reason"] = (out["reason"] + " " if out["reason"] else "") + (
+            "The likelihood does not rise above the threshold above the "
+            "estimate within a factor of %g, so the interval is unbounded "
+            "there." % max_expand
+        )
+    else:
+        out["ci_upper"] = float(np.exp(r_hi))
+
+    # the log-likelihood at each reported bound, recomputed from the same
+    # deviance so the two can never disagree
+    if np.isfinite(out["ci_lower"]):
+        out["loglik_at_lower"] = float(fit.loglik
+                                       - 0.5 * dev(out["ci_lower"], record=False))
+    if np.isfinite(out["ci_upper"]):
+        out["loglik_at_upper"] = float(fit.loglik
+                                       - 0.5 * dev(out["ci_upper"], record=False))
+    return out
 
 
 def ec50_profile_ci(fit: LogLogisticFit, level: float = 0.95) -> dict:
@@ -1341,6 +2818,7 @@ def mortality_adjusted_response(
     ratio_fail: float = 0.80,
     level: float = 0.95,
     mortality_model: str = "LL.3",
+    mortality_method: str = "binomial_ml",
 ) -> dict:
     """
     Separate -- or refuse to separate -- a behavioural dose-response from
@@ -1370,16 +2848,26 @@ def mortality_adjusted_response(
           returned so the user can see the number they would otherwise have
           published.
       (b) The mortality dose-response. Survival proportion (1 - dead/n_exposed)
-          is fitted as a decreasing curve, so `e` is by definition the LC50.
-          The default LL.3 leaves the upper asymptote free, which lets the
-          control survival be below 1 -- that is precisely Abbott's (1925)
-          correction expressed as a model parameter rather than applied by
-          hand. Use "LL.2" to force control survival to exactly 1.
+          is fitted as a decreasing curve, and the LC50 is obtained by solving
+          that curve for survival = 0.5. The default LL.3 leaves the upper
+          asymptote free, which lets the control survival be below 1 -- that is
+          precisely Abbott's (1925) correction expressed as a model parameter
+          rather than applied by hand -- and for exactly that reason the fitted
+          `e` is NOT the LC50: it is the dose at which survival reaches the
+          midpoint (c + d)/2 of the fitted range. `e` is reported separately as
+          `lc50_param_e` for traceability. Use "LL.2" to force control survival
+          to exactly 1, in which case the two coincide.
       (c) The overlap. Per-dose mortality, the highest dose at which mortality
           stays below `mortality_threshold` (the "behaviour-only window"), and
           the ratio EC50_behaviour / LC50.
 
-    HOW TO READ THE RATIO.
+    HOW TO READ THE RATIO. The three bands below are SCREENING CONVENTIONS,
+    not tests: they have no error rate, and the per-dose mortality table is the
+    evidence. They are also a comparison between two differently-defined
+    quantities -- EC50 is relative to the behavioural curve's own fitted range,
+    LC50 is an absolute 50%-survival dose -- so treat the ratio as a question
+    about whether the two curves occupy the same dose region, not as a
+    measurement.
         ratio < 0.33   the behavioural effect is half-maximal at a dose that
                        kills almost nothing; a specific behavioural phenotype
                        is defensible.
@@ -1438,9 +2926,16 @@ def mortality_adjusted_response(
         beh, ec50, beh_ci = None, float("nan"), None
         out["behaviour_error"] = str(exc)
 
-    # ── (b) mortality curve (fitted as SURVIVAL, so e is the LC50) ─────────
+    # ── (b) mortality curve, fitted as SURVIVAL ────────────────────────────
+    # Register N14. The LC50 is the dose at which SURVIVAL = 0.5. It is NOT the
+    # fitted `e`, which is the dose at which survival is (c + d)/2 -- and the
+    # default LL.3 leaves d free precisely so that control survival may be
+    # below 1. Reading `e` as the LC50 overstated it by 11.9% at d = 0.90 and
+    # 67% at d = 0.80, and that error propagated straight into the EC50/LC50
+    # overlap verdict below.
     max_mort = float(np.max(dd / ne)) if x.size else float("nan")
     mort, lc50, mort_ci = None, float("nan"), None
+    lc50_e, lc50_def, lc50_reason = float("nan"), "", ""
     mort_error = None
     if max_mort < 0.5:
         mort_error = (
@@ -1450,9 +2945,33 @@ def mortality_adjusted_response(
         )
     else:
         try:
-            mort = fit_loglogistic(x, surv_prop, n=ne, model=mortality_model)
-            lc50 = float(mort.params["e"])
-            mort_ci = ec50_profile_ci(mort, level=level)
+            mort = fit_loglogistic(x, surv_prop, n=ne, model=mortality_model,
+                                   method=mortality_method)
+            lc50_e = float(mort.params["e"])
+            ld = lethal_dose_absolute(mort, target=0.5, level=level)
+            lc50 = float(ld["estimate"])
+            lc50_def, lc50_reason = ld["definition"], ld["reason"]
+            # Register N95. The mortality curve is always fitted with cohort
+            # sizes, so the interval below is always the under-covering one.
+            # Carrying the caveat out of here is the only way it reaches the
+            # user: this function, not `lethal_dose_absolute`, is what the
+            # dose-response page calls.
+            out["lc50_interval_caveat"] = ld.get("interval_caveat")
+            out["lc50_interval_coverage_nominal"] = ld.get(
+                "interval_coverage_nominal")
+            mort_ci = {
+                "lc50": lc50,
+                "lower": ld["ci_lower"],
+                "upper": ld["ci_upper"],
+                "level": float(level),
+                "method": ld.get("method", ""),
+                "interval_caveat": ld.get("interval_caveat"),
+                "interval_coverage_nominal": ld.get("interval_coverage_nominal"),
+                "profile_relative": ld.get("profile"),
+                "param_e_profile": ec50_profile_ci(mort, level=level),
+            }
+            if ld["reason"]:
+                out["lc50_refusal"] = ld["reason"]
         except Exception as exc:
             mort_error = str(exc)
     if mort_error:
@@ -1548,6 +3067,19 @@ def mortality_adjusted_response(
         "ec50_ci": beh_ci,
         "lc50": lc50,
         "lc50_ci": mort_ci,
+        "lc50_param_e": lc50_e,
+        "lc50_definition": lc50_def,
+        "lc50_reason": lc50_reason,
+        "ratio_note": (
+            f"The {ratio_warn:g} and {ratio_fail:g} ratio thresholds are SCREENING "
+            "CONVENTIONS chosen for this platform, not statistical tests, and they "
+            "carry no error rate. Nothing is estimated from them; the per-dose "
+            "mortality table is the primary evidence and is always returned. "
+            "EC50 is a relative ECx of the behavioural curve (half of its own "
+            "fitted range) while LC50 is the absolute 50%-survival dose, so the "
+            "ratio compares two differently-defined quantities and is a screening "
+            "heuristic for whether the two curves sit in the same dose region."
+        ),
         "ratio": ratio,
         "ratio_thresholds": {"warn": float(ratio_warn), "fail": float(ratio_fail)},
         "max_mortality": max_mort,
@@ -1560,8 +3092,11 @@ def mortality_adjusted_response(
         "warning": warning,
         "method": (
             "LL.4 behavioural curve among survivors; survival proportion fitted with "
-            f"{mortality_model} so e is the LC50 (control survival free = Abbott 1925 "
-            "correction as a parameter); overlap reported as EC50/LC50."
+            f"{mortality_model} (control survival free = Abbott 1925 correction as a "
+            "parameter), and the LC50 obtained by solving that fitted curve for "
+            "survival = 0.5 -- not by reading the fitted `e`, which is the dose at "
+            "which survival is (c + d)/2 and equals the LC50 only when the curve "
+            "runs from 1 to 0; overlap reported as EC50/LC50."
         ),
     })
     return out

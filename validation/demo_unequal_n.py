@@ -63,10 +63,12 @@ def worked_example(seed=1):
 
 
 # ── Simulation: efficiency & coverage, naive mean vs inverse-variance pool ─────
-def simulation(true_g=0.7, ns=(3, 7, 5, 4, 9), reps=2000, seed=7):
+def simulation(true_g=0.7, ns=(3, 7, 5, 4, 9), reps=3000, seed=7):
     rng = np.random.default_rng(seed)
     naive_est, iv_est = [], []
     iv_cov = 0
+    dl_cov = 0
+    w_hksj = w_dl = 0.0
     for _ in range(reps):
         gs, vs = [], []
         for n in ns:
@@ -81,14 +83,27 @@ def simulation(true_g=0.7, ns=(3, 7, 5, 4, 9), reps=2000, seed=7):
         naive_est.append(gs.mean())
         p = inverse_variance_pool(gs, vs)
         iv_est.append(p["fixed"])
+        # Register N35. `ci_lo`/`ci_hi` are now the Hartung-Knapp-Sidik-Jonkman
+        # interval, not the 1.96-based DerSimonian-Laird one, so both are
+        # tracked: this demo's own purpose is to show that the pooling is
+        # well calibrated, and after the change that claim depends on which
+        # interval is meant. The DL figures stay available as `ci_lo_dl` /
+        # `ci_hi_dl`.
         if p["ci_lo"] <= true_g <= p["ci_hi"]:
             iv_cov += 1
+        if p["ci_lo_dl"] <= true_g <= p["ci_hi_dl"]:
+            dl_cov += 1
+        w_hksj += p["ci_hi"] - p["ci_lo"]
+        w_dl += p["ci_hi_dl"] - p["ci_lo_dl"]
     naive_est = np.array(naive_est); iv_est = np.array(iv_est)
     rmse_naive = float(np.sqrt(np.mean((naive_est - true_g) ** 2)))
     rmse_iv = float(np.sqrt(np.mean((iv_est - true_g) ** 2)))
+    n = len(iv_est)
     return {"rmse_naive": rmse_naive, "rmse_iv": rmse_iv,
             "var_naive": float(np.var(naive_est)), "var_iv": float(np.var(iv_est)),
-            "iv_coverage": iv_cov / len(iv_est), "reps": len(iv_est),
+            "iv_coverage": iv_cov / n, "dl_coverage": dl_cov / n,
+            "width_hksj": w_hksj / n, "width_dl": w_dl / n,
+            "reps": n,
             "efficiency_gain_pct": round(100 * (1 - rmse_iv / rmse_naive), 1)}
 
 
@@ -119,11 +134,45 @@ def main():
     print(f"RMSE  inverse-variance pool   : {sim['rmse_iv']:.4f}  "
           f"({sim['efficiency_gain_pct']}% lower error)")
     print(f"Sampling variance  naive/IV   : {sim['var_naive']:.4f} / {sim['var_iv']:.4f}")
-    print(f"IV 95% CI coverage            : {100*sim['iv_coverage']:.1f}%  (target 95%)")
-    ok = (sim["rmse_iv"] < sim["rmse_naive"]) and (0.90 <= sim["iv_coverage"] <= 0.98)
+    print(f"95% CI coverage, DerSimonian-Laird : {100*sim['dl_coverage']:.1f}%  "
+          f"(mean width {sim['width_dl']:.3f})")
+    print(f"95% CI coverage, HKSJ (reported)   : {100*sim['iv_coverage']:.1f}%  "
+          f"(mean width {sim['width_hksj']:.3f}, "
+          f"{sim['width_hksj']/sim['width_dl']:.2f}x)")
+    print("-" * 72)
+    # Derived, not typed. This line said "the same 2000 runs" while `reps`
+    # was a parameter, so raising the simulation silently made the prose
+    # beside the numbers wrong -- the same defect class as register N116.
+    print(f"  Both numbers are from the same {sim['reps']} runs. This "
+          f"simulation has tau^2 = 0 by")
+    print("  construction -- one true effect in every strain -- which is the "
+          "case where")
+    print("  HKSJ is at its most conservative: the t(k-1) quantile replaces "
+          "1.96 while the")
+    print("  variance is barely larger, so the interval widens and coverage "
+          "rises above")
+    print("  nominal. It is the price of the other direction. Measured over "
+          "2000 runs per")
+    print("  cell (register N35, Block C): DerSimonian-Laird covers 80.4% at "
+          "k=2 and 85.1%")
+    print("  at k=3 once tau^2 = 0.30, while HKSJ stays at or above nominal "
+          "everywhere in")
+    print("  the range tested. A therapeutic claim is damaged more by an "
+          "interval that is")
+    print("  too narrow than by one that is too wide, so HKSJ is what is "
+          "reported and the")
+    print("  DL figures are kept beside it.")
+    # The claim this demo makes is about EFFICIENCY of the point estimate and
+    # about the interval not UNDER-covering. Over-coverage at tau^2 = 0 is the
+    # documented cost of HKSJ at small k, not a calibration failure, so the
+    # gate is one-sided for HKSJ and two-sided for DL.
+    ok = (sim["rmse_iv"] < sim["rmse_naive"]
+          and sim["iv_coverage"] >= 0.95
+          and 0.90 <= sim["dl_coverage"] <= 0.99)
     print("-" * 72)
     print("RESULT:", "INNOVATION VALIDATED — inverse-variance pooling is more "
-          "efficient and well-calibrated under unequal N" if ok else "CHECK")
+          "efficient under unequal N, and the reported HKSJ interval does not "
+          "under-cover" if ok else "CHECK")
     return 0 if ok else 1
 
 

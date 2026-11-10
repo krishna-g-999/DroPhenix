@@ -89,14 +89,20 @@ def _norm_sdq_consistency(sdq_series: pd.Series) -> pd.Series:
 
 def _traj_score(traj_series: pd.Series) -> pd.Series:
     """
-    Map a trajectory label to [0, 1]. An UNRECOGNISED label returns NaN, not the
-    0.2 "Undetermined" score it used to return silently — scoring a label the
+    Map a trajectory label to [0, 1]. An ABSENT label (NaN) and an UNRECOGNISED
+    label both return NaN, not the 0.2 "Undetermined" score they used to return
+    silently — scoring a label the
     module does not understand as if it were a measured middling result is a
     fabricated component (audit S1 finding 1.7). NaN drops the component from
     the weighted mean instead, and `unknown_trajectory_labels` in the pipeline
     result names what was not recognised.
     """
-    return traj_series.astype(str).map(lambda x: TRAJECTORY_RANK.get(x, np.nan))
+    def _one(x):
+        if x is None or (not isinstance(x, str) and pd.isna(x)):
+            return np.nan          # absent, not "Undetermined" (register N32a)
+        return TRAJECTORY_RANK.get(str(x), np.nan)
+
+    return traj_series.map(_one)
 
 
 # ─── Build TCS input table ────────────────────────────────────────────────────
@@ -168,8 +174,28 @@ def compute_tcs(
     Compute TCS per Treatment × Genotype × Sex.
     weights: override DEFAULT_WEIGHTS (FIX: accepted via run_tcs_pipeline too)
     """
+    # Register N32b. A PARTIAL weights dict used to be normalised on its own
+    # and the missing components then read from DEFAULT_WEIGHTS by
+    # `weights.get(k, default)`, so weights={"CRI": 1.0} produced an effective
+    # set of 1.0 / 0.25 / 0.15 / 0.15 / 0.10 summing to 1.65. Nothing in the
+    # result said so: `weights_used` recorded that set as though it summed to
+    # one, and the radar divisors -- which read `weights_used` -- were scaled by
+    # the wrong total. The missing keys are back-filled from the defaults FIRST,
+    # then the complete set is normalised, which is also the only reading of a
+    # partial dict that makes sense: "override these, keep the rest".
     if weights is None:
         weights = DEFAULT_WEIGHTS.copy()
+    else:
+        unknown = sorted(set(weights) - set(DEFAULT_WEIGHTS))
+        if unknown:
+            raise ValueError(
+                f"Unknown TCS weight key(s) {unknown}. The components are "
+                f"{sorted(DEFAULT_WEIGHTS)}. An unrecognised key used to be "
+                f"ignored silently, so a typo meant the score was computed with "
+                f"the default weight for that component while the caller "
+                f"believed it had been changed."
+            )
+        weights = {**DEFAULT_WEIGHTS, **weights}
 
     # Audit S1 finding 1.7: all-zero weights raised ZeroDivisionError.
     wsum = sum(weights.values())
@@ -184,11 +210,13 @@ def compute_tcs(
     if abs(wsum - 1.0) > 0.01:
         weights = {k: v / wsum for k, v in weights.items()}
 
-    w_cri  = weights.get("CRI",  0.35)
-    w_tsw  = weights.get("TSW",  0.25)
-    w_sdq  = weights.get("SDQ",  0.15)
-    w_mdr  = weights.get("MDR",  0.15)
-    w_traj = weights.get("Traj", 0.10)
+    # Every key is present after the back-fill above, so these reads cannot
+    # silently fall back to a different number from the one normalised.
+    w_cri  = weights["CRI"]
+    w_tsw  = weights["TSW"]
+    w_sdq  = weights["SDQ"]
+    w_mdr  = weights["MDR"]
+    w_traj = weights["Traj"]
 
     inp = _build_tcs_input(cri_df, tsw_df, sdq_df, mdr_df, cluster_df)
     if inp.empty:
@@ -217,12 +245,30 @@ def compute_tcs(
     else:
         inp["MDR_norm"] = np.nan
 
+    # Register N32a. `fillna("Undetermined")` turned an ABSENT trajectory into
+    # the explicit label "Undetermined", which TRAJECTORY_RANK scores 0.2 -- so
+    # a candidate with no trajectory data received a trajectory component, and
+    # absent data became evidence. The three cases are now distinct:
+    #   * no label recorded          -> NaN, the component is dropped from the
+    #                                   weighted mean and counted in
+    #                                   n_missing_trajectory
+    #   * an explicit "Undetermined" -> 0.2, because that IS a recorded result
+    #                                   of the clustering ("clustered, could
+    #                                   not classify"), and a middling penalty
+    #                                   for it is a stated convention
+    #   * an unrecognised label      -> NaN, and named in
+    #                                   unknown_trajectory_labels
     unknown_labels = []
+    n_missing_traj = 0
     if "Trajectory" in inp.columns:
-        labels = inp["Trajectory"].fillna("Undetermined")
-        inp["Traj_score"] = _traj_score(labels)
-        unknown_labels = sorted({str(l) for l, v in zip(labels, inp["Traj_score"])
-                                 if pd.isna(v)})
+        raw = inp["Trajectory"]
+        absent = raw.isna() | raw.astype(str).str.strip().isin(["", "nan", "None"])
+        n_missing_traj = int(absent.sum())
+        scored = _traj_score(raw.where(~absent, other=np.nan))
+        inp["Traj_score"] = scored.where(~absent, other=np.nan)
+        unknown_labels = sorted({str(l) for l, v, a
+                                 in zip(raw, inp["Traj_score"], absent)
+                                 if (not a) and pd.isna(v)})
     else:
         inp["Traj_score"] = np.nan
 
@@ -283,6 +329,14 @@ def compute_tcs(
     inp["TCS_rank"]  = inp["TCS"].rank(ascending=False, method="min", na_option="bottom").astype(int)
     inp.attrs["mdr_dataset_relative"] = mdr_relative
     inp.attrs["unknown_trajectory_labels"] = unknown_labels
+    inp.attrs["n_missing_trajectory"] = int(n_missing_traj)
+    inp.attrs["trajectory_note"] = (
+        f"{n_missing_traj} row(s) have no recorded trajectory. The trajectory "
+        f"component is dropped from the weighted mean for those rows and the "
+        f"remaining weights are renormalised, so the score rests on fewer "
+        f"components -- see n_components. It is NOT scored 0.2, which is the "
+        f"value reserved for an explicit 'Undetermined' clustering result."
+    ) if n_missing_traj else ""
     inp.attrs["weights_used"] = {"CRI": w_cri, "TSW": w_tsw, "SDQ": w_sdq,
                                  "MDR": w_mdr, "Traj": w_traj}
 
@@ -292,6 +346,10 @@ def compute_tcs(
         "TCS_CRI", "TCS_TSW", "TCS_SDQ", "TCS_MDR", "TCS_Traj",
         "n_components", "components_used", "TCS_label", "TCS_rank",
         "CRI", "TSW", "SDQ",
+        # The normalised components themselves. Without them the score cannot
+        # be recomputed from the output, and "all analytical outputs must be
+        # traceable to raw data, parameters and software versions".
+        "CRI_norm", "TSW_norm", "SDQ_cons", "MDR_norm", "Traj_score",
     ]
     for extra in ["delta_k", "Rescue_pct", "Trajectory", "Archetype", "Cluster"]:
         if extra in inp.columns:

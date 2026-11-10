@@ -65,6 +65,41 @@ def main() -> int:
     _check("Sleep bouts (=2)", spf["N_bouts_per_day"], 2.0, 0.0, results)
     _check("Mean bout min (=14.5)", spf["Mean_bout_min"], 14.5, 0.0, results)
 
+    # ── A2. Waking_activity is bin-width invariant (register N105) ──────────
+    # `Waking_activity` is DECLARED as "counts/waking min" (dam_pipeline.py:63)
+    # but was computed as the mean count per BIN, so the same fly read about b
+    # times higher on a b-minute monitor -- and this laboratory records at more
+    # than one bin width. Every other check in this file uses 1-minute bins,
+    # where counts/bin and counts/min coincide, which is exactly why the defect
+    # survived. This re-bins the SAME underlying trace to 1, 2 and 5 minutes and
+    # requires the reported rate to be identical, because a fly's waking
+    # activity is a property of the fly and not of the recording interval.
+    #
+    # This check is here, in the PUBLISHED suite, rather than in the DAM suites
+    # that stay local: it is built from a synthetic trace and quotes no
+    # laboratory recording, so the guard must ship with the fix.
+    _n = 1440 * 2
+    _zt = np.arange(_n, dtype=float) % 1440
+    _act1 = np.ones(_n)
+    _act1[_zt >= 13 * 60] = 0.0                 # awake ZT0-13, asleep ZT13-24
+
+    def _waking_at(bin_min):
+        k = _n // bin_min
+        a = _act1[:k * bin_min].reshape(k, bin_min).sum(axis=1)
+        t = np.arange(k, dtype=float) * bin_min
+        d = pd.DataFrame({"Genotype": ["G"] * k, "Treatment": ["T"] * k,
+                          "Sex": ["M"] * k, "FlyID": ["f1"] * k,
+                          "Time_min": t, "Activity": a.astype(float)})
+        return float(D.sleep_per_fly(D.load_dams(d)).iloc[0]["Waking_activity"])
+
+    _w1 = _waking_at(1)
+    _check("Waking activity = 1.000 count per waking MINUTE (1-min bins)",
+           _w1, 1.0, 1e-6, results)
+    _check("Waking activity is unchanged on 2-min bins (N105)",
+           _waking_at(2), _w1, 1e-6, results)
+    _check("Waking activity is unchanged on 5-min bins (N105)",
+           _waking_at(5), _w1, 1e-6, results)
+
     # Boundary: 4-min zero run is NOT sleep; 5-min zero run IS sleep.
     a4 = np.ones(20); a4[5:9] = 0                      # 4 zeros
     df4 = pd.DataFrame({"Genotype": ["G"] * 20, "Treatment": ["T"] * 20, "Sex": ["M"] * 20,

@@ -42,3 +42,12 @@ pyboat>=0.9.0
 #    validation dependency set:
 #      numpy, pandas, scipy, statsmodels, matplotlib, pingouin
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ── Report building, exercised by validate_dam_pipeline and verify_dam_docx ──
+# `modules/dam_report.py` writes the DAM report as a Word document, so the
+# suites that check the report builder cannot run without this. It was missing
+# here, and validate_dam_pipeline therefore CRASHED on a clean machine with
+# ModuleNotFoundError("No module named 'docx'") rather than reporting anything
+# -- found by the first CI run. Listed here rather than in requirements.txt
+# because the application itself does not build reports.
+python-docx>=1.1.0

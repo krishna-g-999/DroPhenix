@@ -61,11 +61,31 @@ import cv2  # noqa: E402
 
 from modules import climbing_video as CV  # noqa: E402
 
+# `pathlib` is imported by NAME, not as `from pathlib import Path`.
+#
+# Line 76 below reads `_LAB.climbing_root() or pathlib.Path("_absent")`, and
+# `from pathlib import Path` does not bind the name `pathlib`. On a machine
+# that HAS the recordings the left operand is truthy, so the right one is never
+# evaluated and the missing import is invisible; on a machine without them it
+# is a NameError that takes down the whole run before any suite reports. That
+# is what the first CI run hit, and it is why the fallback path had to be
+# executed somewhere before it could be trusted.
+import pathlib  # noqa: E402
+
+# Laboratory data paths are RESOLVED, not hardcoded: this suite reported
+# SKIPPED for months because the recordings sit on a different drive than the
+# literal path it used to carry. See validation/lab_data.py.
+try:
+    from validation import lab_data as _LAB
+except Exception:                                      # direct-script use
+    import lab_data as _LAB
+
 FAILURES: list[str] = []
 SKIPPED: list[str] = []
 SEED = 20260803
 
-REAL_VIDEO_DIR = r"D:/DroPhenix/Testing data/Climbing assay/Drosophila _ climbing assay"
+REAL_VIDEO_DIR = str((_LAB.climbing_root() or pathlib.Path("_absent"))
+                     / "Drosophila _ climbing assay")
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
