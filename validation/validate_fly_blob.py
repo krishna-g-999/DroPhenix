@@ -56,8 +56,23 @@ from modules import fly_blob as FB  # noqa: E402
 
 FAILURES: list[str] = []
 
-CACHE = Path(r"C:/Users/gkp11/AppData/Local/Temp/claude/D--DroPhenix/"
-             r"ab90d08c-0de9-4002-af04-af9e0767544d/scratchpad")
+# Register N112. This pointed at a Claude-session temp directory:
+#   C:/Users/gkp11/AppData/Local/Temp/claude/D--DroPhenix/ab90d08c-.../scratchpad
+# The directory survives; `vial_cache_big.npz` and its meta CSV do not. So the
+# re-derivation that `run_all.py` advertises for this suite -- "re-derives its
+# held-out accuracy against flies actually loaded rather than asserting it" --
+# could no longer run for ANYONE, including the authors, while
+# `fly_blob.MEASURED` continued to assert MAE 2.69 as a module-level fact and
+# the suite continued to report PASS.
+#
+# The path is now repository-relative so a rebuilt cache is findable, and
+# overridable for a cache kept outside the tree. The cache itself is NOT in the
+# repository (it is tens of MB of laboratory video crops).
+CACHE = Path(
+    __import__("os").environ.get(
+        "DROPHENIX_FLY_BLOB_CACHE",
+        str(Path(__file__).resolve().parent.parent / ".cache"))
+)
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -195,8 +210,35 @@ def test_C_real_footage() -> None:
     print("\nC. Real footage: detected total vs flies actually loaded (sealed vial)")
     npz, meta_csv = CACHE / "vial_cache_big.npz", CACHE / "vial_cache_big_meta.csv"
     if not (npz.exists() and meta_csv.exists()):
-        print("  [SKIP] the cached held-out vials are not on this machine; "
-              "section C established nothing")
+        # Register N112. This used to `return` after printing a SKIP, and the
+        # suite then reported PASS -- certifying nothing while appearing to
+        # certify the accuracy of the detector behind every climbing count.
+        #
+        # Which outcome is right depends on whether the data COULD be here. On a
+        # clean runner with no laboratory recordings this is a genuine skip, the
+        # same convention the rest of the suite uses. On a machine that holds the
+        # recordings, an absent cache means the re-derivation is broken and that
+        # is a FAILURE, because `fly_blob.MEASURED` is asserted as fact and this
+        # is the only thing that checks it.
+        try:
+            from validation import lab_data as _LD
+            lab_present = _LD.climbing_root() is not None
+        except Exception:
+            lab_present = False
+        if lab_present:
+            check("the held-out cache needed to re-derive fly_blob.MEASURED "
+                  "is present", False,
+                  f"not found at {CACHE}. This machine HAS the laboratory "
+                  f"recordings, so the re-derivation should be possible: the "
+                  f"cache must be rebuilt. Until then fly_blob.MEASURED "
+                  f"(MAE {FB.MEASURED['mae_total']}) is NOT re-derived by any "
+                  f"suite -- see register N112. Set "
+                  f"DROPHENIX_FLY_BLOB_CACHE to point at an existing cache.")
+        else:
+            print("  [SKIP] no laboratory recordings on this machine, so the "
+                  "held-out cache cannot exist here; section C established "
+                  "NOTHING about detector accuracy, and fly_blob.MEASURED is "
+                  "unverified in this run (register N112)")
         return
     import pandas as pd
     from modules import climbing_video_analyzer as CVA

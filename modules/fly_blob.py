@@ -145,9 +145,32 @@ PARAMS: Dict[str, float] = {
 }
 
 #: Held-out performance, for callers that report their own uncertainty.
+#:
+#: PROVENANCE IS LOST -- DO NOT CITE THIS AS AN ESTABLISHED FIGURE (register N112)
+#: ------------------------------------------------------------------------------
+#: These numbers were measured on a 110-cell / 22-vial sealed-vial hold-out set
+#: whose cached crops lived in a Claude-session temp directory. The directory
+#: survives; the cache does not, and no committed script rebuilds it -- the
+#: generator was ad-hoc, which is why the path was a temp directory in the first
+#: place. Searched and ruled out as substitutes: `.cache/climbing_cells.npz`
+#: (112 cells, but ABOVE-LINE climbing counts, not vial totals) and
+#: `_DroPhenix_analysis/hd_all_vials.csv` (a different estimator entirely --
+#: climbing_band bracket midpoint, MAE 6.53, and its own provenance file marks
+#: it `usable_for_science: false`).
+#:
+#: So no suite currently re-derives these values, for anyone, and
+#: `validate_fly_blob` section C now FAILS on a machine holding the recordings
+#: rather than passing silently. Until the hold-out cache is rebuilt from the
+#: videos by a committed script, treat every figure below as UNVERIFIED and
+#: report the detector's accuracy from `validate_climbing_video`-style
+#: measurements that can be reproduced.
+#:
+#: `provenance` records the status so a caller can refuse to quote it.
 MEASURED = {"mae_total": 2.69, "bias_total": -1.60, "within3": 0.673,
             "n_held_out_cells": 110, "n_held_out_vials": 22,
-            "compare_threshold_mae": 8.38}
+            "compare_threshold_mae": 8.38,
+            "provenance": "LOST -- not re-derivable; see register N112",
+            "verified": False}
 
 
 def fly_diameter(vial_width_px: float, params: Optional[dict] = None) -> float:

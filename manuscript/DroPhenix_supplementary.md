@@ -41,7 +41,7 @@ Every quantitative comparison performed, on identical benchmark data (Freireich 
 | Circadian | Dominant period (h) | 24.0 | pyBOAT (wavelet) | 23.9598 | yes |
 | Survival | scikit-survival (*note*) | — | scikit-survival | not installable (no C toolchain / no Python 3.13 wheel) | *note* |
 
-**24/24 quantitative comparisons agree within tolerance (Pearson r = 1.0000 across DroPhenix vs reference values).** The two *note* rows are the Efron tie-method value and the un-buildable scikit-survival package; survival is independently cross-validated against R `survival` (Breslow) and lifelines (Efron).
+**Of 26 quantitative comparisons, 24 agree within tolerance and 0 disagree (Pearson r = 1.0000 across the agreeing metrics).** Both remaining rows are counted in the denominator: they are the Efron tie-method value and the un-buildable scikit-survival package; survival is independently cross-validated against R `survival` (Breslow) and lifelines (Efron).
 
 ---
 
@@ -83,10 +83,11 @@ Naïve equal-weight mean of *g* = 0.420; inverse-variance pooled (fixed) = 0.453
 
 | Estimator | RMSE | Sampling variance | 95% CI coverage |
 |---|---|---|---|
-| Naïve equal-weight mean | 0.334 | 0.111 | — |
-| Inverse-variance pooled | 0.267 | 0.066 | 95.8% |
+| Naïve equal-weight mean | 0.331 | 0.110 | — |
+| Inverse-variance pooled, HKSJ interval (**reported**) | 0.267 | 0.066 | 99.5% (width 1.670) |
+| Inverse-variance pooled, DerSimonian–Laird interval | 0.267 | 0.066 | 95.5% (width 1.154) |
 
-Inverse-variance pooling reduces RMSE by **19.9%** and is well-calibrated (coverage ≈ nominal), confirming it is the efficient, correct estimator under unequal N (Figure 2).
+Inverse-variance pooling reduces RMSE by **19.2%**, confirming it is the efficient estimator under unequal N (Figure 2). The two interval rows are reported separately because only the HKSJ row is what DroPhenix prints, and it is **conservative, not nominal**: this simulation has τ² = 0 by construction, where the *t*(*k*−1) quantile replaces 1.96 while the variance is barely larger. That is the deliberate trade — at τ² = 0.30 the DerSimonian–Laird interval covers only 80.4% at *k* = 2 and 85.1% at *k* = 3, while HKSJ stays at or above nominal across the range tested (register N35). Reproduce with `python validation/demo_unequal_n.py`.
 
 ---
 

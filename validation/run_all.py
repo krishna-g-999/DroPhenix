@@ -86,12 +86,20 @@ Suites:
                            own first layout (all old in Monitor 1, all young in
                            Monitor 2) is rejected on Age while Genotype and Sex
                            still pass
-  validate_freeclimber_benchmark — DroPhenix vs an independent published tool on
-                           REAL data: an independent reimplementation of
-                           FreeClimber's local-linear-regression velocity
-                           read-out reproduces its published slope, frame
-                           window, r and standard error for every vial of
-                           Spierer et al. (2021)'s own example recording
+  validate_freeclimber_benchmark — NOT a test of DroPhenix (register N115). This
+                           suite imports NOTHING from modules/: it is a
+                           self-contained reimplementation of FreeClimber's
+                           local-linear-regression velocity read-out, checked
+                           against the published slope, frame window, r and
+                           standard error for every vial of Spierer et al.
+                           (2021)'s own example recording. It establishes that
+                           we can reproduce the published method, which is
+                           worth knowing -- but the method is not in the
+                           product (no local-linear velocity read-out exists in
+                           modules/), so a PASS here says nothing about any
+                           DroPhenix output. It was previously described as
+                           "DroPhenix vs an independent published tool on REAL
+                           data", which it is not
   validate_real_aging_benchmark — the decline model on REAL published
                            longitudinal data (Shahrestani et al. 2016,
                            Evolution 70:2550; 10 populations, geotaxis and
@@ -241,6 +249,7 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           # the app is the only part of this project a user ever sees.
           "validate_app_pages",
           "validate_figure_style",
+          "validate_readme_claims",
           "validate_motor_decline", "validate_translational_score",
           "validate_freeclimber_benchmark",
           # FreeClimber's DETECTION method, reimplemented, so that the two

@@ -6,7 +6,7 @@ Dual-audience notes (plain-language explanation, expert Q&A, non-scientific/comm
 
 IN PLAIN TERMS: DroPhenix is a free website that automatically analyses experiments on fruit flies (Drosophila) — the standard cheap, fast stand-in for human brain disease. We turned six common fly tests into one reliable automated tool and added a new statistical method for comparing drugs fairly.
 
-LEAD WITH: it agrees with the world's gold-standard analysis software on 24/24 checks (perfect correlation) and reproduces published scientific data exactly.
+LEAD WITH: it agrees with the world's gold-standard analysis software on 24 of 26 checks, with none disagreeing (perfect correlation on the agreeing metrics) and reproduces published scientific data exactly.
 
 EXPERT Q: "Why flies?" — ~75% of human disease genes conserved; weeks-long lifespan; the standard first-pass ALS/PD/HD model. "Novel or a wrapper?" — both: standardises best practice AND a new ranking method.
 
@@ -136,7 +136,7 @@ IN PLAIN TERMS — THE INNOVATION: How do you fairly combine a drug's effect acr
 
 DEFINE: Hedges' g = standardised effect size; inverse-variance / DerSimonian–Laird = the optimal weighting recipe; I² = how much strains genuinely differ.
 
-PROOF: in 3,000 simulations it was 19.9% more accurate than simple averaging with correctly-calibrated confidence intervals (95.8%), and the maths matches statsmodels to six decimals.
+PROOF: in 3,000 simulations it was 19.2% more accurate than simple averaging, and the interval we actually report never under-covers (99.5% against a nominal 95% -- deliberately cautious when there are few strains), and the maths matches statsmodels to six decimals.
 
 EXPERT Q: "Why random-effects?" — to account for real strain-to-strain heterogeneity.
 
@@ -222,6 +222,6 @@ NON-SCIENTIST Q: "Path to impact/revenue?" — adoption by fly labs and pre-clin
 
 IN PLAIN TERMS: The takeaway — six scattered, manually-analysed fly experiments turned into one automated, rigorously-validated web tool, plus a genuinely new, more efficient way to rank drugs across unequal-sized strains. Free, open, and prepared for a leading journal.
 
-CLOSE ON: reliable (24/24 tool agreement, reproduces published data) + novel (19.9% more efficient ranking) + accessible (free web app).
+CLOSE ON: reliable (24 of 26 tool checks agree, none disagree; reproduces published data) + novel (19.2% more efficient ranking) + accessible (free web app).
 
 FINAL Qs: Expert — "what's next?" more assays, hosted deployment. Non-scientist — "how do I try it?" open drophenix.streamlit.app; no install, no login.

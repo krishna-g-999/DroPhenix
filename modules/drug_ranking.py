@@ -417,7 +417,10 @@ def inverse_variance_pool(effects: Sequence[float], variances: Sequence[float],
     # between-study variance. That is said rather than left for the reader to
     # infer from a very wide interval.
     warn = ""
-    if k == 3:
+    # Register N109 (secondary): the warning fired only at k == 3, while the
+    # module's own coverage table shows HKSJ/DL width ratios of 1.65 and worse
+    # at k = 4 and k = 5. Those are exactly the k this platform meets.
+    if 3 <= k <= 5:
         warn = (
             f"k = {k}: the interval is dominated by the t({df}) quantile "
             f"({t_crit:.2f} against 1.96) because {k} estimates barely determine "
@@ -515,6 +518,32 @@ def inverse_variance_pool(effects: Sequence[float], variances: Sequence[float],
 
 
 HETEROGENEITY_I2_P_LIMIT = 50.0
+
+
+def _se_from_interval(pooled: dict) -> float:
+    """
+    The standard error that reproduces `pooled`'s PRIMARY interval.
+
+    The primary interval is HKSJ (`re +- t_crit * se_hksj`) or, at k = 2, the
+    Bayes credible interval. Either way the quantity that must propagate into a
+    downstream inverse-variance pool is the one that regenerates that interval
+    under a normal quantile: half-width / 1.96. Passing `se_random` on instead
+    discards the whole small-k correction (register N109).
+
+    Falls back to `se_random`, then to NaN, when no interval is available.
+    """
+    try:
+        lo, hi = float(pooled.get("ci_lo", np.nan)), float(pooled.get("ci_hi", np.nan))
+        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+            z = float(stats.norm.ppf(0.975))
+            return float((hi - lo) / (2.0 * z))
+    except Exception:
+        pass
+    try:
+        v = float(pooled.get("se_random", np.nan))
+        return v if np.isfinite(v) else float("nan")
+    except Exception:
+        return float("nan")
 
 
 def composite_score(per_assay: pd.DataFrame,
@@ -773,10 +802,55 @@ def rank_compounds(data: Dict[str, pd.DataFrame], vehicle: str = "Vehicle",
             per_assay_rows.append({
                 "drug": drug, "assay": assay, "n_strata": pooled["k"],
                 "g_pooled": round(pooled["random"], 4),
+                # Register N109. This row used to carry the PRIMARY interval
+                # (HKSJ, or the Bayes credible interval at k=2) in ci_lo/ci_hi
+                # while `se` and `var` came from `se_random` -- the
+                # DerSimonian-Laird quantities. Two things went wrong. A reader
+                # recomputing an interval from the printed `se` got one 2.2x
+                # narrower than the ci in the same row; and `composite_score`
+                # pools on `var`, so the small-k correction the module's own
+                # docstring calls necessary never reached Therapeutic_Score.
+                #
+                # `se_effective` is the SE that REPRODUCES the primary interval
+                # under a normal quantile: half-width / 1.96. It makes the row
+                # internally consistent and propagates the t(k-1) penalty into
+                # the composite, and it works for whichever interval is primary.
                 "se": round(pooled["se_random"], 4),
                 "ci_lo": round(pooled["ci_lo"], 4), "ci_hi": round(pooled["ci_hi"], 4),
                 "I2_pct": round(pooled["I2"], 1), "tau2": round(pooled["tau2"], 4),
                 "var": pooled["se_random"] ** 2,
+                # Register N109, and the resolution is NOT the one the review
+                # proposed. The row is genuinely confusing: `ci_lo/ci_hi` is the
+                # PRIMARY interval (HKSJ, or Bayes at k=2) while `se`/`var` are
+                # the DerSimonian-Laird quantities, so a reader recomputing an
+                # interval from `se` gets one 2.2x narrower than the one printed
+                # beside it. That is a reporting defect and is fixed by the two
+                # columns and the note below.
+                #
+                # But the proposed fix -- propagating (se_hksj * t_crit / 1.96)^2
+                # as `var` -- would be a statistical ERROR, and measurement
+                # showed it: it dropped the cross-assay I2 from >=50 to 48.7 and
+                # flipped the heterogeneity verdict. The reason is that
+                # se_hksj == se_random here (verified: the ratio is exactly
+                # 1.000 at k=3 and k=4), so the ENTIRE 2.2x gap is the t(k-1)
+                # quantile -- an interval construction, not a sampling variance.
+                # `composite_score` applies its own t(k-1) at the assay level, so
+                # folding this one into a variance double-counts the small-sample
+                # penalty, inflating every per-assay variance and making genuine
+                # between-assay disagreement look like noise.
+                #
+                # The weights therefore stay on the DL variance, which is the
+                # correct sampling variance, and the interval's own SE is
+                # reported beside it so the printed interval reconciles.
+                "se_interval_equiv": round(_se_from_interval(pooled), 4),
+                "se_note": (
+                    "`se`/`var` are the DerSimonian-Laird sampling variance and "
+                    "are what the cross-assay composite pools on, correctly: the "
+                    "composite applies its own t(k-1) correction, so propagating "
+                    "this interval's t quantile as a variance would double-count "
+                    "it. To reconstruct the PRIMARY interval printed in "
+                    "ci_lo/ci_hi, use `se_interval_equiv` (its half-width/1.96), "
+                    "not `se`. The two differ by the t(k-1)/1.96 ratio alone."),
             })
     per_assay = pd.DataFrame(per_assay_rows)
 

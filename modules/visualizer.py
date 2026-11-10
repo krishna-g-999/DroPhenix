@@ -742,8 +742,18 @@ def trajectory_pca(cluster_result,use_umap=False,title=None):
     """2-D scatter of PCA (or UMAP) trajectory embedding, coloured by cluster."""
     key="umap_embedding" if use_umap else "pca_embedding"
     emb=cluster_result.get(key,pd.DataFrame())
+    # Register N117. When UMAP was requested but unavailable -- `umap-learn` is
+    # in neither requirements file and `trajectory_cluster.py` swallows the
+    # ImportError -- this silently substituted the PCA embedding and relabelled
+    # the axes PC1/PC2. A reader who asked for UMAP got PCA with no indication
+    # anywhere on the figure. The substitution still happens, because a figure
+    # is better than no figure, but it now says so.
+    _substituted = False
     if emb is None or (hasattr(emb,"empty") and emb.empty):
-        if use_umap: emb=cluster_result.get("pca_embedding",pd.DataFrame()); use_umap=False
+        if use_umap:
+            emb=cluster_result.get("pca_embedding",pd.DataFrame())
+            use_umap=False
+            _substituted=True
     if emb is None or (hasattr(emb,"empty") and emb.empty):
         fig,ax=plt.subplots(figsize=FS_SINGLE)
         ax.text(0.5,0.5,"No embedding data",ha="center",va="center",transform=ax.transAxes)
@@ -762,8 +772,18 @@ def trajectory_pca(cluster_result,use_umap=False,title=None):
             ax.annotate(lbl,(row[xcol],row[ycol]),fontsize=5.5,alpha=0.72,
                         xytext=(3,3),textcoords="offset points")
     ax.set_xlabel(pfx+"1",fontsize=FT_LABEL); ax.set_ylabel(pfx+"2",fontsize=FT_LABEL)
-    ax.set_title(title or "Trajectory Embedding ("+pfx+")",fontsize=FT_TITLE)
+    _ttl = title or "Trajectory Embedding ("+pfx+")"
+    if _substituted:
+        _ttl += "  [UMAP requested; umap-learn not installed, PCA shown]"
+    ax.set_title(_ttl,fontsize=FT_TITLE)
     ax.legend(fontsize=FT_LEGEND,frameon=False); ax.tick_params(length=3)
+    if _substituted:
+        # Register N117: the substitution must be legible on the figure itself,
+        # not merely in a checkbox caption the reader may never see.
+        fig.text(0.01,0.01,
+                 "UMAP was requested but `umap-learn` is not installed; the PCA "
+                 "embedding is shown and the axes are PCA axes.",
+                 fontsize=5.5,style="italic",color="#555555",ha="left")
     fig.tight_layout(); return fig,_to_bytes(fig)
 
 # --- 13. Sex comparison connected dot plot -----------------------------------

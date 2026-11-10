@@ -318,6 +318,15 @@ def sleep_per_fly(long_df: pd.DataFrame,
         # nan-aware.
         waking = act[~sleep_mask]
         waking = waking[np.isfinite(waking)]
+        # Waking activity is declared in `counts/waking min` (dam_pipeline.py).
+        # `act` holds counts per BIN, so the mean of `waking` is counts per
+        # waking BIN, and dividing by `bin_min` is what makes the figure the
+        # declared unit -- and bin-width invariant, so the same fly on a 5-min
+        # monitor no longer reads ~5x the same fly on a 1-min monitor. The
+        # defect survived because the only test of it used 1-min bins, where
+        # the two quantities coincide; `validate_dam_parameters` A9b now checks
+        # invariance across bin widths. Register N105.
+        waking_per_min = waking / float(bin_min) if bin_min else waking
         n_missing = int(np.count_nonzero(~np.isfinite(act)))
         rec = dict(zip(keys, kv if isinstance(kv, tuple) else (kv,)))
         rec.update({
@@ -341,7 +350,7 @@ def sleep_per_fly(long_df: pd.DataFrame,
                 t - day_start_min, sleep_mask, bin_min, 0.0,
                 day_length_min, photoperiod_min), 1),
             "Sleep_pct": round(100.0 * sleep_mask.mean(), 1),
-            "Waking_activity": round(float(np.mean(waking)), 3) if len(waking) else 0.0,
+            "Waking_activity": round(float(np.mean(waking_per_min)), 3) if len(waking_per_min) else 0.0,
             "Total_activity_per_day": round(float(np.nansum(act)) / n_days, 1),
             "Day_activity_per_day": round(float(np.nansum(act[is_day])) / n_days, 1),
             "Night_activity_per_day": round(float(np.nansum(act[~is_day])) / n_days, 1),

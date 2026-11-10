@@ -795,8 +795,19 @@ def compute_msci(
     Motor-Survival Coupling Index (MSCI).
 
     Spearman rho between per-group MDR (k) and median lifespan, with an EXACT
-    permutation p-value (see _exact_spearman_p). Positive rho = faster motor
-    decline goes with shorter lifespan.
+    permutation p-value (see _exact_spearman_p).
+
+    THE SIGN, STATED ONCE SO IT CANNOT BE READ BACKWARDS
+    ----------------------------------------------------
+    `k` is a decay RATE: a larger k means FASTER motor decline. So the
+    coupling of interest -- faster decline going with shorter life -- is a
+    NEGATIVE rho, because high k pairs with low lifespan. A POSITIVE rho is
+    the opposite and biologically surprising: faster decline with LONGER
+    life. This docstring previously asserted the reverse, while the
+    interpretation strings below used abs(rho) and so reported both cases
+    with the same label (register N106). The real-data result recorded in
+    docs/METHODS_PROVENANCE.md is rho = -0.82 (F) / -0.84 (M), i.e. the
+    expected coupling.
 
     TWO LIMITATIONS ARE REPORTED, NOT HIDDEN
     ----------------------------------------
@@ -871,10 +882,21 @@ def compute_msci(
                       f"smallest attainable p is {p_min:.3f}, so no correlation "
                       f"however perfect can reach the 0.05 level. Report rho as "
                       f"descriptive only.")
-        elif significant and pd.notna(rho) and abs(rho) >= 0.7:
-            interp = "Motor decline strongly predicts lifespan"
-        elif significant and pd.notna(rho) and abs(rho) >= 0.4:
-            interp = "Moderate motor-survival coupling"
+        elif significant and pd.notna(rho):
+            # The DIRECTION is the biology, so it is named rather than left to
+            # abs(rho). k is a decay rate, so rho < 0 is the expected coupling
+            # (faster decline, shorter life) and rho > 0 is its opposite. Both
+            # previously printed the same label (register N106).
+            strength = "strong" if abs(rho) >= 0.7 else (
+                "moderate" if abs(rho) >= 0.4 else "weak")
+            if rho < 0:
+                interp = (f"Faster motor decline goes with SHORTER lifespan "
+                          f"({strength} coupling, rho = {rho:+.2f})")
+            else:
+                interp = (f"Faster motor decline goes with LONGER lifespan "
+                          f"({strength}, rho = {rho:+.2f}) -- the OPPOSITE of the "
+                          f"expected coupling; check for a survivorship or "
+                          f"follow-up-length artefact before interpreting")
         else:
             interp = "No significant motor-survival coupling"
 

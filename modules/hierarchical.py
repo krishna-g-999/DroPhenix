@@ -765,6 +765,50 @@ def fit_mixed_logit(
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. THE HEADLINE DIAGNOSTIC
 # ═══════════════════════════════════════════════════════════════════════════
+def _icc_cluster_bootstrap(grp_a: pd.DataFrame, grp_b: pd.DataFrame,
+                           cluster_col: str, count_col: str, total_col: str,
+                           n_boot: int = 2000, seed: int = 7
+                           ) -> Tuple[float, float]:
+    """
+    Percentile CI for the pooled ICC, resampling VIALS rather than flies.
+
+    The ICC is a statement about vials, so the vial is the resampling unit: a
+    bootstrap over flies would hold the vial structure fixed and report an
+    interval far too narrow. Each replicate draws vials with replacement within
+    each group, recomputes the raw (untruncated) rho_A per group, averages, and
+    the percentiles of that distribution form the interval. The RAW estimator is
+    bootstrapped on purpose -- truncating inside the loop would push the whole
+    interval upward, which is the bias this exists to expose (register N108).
+
+    Returns (lo, hi) at 95%, or (nan, nan) when there are too few vials.
+    """
+    try:
+        per = []
+        for g in (grp_a, grp_b):
+            c = g.groupby(cluster_col)[count_col].sum().to_numpy(dtype=float)
+            t = g.groupby(cluster_col)[total_col].sum().to_numpy(dtype=float)
+            if len(c) < 2:
+                return np.nan, np.nan
+            per.append((c, t))
+        rng = np.random.default_rng(seed)
+        draws = np.empty(n_boot, dtype=float)
+        for b in range(n_boot):
+            vals = []
+            for c, t in per:
+                idx = rng.integers(0, len(c), len(c))
+                est = estimate_icc(c[idx], t[idx])
+                r = est.get("icc_raw", np.nan)
+                if np.isfinite(r):
+                    vals.append(r)
+            draws[b] = np.mean(vals) if vals else np.nan
+        ok = draws[np.isfinite(draws)]
+        if ok.size < max(50, n_boot // 20):
+            return np.nan, np.nan
+        return (float(np.percentile(ok, 2.5)), float(np.percentile(ok, 97.5)))
+    except Exception:
+        return np.nan, np.nan
+
+
 def pseudoreplication_report(
     df: pd.DataFrame,
     group_col: str = "Treatment",
@@ -846,10 +890,42 @@ def pseudoreplication_report(
         grp_b.groupby(cluster_col)[count_col].sum(),
         grp_b.groupby(cluster_col)[total_col].sum(),
     )
-    iccs = [v["icc"] for v in (icc_a, icc_b) if np.isfinite(v.get("icc", np.nan))]
-    icc_pooled = float(np.mean(iccs)) if iccs else np.nan
+    # ── Averaging the ICCs: average RAW, clip ONCE (register N108) ──────────
+    # `estimate_icc` returns both `icc_raw` (which can be negative, when vials
+    # are more homogeneous than binomial) and `icc` (truncated at zero, because
+    # a negative ICC is not usable in a design effect). Truncating is right for
+    # a single estimate; averaging the ALREADY-TRUNCATED values is not, because
+    # E[max(rho_hat, 0)] > 0 even when rho = 0. Measured over 4,000 draws of
+    # 3 vials x 10 flies of PURE BINOMIAL data with no vial effect at all:
+    #
+    #     mean icc_raw      = -0.0039   (correct: ~0)
+    #     mean icc clipped  = +0.0362
+    #     DEFF from the clipped mean = 1.326 -> "SEs 15% larger than naive",
+    #                                          "30 flies carry the information
+    #                                           of 22.6 independent flies"
+    #     DEFF averaging raw, clipping once = 1.000
+    #
+    # Those strings are what `verdict` prints, so the report manufactured a
+    # design effect out of noise. The error was CONSERVATIVE -- it inflates
+    # sample-size requirements rather than manufacturing significance -- but a
+    # verdict derived from noise is still a wrong number.
+    iccs_raw = [v["icc_raw"] for v in (icc_a, icc_b)
+                if np.isfinite(v.get("icc_raw", np.nan))]
+    icc_pooled_raw = float(np.mean(iccs_raw)) if iccs_raw else np.nan
+    icc_pooled = (max(icc_pooled_raw, 0.0) if np.isfinite(icc_pooled_raw)
+                  else np.nan)
 
-    mean_m = float(work.groupby(cluster_col)[total_col].sum().mean())
+    # ── Vial size: information-weighted, not arithmetic (register N108) ─────
+    # The design-effect multiplier is 1 + (m - 1) * rho with m the
+    # INFORMATION-weighted cluster size, sum(n^2)/sum(n), not the arithmetic
+    # mean. They coincide only when every vial holds the same number of flies;
+    # when sizes vary the arithmetic mean is smaller, so DEFF and the SE
+    # inflation were understated. `estimate_icc` already computes this as `m0`.
+    m_sizes = work.groupby(cluster_col)[total_col].sum().to_numpy(dtype=float)
+    m_sizes = m_sizes[np.isfinite(m_sizes) & (m_sizes > 0)]
+    mean_m_arith = float(m_sizes.mean()) if m_sizes.size else np.nan
+    mean_m = (float((m_sizes ** 2).sum() / m_sizes.sum())
+              if m_sizes.size and m_sizes.sum() > 0 else np.nan)
     deff = design_effect(mean_m, icc_pooled)
     n_total = float(work[total_col].sum())
     n_eff = effective_sample_size(n_total, mean_m, icc_pooled)
@@ -882,14 +958,55 @@ def pseudoreplication_report(
         else np.nan
     )
 
+    # ── An INTERVAL for the ICC, because a point estimate from a handful of
+    # vials is not a number (register N108) ─────────────────────────────────
+    # Averaging the raw ICCs and truncating once removes half the upward bias,
+    # but not all of it: E[max(mean(rho_hat), 0)] is still > 0, because the
+    # mean of two estimates from three vials each is itself very noisy.
+    # Measured on PURE BINOMIAL data with no vial effect, 300 reports:
+    # truncating per group gave a mean reported ICC of +0.036 and DEFF 1.33;
+    # averaging raw and truncating once gave +0.025 and DEFF 1.23. Better, and
+    # still a design effect conjured from noise.
+    #
+    # The defect is not the arithmetic, it is reporting a point estimate at
+    # all. So the ICC is bootstrapped over CLUSTERS -- resampling vials, not
+    # flies, which is the unit the correlation is about -- and the verdict is
+    # driven by whether the interval excludes zero. When it does not, the
+    # report says the design cannot establish clustering and gives the
+    # interval's UPPER limit as the cautious planning figure, rather than
+    # printing a point inflation as though it were measured.
+    icc_lo, icc_hi = _icc_cluster_bootstrap(
+        grp_a, grp_b, cluster_col, count_col, total_col)
+    icc_resolves = bool(np.isfinite(icc_lo) and icc_lo > 0.0)
+    deff_hi = design_effect(mean_m, icc_hi) if np.isfinite(icc_hi) else {
+        "deff": np.nan, "se_inflation": np.nan}
+
     verdict_bits = []
     if np.isfinite(icc_pooled):
-        verdict_bits.append(f"Intra-vial correlation ICC = {icc_pooled:.3f}")
-    if np.isfinite(deff["deff"]):
+        if icc_resolves:
+            verdict_bits.append(
+                f"Intra-vial correlation ICC = {icc_pooled:.3f} "
+                f"(95% cluster-bootstrap CI {icc_lo:.3f} to {icc_hi:.3f})")
+        else:
+            verdict_bits.append(
+                f"Intra-vial correlation is NOT RESOLVED by this design: "
+                f"ICC point estimate {icc_pooled:.3f}, 95% cluster-bootstrap "
+                f"CI {icc_lo:.3f} to {icc_hi:.3f}, which includes zero. With "
+                f"{int(work[cluster_col].nunique())} vials the ICC cannot be "
+                f"distinguished from no clustering, so the point estimate is "
+                f"not evidence of pseudoreplication")
+    if icc_resolves and np.isfinite(deff["deff"]):
         verdict_bits.append(
             f"design effect {deff['deff']:.2f} (standard errors {(deff['se_inflation'] - 1) * 100:.0f}% larger than naive)"
         )
-    if np.isfinite(n_eff):
+    elif np.isfinite(deff_hi["deff"]):
+        verdict_bits.append(
+            f"design effect is not established; for PLANNING use the interval's "
+            f"upper limit, design effect {deff_hi['deff']:.2f} "
+            f"(standard errors up to {(deff_hi['se_inflation'] - 1) * 100:.0f}% "
+            f"larger), and do not treat the point estimate as measured"
+        )
+    if icc_resolves and np.isfinite(n_eff):
         verdict_bits.append(
             f"{n_total:.0f} flies carry the information of {n_eff:.0f} independent flies"
         )
@@ -909,7 +1026,25 @@ def pseudoreplication_report(
         "p_ratio": inflation,
         "chi2_naive": float(chi2) if np.isfinite(chi2) else np.nan,
         "icc": icc_pooled,
+        # Register N108: both forms are reported so the truncation is visible.
+        # `icc_raw_pooled` can be negative; `icc` is it truncated at zero, once.
+        "icc_raw_pooled": icc_pooled_raw,
+        "icc_ci_lo": icc_lo,
+        "icc_ci_hi": icc_hi,
+        "icc_resolved": icc_resolves,
+        "design_effect_upper": deff_hi["deff"],
         "icc_by_group": {str(a): icc_a.get("icc"), str(b): icc_b.get("icc")},
+        "icc_raw_by_group": {str(a): icc_a.get("icc_raw"),
+                             str(b): icc_b.get("icc_raw")},
+        "icc_n_clusters_by_group": {str(a): icc_a.get("n_clusters"),
+                                    str(b): icc_b.get("n_clusters")},
+        "icc_note": (
+            "The ICC is averaged across groups BEFORE truncation at zero and "
+            "truncated once. Averaging the already-truncated values gives a "
+            "positive mean even when the true ICC is zero, which manufactured "
+            "a design effect of 1.33 from pure binomial data (register N108). "
+            "An ICC from a handful of vials is very imprecise: read it with "
+            "`icc_n_clusters_by_group` beside it."),
         "icc_betabinomial": rho_bb,
         "design_effect": deff["deff"],
         "se_inflation": deff["se_inflation"],
@@ -917,6 +1052,17 @@ def pseudoreplication_report(
         "n_effective": n_eff,
         "n_clusters": int(work[cluster_col].nunique()),
         "mean_flies_per_cluster": mean_m,
+        # Information-weighted (sum n^2 / sum n), which is the correct design-
+        # effect multiplier; the arithmetic mean is kept beside it because it is
+        # what a reader expects the phrase to mean, and they differ whenever
+        # vial sizes vary.
+        "mean_flies_per_cluster_arithmetic": mean_m_arith,
+        "cluster_size_note": (
+            "`mean_flies_per_cluster` is the INFORMATION-weighted cluster size "
+            "sum(n^2)/sum(n), which is the correct multiplier in "
+            "1 + (m-1)*rho. It equals the arithmetic mean only when every vial "
+            "holds the same number of flies; otherwise the arithmetic mean "
+            "understates the design effect (register N108)."),
         "conclusion_changes": bool(
             np.isfinite(p_naive) and np.isfinite(p_clustered)
             and (p_naive < 0.05) != (p_clustered < 0.05)

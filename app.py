@@ -5174,19 +5174,51 @@ def page_ymaze():
         alt = res["alternation"]
         alt = alt.copy()
         alt["Group"] = alt["Genotype"] + " | " + alt["Treatment"] + " | " + alt["Sex"]
+        # Register N104. The chart used to plot the RAW alternation against a
+        # fixed 50% line. A memoryless fly with turn bias b alternates at
+        # 100*(b^2+(1-b)^2) >= 50% for every b, so that line is the wrong null
+        # for any handed population and every arm cleared it. The primary panel
+        # is now the bias-corrected residual, which is the quantity the verdict
+        # uses; the raw figure and each group's own baseline are plotted beside
+        # it so the confound stays visible rather than being corrected away.
         fig = go.Figure()
         fig.add_trace(go.Bar(
-            x=alt["Group"], y=alt["Mean_alternation_pct"],
-            error_y=dict(type="data", array=alt["SEM"]),
-            marker_color="#2A7DE1", name="Mean alternation %"))
-        fig.add_hline(y=chance * 100, line_dash="dash", line_color="#C0392B",
-                      annotation_text=f"chance = {chance*100:.0f}%")
-        fig.update_layout(yaxis_title="Spontaneous alternation (%)", height=420,
-                          margin=dict(l=40, r=20, t=30, b=80))
+            x=alt["Group"], y=alt["Mean_alternation_vs_chance"],
+            error_y=dict(type="data", array=alt["SEM_vs_chance"]),
+            marker_color="#0072B2",
+            name="Alternation above the group's own turn-bias baseline"))
+        fig.add_hline(y=0.0, line_dash="dash", line_color="#D55E00",
+                      annotation_text="each fly's own chance baseline")
+        fig.update_layout(
+            yaxis_title="Alternation above own baseline (percentage points)",
+            height=420, margin=dict(l=40, r=20, t=30, b=80),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02))
         st.plotly_chart(fig, width="stretch")
+
+        fig_raw = go.Figure()
+        fig_raw.add_trace(go.Bar(
+            x=alt["Group"], y=alt["Mean_alternation_pct_raw"],
+            error_y=dict(type="data", array=alt["SEM_raw"]),
+            marker_color="#56B4E9", name="Observed alternation % (raw)"))
+        fig_raw.add_trace(go.Scatter(
+            x=alt["Group"], y=alt["Mean_own_chance_pct"], mode="markers",
+            marker=dict(symbol="diamond", size=11, color="#D55E00"),
+            name="This group's own chance baseline (from turn bias)"))
+        fig_raw.add_hline(y=chance * 100, line_dash="dot", line_color="#999999",
+                          annotation_text=f"fixed {chance*100:.0f}% (NOT the null)")
+        fig_raw.update_layout(yaxis_title="Spontaneous alternation (%)",
+                              height=380, margin=dict(l=40, r=20, t=30, b=80),
+                              legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        st.plotly_chart(fig_raw, width="stretch")
         st.dataframe(alt.drop(columns="Group"), width="stretch")
-        st.caption("One-sample test of each group's alternation vs the chance "
-                   "level (t-test if n>=8 and ~normal, else Wilcoxon).")
+        st.caption(
+            "The verdict is a one-sample test of each group's alternation "
+            "against **its own turn-bias baseline**, 100x(b2+(1-b)2) per fly, "
+            "not against a fixed 50% (t-test if n>=8 and ~normal, else "
+            "Wilcoxon). A memoryless fly with turn bias b alternates above 50% "
+            "for every b except 0.5, so a handed population clears a fixed 50% "
+            "null without any working memory at all; the dotted grey line is "
+            "shown only to make that gap visible. Register N104.")
         st.download_button("Download alternation CSV", alt.to_csv(index=False).encode(),
                            "ymaze_alternation.csv", "text/csv", key="dl_ymalt")
 
@@ -8451,9 +8483,40 @@ def _climbing_simple_validate():
     if not st.button("Compute MAE", type="primary", key="cbv_go"):
         return
 
-    root = Path(r"C:/Users/gkp11/Videos/HD Climbing assay")
+    # Register N117. This was hardcoded to one machine's video folder:
+    #     Path(r"C:/Users/gkp11/Videos/HD Climbing assay")
+    # Off that machine `root.exists()` is False, `lookup` stays empty, and
+    # `validation_report(..., day_lookup={})` SILENTLY drops the Day 3 / Day 7
+    # stratification -- so the day-stratified accuracy report could only ever be
+    # produced on one computer, the hosted app included, with no message saying
+    # why. It now resolves through the same discovery validation/lab_data.py
+    # uses for every other laboratory path, honours DROPHENIX_CLIMBING_ROOT, and
+    # SAYS SO when no root is found rather than degrading in silence.
     lookup = {}
-    if root.exists():
+    root = None
+    try:
+        import sys as _sys
+        _here = str(Path(__file__).resolve().parent)
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from validation import lab_data as _lab
+        root = _lab.climbing_root()
+    except Exception:
+        root = None
+    if root is None:
+        import os as _os
+        _env = _os.environ.get("DROPHENIX_CLIMBING_ROOT", "").strip()
+        if _env and Path(_env).exists():
+            root = Path(_env)
+    if root is None:
+        st.info(
+            "Day 3 / Day 7 stratification is unavailable: no climbing-video "
+            "root was found on this machine. The overall accuracy figures below "
+            "are unaffected; only the per-day breakdown is omitted. Set "
+            "DROPHENIX_CLIMBING_ROOT to the folder holding the recordings to "
+            "restore it.")
+    if root is not None and Path(root).exists():
+        root = Path(root)
         for f in root.glob("**/*.MOV"):
             s_ = str(f)
             if "3 rd day" in s_:

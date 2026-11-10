@@ -63,7 +63,7 @@ def worked_example(seed=1):
 
 
 # ── Simulation: efficiency & coverage, naive mean vs inverse-variance pool ─────
-def simulation(true_g=0.7, ns=(3, 7, 5, 4, 9), reps=2000, seed=7):
+def simulation(true_g=0.7, ns=(3, 7, 5, 4, 9), reps=3000, seed=7):
     rng = np.random.default_rng(seed)
     naive_est, iv_est = [], []
     iv_cov = 0
@@ -140,8 +140,11 @@ def main():
           f"(mean width {sim['width_hksj']:.3f}, "
           f"{sim['width_hksj']/sim['width_dl']:.2f}x)")
     print("-" * 72)
-    print("  Both numbers are from the same 2000 runs. This simulation has "
-          "tau^2 = 0 by")
+    # Derived, not typed. This line said "the same 2000 runs" while `reps`
+    # was a parameter, so raising the simulation silently made the prose
+    # beside the numbers wrong -- the same defect class as register N116.
+    print(f"  Both numbers are from the same {sim['reps']} runs. This "
+          f"simulation has tau^2 = 0 by")
     print("  construction -- one true effect in every strain -- which is the "
           "case where")
     print("  HKSJ is at its most conservative: the t(k-1) quantile replaces "

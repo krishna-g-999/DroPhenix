@@ -58,7 +58,7 @@ DroPhenix addresses all four gaps through a suite of purpose-built composite met
 - **Grooming** — %-time grooming, bout count/duration, group statistics
 - **Novel Metrics** — CRI, SDQ, TSW, and MDR (decline **over age**) with 300 DPI export
 - **Statistical Engine** — Normality/variance-gated ANOVA / Kruskal-Wallis, BH-FDR, effect sizes, bootstrap CI
-- **Clustering** — DTW-based trajectory clustering, dendrogram, PCA/UMAP
+- **Clustering** — DTW-based trajectory clustering, dendrogram, PCA embedding (UMAP optional: it needs `umap-learn`, which is NOT a requirement; without it the PCA embedding is used and the figure says so)
 - **Drug Ranking (cross-strain)** — Hedges' *g* + inverse-variance / DerSimonian–Laird meta-analysis across **unequal-N strains** → Therapeutic Score
 - **Translational Scoring** — Tier I–V compound ranking (TCS)
 - **Video / Live Recording** — Webcam / MP4 with automated fly counting (OpenCV)
@@ -69,7 +69,7 @@ DroPhenix addresses all four gaps through a suite of purpose-built composite met
 - **Trajectory forecasting** — empirical-Bayes population priors from completed cohorts, forward-in-time validation against four trivial baselines, split-conformal interval calibration, and decision-relevant endpoints (onset age, healthspan, days gained)
 - **Historical control arms** — robust meta-analytic-predictive priors with prior-data conflict detection, effective sample size in flies, and simulated operating characteristics
 - **Dose-response** — log-logistic fitting with profile-likelihood EC50 intervals, hormesis testing, and mortality-confounding diagnostics
-- **Validation & Benchmarking** — `validation/run_all.py` (41 suites, 1,067 checks vs published data and analytic ground truth) and `comparison_study.py` (vs 7 established tools)
+- **Validation & Benchmarking** — `validation/run_all.py` (58 suites vs published data and analytic ground truth; the runner prints its own suite and check counts, and `validate_readme_claims` fails if this number drifts) and `comparison_study.py` (vs 7 established tools)
 - **Export** — CSV, PNG, SVG, PDF, ZIP bundle
 
 ---
@@ -114,7 +114,7 @@ drophenix/
 │   ├── dose_response.py    # Log-logistic dose-response, EC50/LC50, hormesis
 │   ├── circadian_climbing.py # Time-of-day cosinor analysis of climbing
 │   ├── survival.py         # Kaplan-Meier, log-rank, Cox PH
-│   ├── trajectory_cluster.py # DTW clustering, PCA/UMAP
+│   ├── trajectory_cluster.py # DTW clustering, PCA (UMAP if umap-learn present)
 │   ├── translational_score.py # TCS compound ranking
 │   ├── visualizer.py       # Plotly figure factory
 │   ├── recording.py        # Webcam / video capture
@@ -130,7 +130,7 @@ drophenix/
 ├── requirements.txt
 ├── packages.txt
 └── validation/
-    ├── run_all.py          # Master runner — 41 suites, exit 0 = all passed
+    ├── run_all.py          # Master runner — 58 suites, exit 0 = all passed
     └── comparison_study.py # Head-to-head vs 7 established tools
 ```
 
@@ -155,7 +155,7 @@ python validation/run_all.py        # exit 0 = every suite passed
 | `validate_video` | synthetic ground-truth climbing clips | exact fly counts and PI recovered (8/4→33.3; 3/9→−50) |
 | `validate_larval` | known-velocity synthetic clip; lit. speed | exact speed recovered; WT ~1 mm/s |
 | `validate_grooming` | Qiao et al. 2018 (eLife) | exact bout maths; WT ~13% time grooming |
-| `validate_metrics` | analytic ground truth (5 sample sets) | MDR k-recovery Pearson r=0.989, median R²=0.99; SDQ/TSW exact; CRI ordinal |
+| `validate_metrics` | analytic ground truth (5 sample sets) | MDR k-recovery Pearson r >= 0.95 (asserted threshold; the run prints the value, 0.9815 at the time of writing), median R²=0.99; SDQ/TSW exact; CRI ordinal |
 | `validate_trajectory` | known shape families (4 seeds) | DTW clustering purity = 1.0 (2 clusters) |
 | `validate_drug_ranking` | statsmodels meta-analysis | inverse-variance/DL pooling exact; ranking A>B>C |
 | `validate_synthetic` | unified cohort coherence | disease-selective drug effect on all four assays |

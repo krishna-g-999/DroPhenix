@@ -418,10 +418,37 @@ def _empty_per_fly(per_fly: pd.DataFrame) -> bool:
 
 
 def alternation_summary(per_fly: pd.DataFrame, chance: float = DEFAULT_CHANCE) -> pd.DataFrame:
-    """Per-group mean alternation %, SEM, and one-sample test vs chance level."""
+    """
+    Per-group alternation, tested against each fly's OWN bias-expected baseline.
+
+    WHY THE TEST IS NOT AGAINST A FIXED 50% (register N104)
+    -------------------------------------------------------
+    A memoryless fly with turn bias `b` alternates at 100*(b^2 + (1-b)^2),
+    which is >= 50% for EVERY b and equals 50% only at b = 0.5. Werkhoven et al.
+    report individual Canton-S flies with bias above 70% or below 30%, so a
+    fixed 50% null is wrong for any real population: a memoryless fly at
+    b = 0.9 scores 82% raw and reads as excellent spatial memory.
+
+    This function previously tested the RAW `alternation_pct` against
+    `chance * 100`, while the bias-corrected `alternation_vs_chance` -- derived
+    three hundred lines earlier for exactly this purpose -- never reached a
+    verdict. Measured on `demo_ymaze()`, the TDP43 disease arm at 54.0% was
+    reported as "Above chance (working memory intact)" at p = 0.0024.
+
+    The primary test is therefore a one-sample test of `alternation_vs_chance`
+    against ZERO: positive means a fly alternates MORE than its own handedness
+    predicts, which is what working memory means. The raw mean and the raw test
+    are retained as descriptive columns, suffixed `_raw`, so the handedness
+    confound stays visible rather than being silently corrected away.
+
+    When `alternation_vs_chance` is unavailable -- a fly whose turn bias could
+    not be estimated -- the verdict REFUSES rather than falling back to the raw
+    test, because the fallback is the defect.
+    """
     if _empty_per_fly(per_fly):
         return pd.DataFrame()
     mu = chance * 100.0
+    has_corrected = "alternation_vs_chance" in per_fly.columns
     rows = []
     for kv, sub in per_fly.groupby(GROUP_KEYS, sort=False):
         vals = pd.to_numeric(sub["alternation_pct"], errors="coerce").to_numpy()
@@ -429,20 +456,61 @@ def alternation_summary(per_fly: pd.DataFrame, chance: float = DEFAULT_CHANCE) -
         n = len(v)
         mean = float(np.mean(v)) if n else np.nan
         sem = float(np.std(v, ddof=1) / np.sqrt(n)) if n > 1 else np.nan
-        stat, p, method = _onesample_vs_chance(vals, mu)
+        # descriptive only, kept so the handedness confound remains visible
+        _stat_raw, p_raw, method_raw = _onesample_vs_chance(vals, mu)
+
+        # ── the primary, bias-corrected test ────────────────────────────────
+        if has_corrected:
+            cvals = pd.to_numeric(sub["alternation_vs_chance"],
+                                  errors="coerce").to_numpy()
+            cv = cvals[~np.isnan(cvals)]
+            n_c = len(cv)
+            mean_c = float(np.mean(cv)) if n_c else np.nan
+            sem_c = float(np.std(cv, ddof=1) / np.sqrt(n_c)) if n_c > 1 else np.nan
+            _stat_c, p_c, method_c = _onesample_vs_chance(cvals, 0.0)
+            chance_mean = float(np.nanmean(pd.to_numeric(
+                sub["chance_alternation_pct"], errors="coerce").to_numpy()))                 if "chance_alternation_pct" in sub.columns else np.nan
+        else:
+            cv = np.array([])
+            n_c, mean_c, sem_c, p_c, method_c = 0, np.nan, np.nan, np.nan, "none"
+            chance_mean = np.nan
+
+        if n_c == 0:
+            interp = ("NOT INTERPRETABLE: turn bias could not be estimated, so "
+                      "each fly's own chance baseline is unknown. The raw "
+                      "columns are descriptive only -- a fixed 50% null is not "
+                      "valid for a handed population (register N104).")
+        elif pd.notna(p_c) and p_c < 0.05 and mean_c > 0:
+            interp = ("Alternates above its own turn-bias baseline "
+                      "(working memory intact)")
+        elif pd.notna(p_c) and p_c < 0.05 and mean_c < 0:
+            interp = ("Alternates BELOW its own turn-bias baseline "
+                      "(memory deficit)")
+        else:
+            interp = ("At its own turn-bias baseline (no evidence of spatial "
+                      "working memory beyond handedness)")
+
         rec = dict(zip(GROUP_KEYS, kv if isinstance(kv, tuple) else (kv,)))
         rec.update({
             "n_flies": n,
-            "Mean_alternation_pct": round(mean, 2) if pd.notna(mean) else np.nan,
-            "SEM": round(sem, 2) if pd.notna(sem) else np.nan,
-            "Chance_pct": round(mu, 1),
-            "vs_chance_p": round(p, 6) if pd.notna(p) else np.nan,
-            "Sig_vs_chance": _sig(p),
-            "Test": method,
-            "Interpretation": (
-                "Above chance (working memory intact)" if pd.notna(p) and p < 0.05 and mean > mu
-                else "Below chance (memory deficit)" if pd.notna(p) and p < 0.05 and mean < mu
-                else "At chance (no evidence of spatial working memory)"),
+            # the primary, bias-corrected quantities
+            "Mean_alternation_vs_chance": round(mean_c, 2) if pd.notna(mean_c) else np.nan,
+            "SEM_vs_chance": round(sem_c, 2) if pd.notna(sem_c) else np.nan,
+            "Mean_own_chance_pct": round(chance_mean, 2) if pd.notna(chance_mean) else np.nan,
+            "vs_own_chance_p": round(p_c, 6) if pd.notna(p_c) else np.nan,
+            "Sig_vs_own_chance": _sig(p_c),
+            "Test": method_c,
+            "Interpretation": interp,
+            # descriptive: the raw figure and the invalid fixed-50% test, kept
+            # visible and clearly marked so the confound is not hidden
+            "Mean_alternation_pct_raw": round(mean, 2) if pd.notna(mean) else np.nan,
+            "SEM_raw": round(sem, 2) if pd.notna(sem) else np.nan,
+            "Fixed_chance_pct_raw": round(mu, 1),
+            "vs_fixed_chance_p_raw": round(p_raw, 6) if pd.notna(p_raw) else np.nan,
+            "Test_raw": method_raw,
+            "Raw_test_note": ("DESCRIPTIVE ONLY: a fixed 50% null over-states "
+                              "alternation for any handed population; the "
+                              "verdict uses each fly's own baseline."),
         })
         rows.append(rec)
     return pd.DataFrame(rows)

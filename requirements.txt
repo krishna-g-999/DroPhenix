@@ -20,7 +20,14 @@ scikit-image>=0.21.0,<1.0.0
 plotly>=5.18.0,<7.0.0
 
 # ── Streamlit & live video stack ─────────────────────────────────────────────
-streamlit>=1.32.0,<2.0.0
+# Register N117. The floor was >=1.32.0 while app.py uses `width="stretch"`
+# 115 times. That parameter arrived in Streamlit 1.46.0 (June 2025, "You can
+# set the width of most Streamlit elements"); before it, the first widget
+# drawn raises TypeError. Any environment that satisfied the old floor but
+# resolved below 1.46 -- a conda env, a pinned lab environment, a
+# pre-existing install -- crashed on page load while appearing to meet the
+# declared requirements.
+streamlit>=1.46.0,<2.0.0
 streamlit-webrtc>=0.47.0       # browser-based webcam capture
 av>=11.0.0                     # PyAV — video decode/encode (required by webrtc)
 
@@ -74,3 +81,17 @@ Pillow>=10.0.0                 # PIL.Image -- the Draw Vials canvas background.
                                # this file, so a clean install crashed on that page.
 streamlit-drawable-canvas>=0.9.0
 ffmpeg-python>=0.2.0
+
+# python-docx -- `dam_report.build()` imports it UNGUARDED (`dam_report.py:143`) and
+# `drophenix_cli.py:318` calls that as the LAST step of `dam-run`. It was listed only in
+# requirements-validation.txt, which the README's install section never mentions, so a
+# clean install followed the documented pipeline and died with ModuleNotFoundError at the
+# deliverable. Register N113.
+python-docx>=1.1.0
+
+# patsy -- `hierarchical.fit_betabinomial` imports it unguarded (`hierarchical.py:307`).
+# It was reaching us only as a TRANSITIVE dependency of statsmodels (which requires
+# patsy>=0.5.6). statsmodels is migrating its formula interface toward `formulaic`, so a
+# future release could drop the pin and take the beta-binomial fit down with it. Declared
+# directly, which costs nothing. Found by validate_readme_claims section C, not by hand.
+patsy>=0.5.6

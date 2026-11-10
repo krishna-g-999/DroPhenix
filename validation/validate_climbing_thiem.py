@@ -12,6 +12,22 @@ ESTABLISHES
     It does NOT establish anything about DroPhenix's own fly DETECTION. This is
     hand-scored data; no image was analysed.
 
+    AND IT DOES NOT TEST DROPHENIX CODE AT ALL (register N115). This file
+    imports nothing from `modules/` -- its complete import list is re, sys,
+    pathlib, numpy, pandas. Every quantity below is computed inside this file.
+    So a PASS establishes that the published table is internally consistent and
+    that OUR READING of it is right, which is a real and useful thing to know
+    before trusting the dataset. It does NOT establish that any DroPhenix
+    function handles it correctly.
+
+    This matters because the section below frames the suite around register N8
+    ("DroPhenix scored a failed measurement as PI = 0.0 ... this is the right
+    place to check that those are not collapsed"). It is NOT that place: it
+    never loads `data_parser` or `normalizer`, so it cannot check DroPhenix's
+    handling of anything. To close N8, this suite would have to push these
+    cells through the product's own parser and summariser and assert on what
+    comes out.
+
 WHY THIS SUITE EXISTS
 ---------------------
 `docs/REFERENCE_DATASETS.md` section 3 listed this dataset as "found but not

@@ -369,6 +369,63 @@ def test_F_mixed_slope_recovery() -> None:
           f"({se_mixed_between / se_naive_between:.2f}x larger once vials are respected)")
 
 
+def test_G_icc_is_not_manufactured_from_noise() -> None:
+    """
+    Register N108. `pseudoreplication_report` printed a design effect, an SE
+    inflation and an "N flies carry the information of M" verdict built on a
+    point ICC averaged from already-truncated per-group estimates. Because
+    E[max(rho_hat, 0)] > 0 even when rho = 0, PURE BINOMIAL data with no vial
+    effect at all produced a mean reported ICC of +0.036 and a design effect of
+    1.33 -- "standard errors 15% larger than naive", from noise.
+
+    The ICC is now bootstrapped over VIALS and the verdict is driven by whether
+    that interval excludes zero. This checks both directions, because a guard
+    that never fires would be just as wrong as one that always does:
+
+      - under the null, almost no report may claim a resolved ICC;
+      - with a real vial effect and enough vials, most must.
+    """
+    print("\nG. the ICC is not manufactured from noise, and is still detected")
+
+    def _resolve_rate(n_vials: int, icc_true: float, reps: int = 40,
+                      seed: int = 5) -> float:
+        rng = np.random.default_rng(seed)
+        got = []
+        for _ in range(reps):
+            rows = []
+            for g in ("A", "B"):
+                for v in range(n_vials):
+                    if icc_true > 0:
+                        a = 0.6 * (1 / icc_true - 1)
+                        b = 0.4 * (1 / icc_true - 1)
+                        pv = rng.beta(a, b)
+                    else:
+                        pv = 0.6
+                    rows.append({"Group": g, "Vial": f"{g}{v}",
+                                 "Climbed": rng.binomial(10, pv), "Total": 10})
+            r = H.pseudoreplication_report(
+                pd.DataFrame(rows), group_col="Group", cluster_col="Vial",
+                count_col="Climbed", total_col="Total")
+            got.append(bool(r.get("icc_resolved")))
+        return 100.0 * float(np.mean(got))
+
+    null_3 = _resolve_rate(3, 0.0)
+    null_12 = _resolve_rate(12, 0.0)
+    real_12 = _resolve_rate(12, 0.30)
+    check("null data, 3 vials/group: the ICC is NOT claimed as resolved",
+          null_3 <= 10.0,
+          f"{null_3:.0f}% of reports claimed a resolved ICC (must be <= 10%)")
+    check("null data, 12 vials/group: the ICC is NOT claimed as resolved",
+          null_12 <= 10.0,
+          f"{null_12:.0f}% of reports claimed a resolved ICC (must be <= 10%)")
+    check("real ICC 0.30, 12 vials/group: clustering IS detected",
+          real_12 >= 80.0,
+          f"{real_12:.0f}% of reports resolved it (must be >= 80%)")
+    print(f"         operating characteristics -- resolve rate: "
+          f"null/3 vials {null_3:.0f}%, null/12 {null_12:.0f}%, "
+          f"ICC 0.30/12 {real_12:.0f}%")
+
+
 def main() -> int:
     print("=" * 78)
     print("VALIDATION: modules/hierarchical.py")
@@ -379,6 +436,7 @@ def main() -> int:
     test_D_reduces_to_binomial_glm()
     test_E_type_I_error()
     test_F_mixed_slope_recovery()
+    test_G_icc_is_not_manufactured_from_noise()
 
     print("\n" + "=" * 78)
     if FAILURES:
