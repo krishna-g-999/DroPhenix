@@ -258,8 +258,22 @@ def _require_metrics() -> bool:
 
 def _template_button(filename: str, label: str = "Download data template",
                      key: Optional[str] = None):
-    """Offer the matching CSV template (from templates/) as a download."""
-    p = Path("templates") / filename
+    """Offer the matching CSV template (from templates/) as a download.
+
+    The path is resolved against THIS FILE, not the current working directory.
+    `Path("templates")` is CWD-relative, so every one of the twelve shipped
+    templates became unreachable the moment the app was launched from anywhere
+    other than the repository root -- which is what a packaged launcher, a
+    service unit and Streamlit Cloud all do. The user saw only
+    "(template climbing_template.csv not found)" beside the upload box, with the
+    file sitting in the repository the whole time. Confirmed live in the browser
+    before the fix. Same class as register N117.
+    """
+    here = Path(__file__).resolve().parent
+    p = here / "templates" / filename
+    if not p.exists():                      # legacy CWD-relative location
+        alt = Path("templates") / filename
+        p = alt if alt.exists() else p
     if p.exists():
         st.download_button(label, p.read_bytes(), filename, "text/csv",
                            key=key or f"tpl_{filename}")

@@ -141,3 +141,6 @@ node_modules/
 # the profiles are cached -- but they are derived from footage that may not be
 # published, so they never enter the repository.
 .cache/
+
+# Browser download scratch folder from GUI round-trip testing (user's local files)
+Assay template/
