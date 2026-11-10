@@ -377,6 +377,16 @@ def page_data_input():
                 })
                 st.success(f"Aging demo loaded: {len(df_raw)} rows, "
                            f"{df_raw['Age'].nunique()} ages.")
+                # Register N119. Loading a demo used to leave `run_complete`
+                # False, so the user still had to find "Run Full Analysis
+                # Pipeline" -- which sits inside a COLLAPSED tab further down
+                # the page. Three steps, the last one hidden. Every assay page
+                # then said "No analysis results. Go to Data Input and run the
+                # pipeline.", and a first-time user reasonably concluded the
+                # tool was broken. A demo exists to show the tool working, so
+                # it now runs itself.
+                with st.spinner("Running the analysis pipeline on the demo..."):
+                    _run_pipeline(df_raw, None, None)
         elif src == "Demo dataset":
             st.caption(
                 "A complete worked study, so that every page has something to "
@@ -413,9 +423,14 @@ def page_data_input():
                     f"Demo study loaded: {len(df_raw)} rows, "
                     f"{df_raw['VialID'].nunique()} vials, "
                     f"{df_raw['Age'].nunique()} ages, "
-                    f"{df_raw['Dose'].nunique()} dose levels. "
-                    f"Run the pipeline below, then every page in the sidebar "
-                    f"has something to show.")
+                    f"{df_raw['Dose'].nunique()} dose levels.")
+                # Register N119. See the note on the ageing demo above: the
+                # demo now runs its own pipeline, because requiring two further
+                # clicks -- the last on a button inside a COLLAPSED tab -- left
+                # every assay page saying "No analysis results" to a first-time
+                # user who had just asked to see the demo.
+                with st.spinner("Running the analysis pipeline on the demo..."):
+                    _run_pipeline(df_raw, None, None)
 
         elif src == "Upload CSV or Excel":
             st.caption(
