@@ -286,6 +286,89 @@ def test_C_real_footage() -> None:
           f"measured {np.abs(b).mean():.2f}, published {FB.MEASURED['mae_total']}")
 
 
+def test_E_ratio_estimator() -> None:
+    """
+    `count_above_by_ratio`, RE-DERIVED rather than asserted (register N126).
+
+    This is deliberately the opposite of `fly_blob.MEASURED`, whose hold-out
+    cache was lost so that no suite can check it (N112). The cells this reads
+    are in `.cache/climbing_cells.npz`, which is present, so every number in
+    `RATIO_MEASURED` is recomputed here from the pixels. If the estimator
+    changes, these fail.
+
+    What is checked is what the estimator CLAIMS: that it beats the published
+    bar on MAE and RMSE, and -- the reason it exists -- that it preserves all
+    six arm orderings, which peak counting does not. It is NOT claimed to clear
+    the spread criterion, and the check below asserts that it does not, so the
+    docstring cannot drift into overstating it.
+    """
+    print("\nE. the ratio estimator, re-derived from the cached cells")
+    cells = Path(__file__).resolve().parents[1] / ".cache" / "climbing_cells.npz"
+    if not cells.exists():
+        print(f"  [SKIP] {cells} is not on this machine; section E "
+              f"established nothing")
+        return
+    import json
+    z = np.load(cells, allow_pickle=False)
+    meta = json.loads(str(z["meta"]))
+    hand, est, peak, arms = [], [], [], []
+    for m in meta:
+        g, b = z[m["key"] + "_gray"], z[m["key"] + "_bg"]
+        line, n = int(m["line_in_crop"]), int(m.get("n_flies", 20))
+        r = FB.count_above_by_ratio(g, b, line, n)
+        if not r["usable"]:
+            continue
+        pts = FB.detect(g, b, None)
+        hand.append(float(m["hand"]))
+        est.append(float(r["n_above"]))
+        peak.append(float(sum(1 for (_x, cy, _mm) in pts if cy < line)))
+        arms.append(f"{m['Genotype']} {m['Treatment']}")
+    hand = np.asarray(hand); est = np.asarray(est); peak = np.asarray(peak)
+    check(f"every cached cell yields a usable ratio ({len(hand)} of {len(meta)})",
+          len(hand) == len(meta), f"{len(hand)} usable")
+
+    err = est - hand
+    mae = float(np.mean(np.abs(err)))
+    rmse = float(np.sqrt(np.mean(err ** 2)))
+    claim = FB.RATIO_MEASURED
+    check(f"MAE re-derives to the claimed {claim['mae']}",
+          abs(mae - claim["mae"]) < 0.05, f"re-derived {mae:.3f}")
+    check(f"RMSE re-derives to the claimed {claim['rmse']}",
+          abs(rmse - claim["rmse"]) < 0.05, f"re-derived {rmse:.3f}")
+    check("it beats the published bar on MAE (3.589)", mae < 3.589,
+          f"{mae:.3f}")
+    check("it beats the published bar on RMSE (4.436)", rmse < 4.436,
+          f"{rmse:.3f}")
+
+    def arm_means(v):
+        out = {}
+        for a in sorted(set(arms)):
+            sel = np.array([x == a for x in arms])
+            out[a] = float(v[sel].mean())
+        return out
+
+    mh, me, mp = arm_means(hand), arm_means(est), arm_means(peak)
+    order = sorted(mh, key=lambda a: mh[a])
+    seq_e = [me[a] for a in order]
+    seq_p = [mp[a] for a in order]
+    mono_e = all(seq_e[i] <= seq_e[i + 1] for i in range(len(seq_e) - 1))
+    mono_p = all(seq_p[i] <= seq_p[i + 1] for i in range(len(seq_p) - 1))
+    check("the arm means are MONOTONE in the true ordering", mono_e,
+          "  ".join(f"{v:.2f}" for v in seq_e))
+    # the incumbent is NOT, and that is the whole reason this exists. If peak
+    # counting ever becomes monotone here, this claim must be revisited.
+    check("peak counting is NOT monotone, which is why this exists",
+          not mono_p, "  ".join(f"{v:.2f}" for v in seq_p))
+
+    sh = max(mh.values()) - min(mh.values())
+    se = max(me.values()) - min(me.values())
+    spread = 100.0 * se / sh
+    check("the spread criterion is NOT met, and is not claimed to be",
+          spread < 69.0,
+          f"recovers {spread:.1f}% of the between-arm range, against the "
+          f"bar's 69%. Stated so the docstring cannot drift into claiming it.")
+
+
 def test_D_refusal() -> None:
     print("\nD. Bad input is refused, not silently answered")
     bg = background_of()
@@ -315,6 +398,7 @@ def main() -> int:
     test_B_size_selectivity()
     test_C_real_footage()
     test_D_refusal()
+    test_E_ratio_estimator()
     print("\n" + "=" * 78)
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}):")

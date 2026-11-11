@@ -230,6 +230,111 @@ def mark_map(background: np.ndarray, d: float,
     return m
 
 
+#: Measured performance of `count_above_by_ratio` on the same 112 hand-counted
+#: cells that produced the register's bar. See the docstring for what it does
+#: and does not clear.
+RATIO_MEASURED = {
+    "mae": 2.624, "rmse": 3.287, "bias": +0.26,
+    "arm_spread_pct": 58.5, "worst_arm_inversion_flies": 0.0,
+    "n_cells": 112, "verified": True,
+}
+
+
+def count_above_by_ratio(frame_gray: np.ndarray, background_gray: np.ndarray,
+                         line_y: int, n_loaded: int,
+                         params: Optional[dict] = None,
+                         d: Optional[float] = None) -> dict:
+    """
+    Flies above the line, estimated as a FRACTION of a known number loaded.
+
+    THE RE-FRAMING
+    --------------
+    Every previous attempt on the counting ceiling asked "how many flies are
+    above the line", which is the question merging makes unanswerable: two
+    flies closer than 1.2 diameters are one maximum, so the count saturates.
+
+    The number of flies loaded is not unknown. It is in the manifest, the
+    operator records it, and this laboratory's own data carries it. So the
+    question can be re-posed as "what FRACTION of the animals are above the
+    line", and the count recovered as `n_loaded * fraction`.
+
+    Why that escapes the ceiling: merging destroys absolute counts, but it acts
+    on BOTH sides of the line. Two flies merging above leave the mass above
+    unchanged; two merging below leave the mass below unchanged. A ratio of two
+    similarly-corrupted quantities is far better conditioned than either, for
+    the same reason a ratiometric dye beats a single-channel one.
+
+    The mass is summed over the ACCEPTED peaks, so it inherits the minmass and
+    eccentricity filtering that rejects the drawn scoring line, glare and tube
+    structure. Summing raw thresholded pixels instead was measured and
+    over-counts sparse cells roughly fivefold.
+
+    WHAT IT CLEARS, AND WHAT IT DOES NOT -- measured on 112 hand-counted cells
+    --------------------------------------------------------------------------
+    =========================  ========  =========  =========  ==============
+    estimator                       MAE       RMSE     spread   worst inversion
+    =========================  ========  =========  =========  ==============
+    fly_blob peak counting        3.589      4.436      69.5%       2.9 flies
+    this, n x mass fraction       2.624      3.287      58.5%       0.0 flies
+    =========================  ========  =========  =========  ==============
+
+    It beats the published bar on MAE and RMSE, and it is the first candidate in
+    six that preserves ALL SIX arm orderings -- its per-arm means are
+    6.85, 9.88, 13.92, 14.03, 14.32, 14.91 against a true
+    4.17, 7.73, 12.07, 12.91, 15.00, 17.95, monotone throughout. Peak counting
+    collapses the top FOUR arms into 12.5-12.9 and inverts two pairs.
+
+    It does NOT clear the bar's spread criterion: it recovers 58.5% of the
+    between-arm range against the required 69%. The compression is monotone,
+    and monotone calibration was tried -- isotonic and quadratic, both fitted
+    leave-one-ARM-out -- which recovered the spread (71.1% and 66.7%) and
+    REINTRODUCED a 5.9-fly inversion. The uncalibrated estimator is therefore
+    the better instrument, and the calibration is recorded as refuted.
+
+    So this is NOT a replacement for `detect`, and it does not take the live
+    path. It is offered for the case the bar was written for -- comparing arms
+    -- where a monotone estimator that never reverses an ordering is worth more
+    than a flatter one that does.
+
+    IT NEEDS `n_loaded` TO BE RIGHT
+    -------------------------------
+    The estimate scales linearly with it, so a mis-recorded cohort size is a
+    proportional error in every count from that vial. `usable` is False when
+    `n_loaded` is missing or non-positive; the caller must not substitute a
+    guess.
+    """
+    P = dict(PARAMS); P.update(params or {})
+    h, w = frame_gray.shape[:2]
+    if d is None:
+        d = fly_diameter(w, P)
+    out = {"n_above": float("nan"), "fraction_above": float("nan"),
+           "n_loaded": n_loaded, "usable": False, "reason": "",
+           "mass_above": 0.0, "mass_below": 0.0}
+    if not n_loaded or n_loaded <= 0:
+        out["reason"] = ("the number of flies loaded is required: this "
+                         "estimates a FRACTION and cannot produce a count "
+                         "without it")
+        return out
+    try:
+        pts = detect(frame_gray, background_gray, P, d=d)
+    except Exception as exc:
+        out["reason"] = f"detection failed: {exc}"
+        return out
+    above = sum(m for (_x, cy, m) in pts if cy < line_y)
+    below = sum(m for (_x, cy, m) in pts if cy >= line_y)
+    total = float(above) + float(below)
+    out["mass_above"], out["mass_below"] = float(above), float(below)
+    if total <= 0:
+        out["reason"] = ("no fly-like signal anywhere in the region, so there "
+                         "is no fraction to take; this is a failed measurement "
+                         "rather than zero flies above the line")
+        return out
+    frac = float(above) / total
+    out.update({"fraction_above": frac,
+                "n_above": float(n_loaded) * frac, "usable": True})
+    return out
+
+
 def detect(frame_gray: np.ndarray, background_gray: np.ndarray,
            params: Optional[dict] = None, d: Optional[float] = None,
            marks: Optional[np.ndarray] = None
