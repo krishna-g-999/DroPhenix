@@ -69,11 +69,19 @@ def suites_listed_by_run_all() -> set[str]:
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if isinstance(t, ast.Name) and t.id == "SUITES":
+                    # EVERY string in the SUITES literal, with no prefix
+                    # filter. The filter used to require `validate_` or
+                    # `verify_`, which silently excluded `demo_unequal_n` --
+                    # a suite `run_all` genuinely runs. So the runner ran 60
+                    # suites, the README claimed 59, and THIS CHECK PASSED,
+                    # because it undercounted by exactly the same one it was
+                    # supposed to catch. A guard whose blind spot matches the
+                    # drift it polices is worse than no guard: it certifies
+                    # the error.
                     return {
                         e.value for e in ast.walk(node.value)
                         if isinstance(e, ast.Constant) and isinstance(e.value, str)
-                        and (e.value.startswith("validate_")
-                             or e.value.startswith("verify_"))
+                        and e.value.strip()
                     }
     return set()
 
