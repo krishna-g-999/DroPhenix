@@ -313,11 +313,41 @@ def _render_offline():
 
 
 def _render_desktop():
+    """
+    The desktop camera-capture panel, when one exists.
+
+    `modules/recording.py` is a camera BACKEND library -- `open_capture`,
+    `list_cameras`, `capture_test_frame`, `RecordingSettings` -- and has no
+    `render`. There has never been a page function behind this import, so this
+    branch has always failed; until `modules/auto_recording.py` was tracked
+    (register N114) the failure was hidden one level further up, behind an
+    ImportError on this module itself.
+
+    Live capture is out of scope for the current work, so rather than show a
+    raw ImportError the page says plainly what is and is not available and
+    sends the user to the pages that do work. A stack trace in the interface
+    reads as a crash; this is a missing feature, and the two should not look
+    the same.
+    """
     try:
         from modules.recording import render as _rec
+    except ImportError:
+        _rec = None
+    except Exception as exc:
+        _rec = None
+        st.warning(f"The camera backend could not be loaded: {exc}")
+    if _rec is None:
+        st.info(
+            "**Live camera capture is not available in this build.** The "
+            "camera backend (`modules/recording.py`) is present and provides "
+            "device discovery and frame capture, but no capture page is wired "
+            "to it yet.\n\n"
+            "Record on the bench as usual, then use **Video Scoring** or "
+            "**Climbing Video** to score the recording. Those pages are the "
+            "measured path and are unaffected by this.")
+        return
+    try:
         _rec(st.subheader, st.info, st.warning, st.success)
-    except ImportError as exc:
-        st.error("modules/recording.py not found: " + str(exc))
     except Exception as exc:
         import traceback
         st.error("Recording error: " + str(exc))

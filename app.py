@@ -1,5 +1,5 @@
 """
-DroPhenix Analytics v2.0
+DroPhenix v3.0
 Drosophila Climbing and Motor Assay Analysis Platform
 SSSIHL Department of Bioscience 
 """
@@ -76,10 +76,11 @@ def _write_config():
     if not p.exists():
         p.write_text(
             '[theme]\n'
-            'primaryColor           = "#F0A500"\n'
-            'backgroundColor        = "#EEF2F9"\n'
+            'base                   = "light"\n'
+            'primaryColor           = "#A84A00"\n'
+            'backgroundColor        = "#F2F4F6"\n'
             'secondaryBackgroundColor = "#FFFFFF"\n'
-            'textColor              = "#0D2137"\n'
+            'textColor              = "#0F2133"\n'
             'font                   = "sans serif"\n'
             '[server]\n'
             'headless = true\n'
@@ -164,7 +165,7 @@ _init_state()
 
 # ── Import guard ──────────────────────────────────────────────────────────────
 if not _IMPORTS_OK:
-    render_header("DroPhenix Analytics v2.0",
+    render_header("DroPhenix v3.0",
                   "Drosophila Climbing and Motor Assay Analysis Platform")
     st.error(f"Module import failed: {_IMPORT_ERROR}")
     st.info(
@@ -217,7 +218,7 @@ with st.sidebar:
     except ImportError:
         st.markdown(
             '<div style="text-align:center;padding:1.2rem 0 .4rem;'
-            'font-size:1.3rem;font-weight:800;color:#F0A500">DroPhenix</div>',
+            'font-size:1rem;font-weight:600;color:#FFFFFF">DroPhenix</div>',
             unsafe_allow_html=True,
         )
     st.divider()
@@ -360,14 +361,14 @@ def page_data_input():
         )
         if src == "Demo: ageing series only":
             st.caption(
-                "A SMALLER dataset: longitudinal climbing across ages 5–45 days "
+                "A SMALLER dataset: longitudinal climbing across ages 5-45 days "
                 "(Oregon-WT vs TDP43, Vehicle vs Drug), with an `Age` column "
                 "and nothing else. The full **Demo dataset** above already "
                 "covers ageing and every other axis; this one is here when you "
                 "want the ageing analyses on their own, with less to load and "
                 "fewer factors in the way."
             )
-            if st.button("Load Aging Demo", type="primary", key="load_aging"):
+            if st.button("Load the ageing demo", type="primary", key="load_aging"):
                 from modules import synthetic as _syn
                 df_raw, warns, errs = load_data(_syn.generate_climbing_aging())
                 st.session_state.update({
@@ -375,8 +376,18 @@ def page_data_input():
                     "data_warnings": warns, "data_errors": errs,
                     "run_complete": False, "base_metrics": {},
                 })
-                st.success(f"Aging demo loaded: {len(df_raw)} rows, "
+                st.success(f"Ageing demo loaded: {len(df_raw)} rows, "
                            f"{df_raw['Age'].nunique()} ages.")
+                # Register N119. Loading a demo used to leave `run_complete`
+                # False, so the user still had to find "Run Full Analysis
+                # Pipeline" -- which sits inside a COLLAPSED tab further down
+                # the page. Three steps, the last one hidden. Every assay page
+                # then said "No analysis results. Go to Data Input and run the
+                # pipeline.", and a first-time user reasonably concluded the
+                # tool was broken. A demo exists to show the tool working, so
+                # it now runs itself.
+                with st.spinner("Running the analysis pipeline on the demo..."):
+                    _run_pipeline(df_raw, None, None)
         elif src == "Demo dataset":
             st.caption(
                 "A complete worked study, so that every page has something to "
@@ -401,7 +412,7 @@ def page_data_input():
                 "is here to show how each page behaves on data of the right "
                 "shape."
             )
-            if st.button("Load Demo Dataset", type="primary"):
+            if st.button("Load the demo dataset", type="primary"):
                 from modules import synthetic as _syn
                 df_raw, warns, errs = load_data(_syn.generate_demo_study())
                 st.session_state.update({
@@ -413,9 +424,14 @@ def page_data_input():
                     f"Demo study loaded: {len(df_raw)} rows, "
                     f"{df_raw['VialID'].nunique()} vials, "
                     f"{df_raw['Age'].nunique()} ages, "
-                    f"{df_raw['Dose'].nunique()} dose levels. "
-                    f"Run the pipeline below, then every page in the sidebar "
-                    f"has something to show.")
+                    f"{df_raw['Dose'].nunique()} dose levels.")
+                # Register N119. See the note on the ageing demo above: the
+                # demo now runs its own pipeline, because requiring two further
+                # clicks -- the last on a button inside a COLLAPSED tab -- left
+                # every assay page saying "No analysis results" to a first-time
+                # user who had just asked to see the demo.
+                with st.spinner("Running the analysis pipeline on the demo..."):
+                    _run_pipeline(df_raw, None, None)
 
         elif src == "Upload CSV or Excel":
             st.caption(
@@ -469,7 +485,7 @@ def page_data_input():
         st.markdown('<p class="sec-hdr">Group Summary</p>', unsafe_allow_html=True)
         st.dataframe(get_group_summary(df), width='stretch')
         st.divider()
-        if st.button("Run Full Analysis Pipeline", type="primary", width="stretch"):
+        if st.button("Run the full pipeline", type="primary", width="stretch"):
             _run_pipeline(df, wt_sel, veh_sel)
 
 
@@ -701,12 +717,47 @@ _DEMO_SURVIVAL: dict = {
     ("FUS",     "Spermine+Pantothenate","Female"): 42.7,
 }
 
-_TCOLOURS = {
-    "Untreated":             "#94A3B8",
-    "Spermine":              "#3B82F6",
-    "Pantothenate":          "#F0A500",
-    "Spermine+Pantothenate": "#22C55E",
-}
+def _series_palette() -> list:
+    """
+    The series palette for plotly charts: the SAME colourblind-safe set the
+    matplotlib figures use.
+
+    This was an 8-colour list hardcoded in four places, none of whose members
+    were Wong colours, led by the retired #F0A500 amber. Charts drawn with it
+    were not colourblind-safe, and a reader comparing a plotly chart to a
+    matplotlib figure saw the same group in two different colours. Ordered to
+    lead with the two most separable hues, since most of these charts carry
+    two or three series.
+    """
+    try:
+        from modules.visualizer import PALETTES
+        return list(PALETTES["okabe_ito"])
+    except Exception:
+        return ["#0072B2", "#D55E00", "#009E73", "#CC79A7",
+                "#E69F00", "#56B4E9", "#F0E442", "#000000"]
+
+
+# Register N125. These duplicated `visualizer.TREATMENT_COLOURS` and had
+# drifted from it: the same treatment was a different colour in a plotly chart
+# than in a matplotlib figure on the same report. Measured disagreement --
+#   Untreated   #94A3B8 here vs #666666 there
+#   Spermine    #3B82F6 (Tailwind blue) vs #0072B2 (Wong blue)
+#   Pantothenate #F0A500 (the RETIRED amber) vs #009E73 (Wong green)
+#   Spermine+Pantothenate #22C55E vs #D55E00
+# so colour carried no consistent meaning across a single document, which is
+# the standing warning `validate_figure_style` has been printing. There is one
+# source of truth now, and it is the colourblind-safe one.
+def _treatment_colours() -> dict:
+    try:
+        from modules.visualizer import TREATMENT_COLOURS as _TC
+        return dict(_TC)
+    except Exception:
+        return {"Untreated": "#666666", "Vehicle": "#666666",
+                "Spermine": "#0072B2", "Pantothenate": "#009E73",
+                "Spermine+Pantothenate": "#D55E00"}
+
+
+_TCOLOURS = _treatment_colours()
 _GSYMBOLS = {"Oregon": "circle", "TDP43": "square", "FUS": "triangle-up"}
 
 
@@ -738,19 +789,14 @@ _DEMO_SURVIVAL_DATA = {
     ("FUS",     "Spermine+Pantothenate", "Male"):   40.1,
     ("FUS",     "Spermine+Pantothenate", "Female"): 42.7,
 }
-_MDR_TCOLOURS = {
-    "Untreated":             "#94A3B8",
-    "Spermine":              "#3B82F6",
-    "Pantothenate":          "#F0A500",
-    "Spermine+Pantothenate": "#22C55E",
-}
+_MDR_TCOLOURS = _treatment_colours()
 
 
 def _render_msci_results(msci_df, mdr_df):
     import numpy as np
     st.dataframe(msci_df, width='stretch')
     st.download_button(
-        "Download MSCI Table (.csv)",
+        "Download MSCI CSV",
         msci_df.to_csv(index=False).encode(),
         "msci_results.csv", "text/csv", key="msci_dl",
     )
@@ -785,7 +831,7 @@ def _render_msci_results(msci_df, mdr_df):
             fig.add_trace(go.Scatter(
                 x=xr, y=np.polyval(coef, xr),
                 mode="lines", name="Trend",
-                line=dict(color="#0D2137", dash="dash", width=1.5),
+                line=dict(color="#0F2133", dash="dash", width=1.5),
             ))
         fig.update_layout(
             title="k vs Lifespan - MSCI Scatter",
@@ -793,7 +839,7 @@ def _render_msci_results(msci_df, mdr_df):
             yaxis_title="Mean Lifespan (days)",
             height=380,
             plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
-            font=dict(color="#0D2137"),
+            font=dict(color="#0F2133"),
         )
         st.plotly_chart(fig, width='stretch')
     except Exception:
@@ -826,17 +872,17 @@ def page_motor_decline():
         if "requires_age_data" in str(_status):
             st.info(
                 "**Motor Decline Rate is the decline of climbing performance over "
-                "AGE (days)** — negative geotaxis is age-dependent (Gargano et al. "
+                "AGE (days)**. Negative geotaxis is age-dependent (Gargano et al. "
                 "2005). This dataset has no age axis, so MDR is not applicable.\n\n"
                 "To use MDR, upload longitudinal climbing data with an **`Age`** "
                 "(days) column (≥2 ages per group); the assay's per-second "
-                "timecourse is used for the climbing curves, AUC and t₅₀, not for "
+                "timecourse is used for the climbing curves, AUC and t50, not for "
                 "decline. A ready template is on the Data Input page."
             )
             return
         st.warning(
             "MDR table not yet computed. "
-            "Go to **Data Input** and click **Run Full Analysis Pipeline** first."
+            "Go to **Data Input** and click **Run the full pipeline** first."
         )
         if not pi_plot.empty:
             with st.expander("Re-compute MDR now"):
@@ -965,7 +1011,7 @@ def page_motor_decline():
                 "simulated biological result. Use it to check the computation, never "
                 "as evidence."
             )
-            if st.button("Load Demo Lifespan & Compute MSCI",
+            if st.button("Load demo lifespan and compute MSCI",
                          key="demo_msci_btn", type="primary"):
                 import re as _re
                 _WT  = _re.compile(r"oregon|wild.?type|^wt$|control|n2|w1118|canton",
@@ -988,7 +1034,7 @@ def page_motor_decline():
                 _ls_demo = pd.DataFrame(_ls_rows)
                 _msci_out, _msci_merged = compute_msci(mdr_df, _ls_demo)
                 if not _msci_out.empty:
-                    st.success(f"MSCI computed — {len(_msci_out)} groups")
+                    st.success(f"MSCI computed: {len(_msci_out)} groups")
                     _render_msci_table(_msci_out, "demo")
                     st.download_button("Download MSCI CSV",
                         _msci_out.to_csv(index=False).encode(),
@@ -1030,7 +1076,7 @@ def page_motor_decline():
                                 _msci_up.to_csv(index=False).encode(),
                                 "msci.csv","text/csv")
                         else:
-                            st.warning("MSCI empty — check column names match MDR table.")
+                            st.warning("MSCI empty: check column names match MDR table.")
                             with st.expander("Debug: columns in uploaded file"):
                                 st.write(list(_lsdf.columns))
                                 st.dataframe(_lsdf.head(5), width='stretch')
@@ -1126,7 +1172,7 @@ def _render_mdr_plotly(filt: pd.DataFrame, sel_sex: str) -> None:
             tracegroupgap=4,
         ),
         margin=dict(l=60, r=180, t=60, b=50),
-        font=dict(family="sans-serif", color="#0D2137"),
+        font=dict(family="sans-serif", color="#0F2133"),
     )
     fig.update_yaxes(title_text="PI (mean)", row=1, col=1)
     st.plotly_chart(fig, width='stretch')
@@ -1195,7 +1241,7 @@ def _render_msci(msci_df: pd.DataFrame) -> None:
 
     csv = msci_df.to_csv(index=False).encode()
     st.download_button(
-        "\u2b07 Download MSCI Table (.csv)", csv,
+        "\u2b07 Download MSCI CSV", csv,
         "msci_results.csv", "text/csv", key="msci_dl",
     )
 
@@ -1236,7 +1282,7 @@ def _render_msci(msci_df: pd.DataFrame) -> None:
             fig.add_trace(go.Scatter(
                 x=x_rng, y=P.polyval(x_rng, c_fit),
                 mode="lines", name="Trend",
-                line=dict(color="#0D2137", dash="dash", width=1.5),
+                line=dict(color="#0F2133", dash="dash", width=1.5),
                 showlegend=True,
             ))
         fig.update_layout(
@@ -1245,7 +1291,7 @@ def _render_msci(msci_df: pd.DataFrame) -> None:
             yaxis_title="Mean Lifespan (days)",
             height=400,
             plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
-            font=dict(color="#0D2137"),
+            font=dict(color="#0F2133"),
             legend=dict(bordercolor="#C5D7F0", borderwidth=1),
         )
         st.plotly_chart(fig, width='stretch')
@@ -1262,12 +1308,39 @@ def page_trajectory_clustering():
     if cr is None or cr.get("error"):
         err = cr.get("error", "Not computed.") if cr else "Not computed."
         st.warning(f"Clustering: {err}")
-        if st.button("Run Trajectory Clustering", type="primary"):
+        if st.button("Run trajectory clustering", type="primary"):
             base = st.session_state["base_metrics"]
-            agg  = base.get("aggregated", pd.DataFrame())
-            if not agg.empty:
+            # Register N124. This used to pass `aggregated`, which
+            # `normalizer.compute_all_metrics` builds by grouping on
+            # Genotype/Sex/Treatment/TIME -- so it has NO Age column, ever, for
+            # any dataset. `cluster_trajectories` defaults to `time_col="Age"`,
+            # so the page could only ever raise
+            #   ValueError: trajectory_cluster: no Age column in the PI table
+            # It has never worked. Found by clicking the button during the
+            # page-by-page audit; rendering the page alone does not reach it.
+            #
+            # `normalised` keeps one row per vial per timepoint WITH Age, so the
+            # longitudinal table is built from that.
+            agg = base.get("aggregated", pd.DataFrame())
+            norm = base.get("normalised", pd.DataFrame())
+            traj = pd.DataFrame()
+            if (not norm.empty and "Age" in norm.columns
+                    and norm["Age"].notna().any() and "PI" in norm.columns):
+                keys = [c for c in ("Genotype", "Sex", "Treatment")
+                        if c in norm.columns] + ["Age"]
+                traj = (norm.groupby(keys, as_index=False)["PI"].mean()
+                            .rename(columns={"PI": "PI_mean"}))
+            if traj.empty:
+                st.warning(
+                    "Trajectory clustering needs an **Age** column: it clusters "
+                    "the shape of decline across ages, so a dataset scored at a "
+                    "single age has no trajectory to cluster. Add `Age` to the "
+                    "input, or use the Climbing Curves page for within-assay "
+                    "kinetics.")
+                return
+            if not traj.empty:
                 with st.spinner("Running DTW clustering..."):
-                    cr = cluster_trajectories(agg if "PI_mean" in agg.columns else agg.rename(columns={"Pct_mean": "PI_mean"}))
+                    cr = cluster_trajectories(traj)
                 st.session_state["cluster_result"] = cr
                 if cr.get("error"):
                     st.error(cr["error"])
@@ -1459,7 +1532,7 @@ def page_stats():
     if len(data_dict) < 2:
         st.warning(f"Need >= 2 groups. Found: {list(data_dict.keys())}"); return
     st.caption(f"Testing **{value_col}** grouped by **{group_col}** | {len(data_dict)} groups")
-    if st.button("Run Statistical Test", type="primary"):
+    if st.button("Run the test", type="primary"):
         with st.spinner("Running tests..."):
             result = auto_test(data_dict)
             st.session_state["stats_result"] = result
@@ -1511,7 +1584,7 @@ def page_stats():
             else: st.info("Levene test result not available.")
     st.divider()
     st.markdown("#### Bootstrap 95% Confidence Intervals")
-    if st.button("Compute Bootstrap CI (2000 resamples)", key="bootcibtn"):
+    if st.button("Compute bootstrap CI (2000 resamples)", key="bootcibtn"):
         rng = np.random.default_rng(42)
         ci_rows = []
         for grp_key, sub in metricdf.groupby(group_col):
@@ -1582,7 +1655,7 @@ def _render_video_qc(counts_df):
         st.warning(
             "Rows with no usable measurement: "
             + ", ".join(f"{k} × {v}" for k, v in sorted(tally.items()))
-            + ". These carry NaN, not zero — a vial that could not be scored "
+            + ". These carry NaN, not zero. A vial that could not be scored "
               "is not a vial in which no fly climbed. They are excluded from "
               "every mean, and the exclusion is reported here because detector "
               "failures are not independent of genotype: a severely impaired "
@@ -1691,7 +1764,7 @@ def page_video_analysis():
                 )
                 return
 
-            st.markdown("##### 1 — Vial regions")
+            st.markdown("##### 1: Vial regions")
             st.caption(
                 f"Frame is {fw}×{fh} px. The regions are laid out as an even "
                 f"grid and each must contain exactly one vial, top to bottom: "
@@ -1705,7 +1778,7 @@ def page_video_analysis():
             g_marg = int(gc[2].number_input("Margin (px)", 0, 60, 4, key="sv_gm"))
             n_v = g_rows * g_cols
 
-            st.markdown("##### 2 — Loading record")
+            st.markdown("##### 2: Loading record")
             st.caption(
                 "**N loaded** is the number of flies put into each vial. It is "
                 "the only denominator used for Pct and PI: the detected count "
@@ -1730,7 +1803,7 @@ def page_video_analysis():
                     expected_n=int(n),
                 ))
 
-            st.markdown("##### 3 — Scoring timepoints")
+            st.markdown("##### 3: Scoring timepoints")
             tp_txt = st.text_input(
                 "Seconds after the tap, comma-separated",
                 value="10, 20, 30, 60",
@@ -1751,7 +1824,7 @@ def page_video_analysis():
                 key="sv_roi_ok",
             )
 
-            if st.button("Run Video Analysis", type="primary",
+            if st.button("Run video analysis", type="primary",
                          disabled=not (tps and roi_ok)):
                 with st.spinner("Analysing video... this may take several minutes."):
                     analyzer = VideoAnalyzer(detector_config=det_cfg)
@@ -1807,8 +1880,8 @@ def page_video_analysis():
             st.markdown("##### Replicate assignment")
             st.caption(
                 "Give each recording its biological replicate number. Two "
-                "recordings of the same cohort — a second camera angle, a "
-                "re-record after a failed tap — get the **same** number; they "
+                "recordings of the same cohort. A second camera angle, a "
+                "re-record after a failed tap. Get the **same** number; they "
                 "are one replicate, not two."
             )
             rep_map = {}
@@ -1839,10 +1912,10 @@ def page_video_analysis():
             st.caption(
                 "The same grid and the same N loaded are applied to every "
                 "recording in the batch, so the recordings must be framed "
-                "alike. Per-vial genotypes differ between runs — use the "
+                "alike. Per-vial genotypes differ between runs. Use the "
                 "Single Video tab for a batch whose layout is not constant."
             )
-            if st.button("Run Batch Analysis", type="primary",
+            if st.button("Run batch analysis", type="primary",
                          disabled=not b_tps):
                 all_dfs  = []
                 prog     = st.progress(0)
@@ -2615,26 +2688,26 @@ def page_climbing_video():
     render_header("Climbing Video Analyser",
                   "Count flies above a reference line from a recorded assay video")
 
-    with st.expander("Known limitations — read before trusting a number"):
+    with st.expander("Known limitations: read before trusting a number"):
         st.markdown(f"""
 - **Clustered flies.** Immediately after the tap the flies are piled at the base and
   touching animals appear as one blob. Detection improves as they disperse, typically
-  after 5–10 s.
+  after 5-10 s.
 - **Printed graduations.** On a graduated cylinder the printed ticks and numerals are
   dark and roughly fly-sized. Adaptive thresholding removes a lighting gradient but not
   a locally dark mark, so this method can **over**-count on graduated glassware. Any
   frame where detected and expected differ by more than {DISCREPANCY_LIMIT:.0%} is
-  flagged in both directions — check the preview before trusting the run.
+  flagged in both directions. Check the preview before trusting the run.
 - **Dark background with dark flies.** Switch the fly-appearance setting.
 - **Reflective glass.** If glare produces false positives, raise the minimum fly size.
 - **Low frame rate (< 15 fps).** Fast animals can be missed; the confidence score
   flags those timepoints.
 - **ROI coverage.** The rectangle must include the full vial height, including the
-  region above the reference line — flies outside it are simply not counted.
+  region above the reference line. Flies outside it are simply not counted.
 """)
 
     # ── STEP 1: video ────────────────────────────────────────────────────────
-    st.subheader("Step 1 — Upload video")
+    st.subheader("Step 1: Upload video")
     video_file = st.file_uploader(
         "Climbing assay video", type=["mp4", "avi", "mov", "mkv", "wmv"],
         help="Any common format. Phone, webcam or DSLR footage all work.")
@@ -2675,12 +2748,12 @@ def page_climbing_video():
                  "Re-encode it (for example with ffmpeg) and try again.")
         return
 
-    st.success(f"{Path(video_path).name} — {meta['total_frames']} frames, "
+    st.success(f"{Path(video_path).name}, {meta['total_frames']} frames, "
                f"{meta['duration_sec']:.1f} s, {fps:.2f} fps, "
                f"{meta['width']}x{meta['height']} px")
 
     # ── STEP 2: experiment details ───────────────────────────────────────────
-    st.subheader("Step 2 — Experiment details")
+    st.subheader("Step 2: Experiment details")
     c1, c2 = st.columns(2)
     with c1:
         n_vials = st.number_input("Vials/cylinders visible in this video",
@@ -2710,7 +2783,7 @@ def page_climbing_video():
     genos = [g.strip() for g in geno_txt.strip().split("\n") if g.strip()]
     if len(genos) != int(n_vials):
         st.warning(f"{len(genos)} genotype(s) given for {int(n_vials)} vial(s); "
-                   "the list is padded so the run can proceed — fix it before "
+                   "the list is padded so the run can proceed. Fix it before "
                    "exporting.")
         genos = (genos + [f"Genotype_{i+1}" for i in range(int(n_vials))])[:int(n_vials)]
 
@@ -2726,7 +2799,7 @@ def page_climbing_video():
         return
 
     # ── STEP 3: T=0 ──────────────────────────────────────────────────────────
-    st.subheader("Step 3 — Mark the tap-down moment (T=0) for each tap")
+    st.subheader("Step 3: Mark the tap-down moment (T=0) for each tap")
     # THIS USED TO BE A SINGLE SLIDER DEFAULTING TO 0.0, AND THAT WAS TWO FAULTS.
     # First, `climbing_video.detect_taps` already finds EVERY tap in a recording
     # and returns the moment each disturbance ENDS -- which is when the flies are
@@ -2749,7 +2822,7 @@ def page_climbing_video():
             st.success(f"Found {len(found)} tap(s) at "
                        + ", ".join(f"{v:.1f} s" for v in found) + ".")
         else:
-            st.warning("No tap was detected. That is not proof there is none — a "
+            st.warning("No tap was detected. That is not proof there is none, a "
                        "gentle tap, or one made before recording started, leaves "
                        "no motion burst. Enter the times yourself below.")
         for w in ([] if tapinfo.get("framing_stable", True) else
@@ -2760,7 +2833,7 @@ def page_climbing_video():
         if found and len(found) != n_taps:
             st.warning(
                 f"You declared **{n_taps}** tap(s); the detector found "
-                f"**{len(found)}**. Neither is automatically right — a rack "
+                f"**{len(found)}**. Neither is automatically right. A rack "
                 f"knocked in passing looks like a tap, and a gentle one does not. "
                 f"Reconcile them below before scoring; the values you leave in the "
                 f"boxes are what gets used.")
@@ -2778,7 +2851,7 @@ def page_climbing_video():
                    else min(float(ti) * 60.0, float(meta["duration_sec"])))
         with tcols[ti % len(tcols)]:
             tap_zeros_sec.append(float(st.number_input(
-                f"Tap {ti+1} — T=0 (s)", 0.0, float(max(meta["duration_sec"], 0.1)),
+                f"Tap {ti+1}: T=0 (s)", 0.0, float(max(meta["duration_sec"], 0.1)),
                 float(default), 0.1, format="%.2f", key=f"cva_t0_{ti}")))
     if any(b <= a for a, b in zip(tap_zeros_sec, tap_zeros_sec[1:])):
         st.error("Tap times must increase. Two taps at the same instant would score "
@@ -2789,7 +2862,7 @@ def page_climbing_video():
     t_zero_sec, t_zero_frame = tap_zeros_sec[0], tap_zero_frames[0]
     preview = get_frame_at_number(video_path, t_zero_frame)
     if preview is None:
-        st.error("That frame could not be read — adjust the tap times.")
+        st.error("That frame could not be read: adjust the tap times.")
         return
     st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB),
              caption=f"Tap 1, T=0 (frame {t_zero_frame})", width="stretch")
@@ -2806,7 +2879,7 @@ def page_climbing_video():
             f"as not scoreable rather than guessed.")
 
     # ── STEP 4: ROI and reference line ───────────────────────────────────────
-    st.subheader("Step 4 — Vial regions and reference line")
+    st.subheader("Step 4: Vial regions and reference line")
     st.markdown(
         "Give each vial's rectangle in **pixels of the full frame** (X and Y of the "
         "top-left corner, then width and height). The reference line is set as a "
@@ -2814,7 +2887,7 @@ def page_climbing_video():
 
     vials: list = []
     for i in range(int(n_vials)):
-        with st.expander(f"Vial {i+1} — {genos[i]}", expanded=(i == 0)):
+        with st.expander(f"Vial {i+1}: {genos[i]}", expanded=(i == 0)):
             a, b, c, d = st.columns(4)
             rx = a.number_input("X start", 0, int(meta["width"]),
                                 int(i * meta["width"] / int(n_vials)), key=f"cva_x{i}")
@@ -2828,7 +2901,7 @@ def page_climbing_video():
                                   float(auto) if auto else 0.5, 0.01,
                                   format="%.2f", key=f"cva_line{i}")
             if auto:
-                st.caption(f"A strong horizontal edge was found at {auto:.2f} — "
+                st.caption(f"A strong horizontal edge was found at {auto:.2f}, "
                            "check it is the drawn line and not a graduation or a "
                            "shelf edge.")
             else:
@@ -2841,7 +2914,7 @@ def page_climbing_video():
                 fly_color=fly_color_key, sex=sex, treatment=treatment))
 
     # ── STEP 5: calibration ──────────────────────────────────────────────────
-    st.subheader("Step 5 — Calibration preview")
+    st.subheader("Step 5: Calibration preview")
     from modules import fly_blob as _FB
     with st.expander("Detection parameters"):
         pa, pb = st.columns(2)
@@ -2902,7 +2975,7 @@ def page_climbing_video():
     st.markdown("**Detection method**")
     choice = st.radio(
         "How should flies be found inside each region?",
-        ["Automatic — measure the footage and choose"] +
+        ["Automatic: measure the footage and choose"] +
         [CD.BACKEND_LABELS[b] for b in CD.BACKENDS],
         key="cva_backend", label_visibility="collapsed")
     manual_backend = next((b for b in CD.BACKENDS
@@ -2927,7 +3000,7 @@ def page_climbing_video():
             pr, rec = got
             m1, m2, m3 = st.columns(3)
             m1.metric("Static marks in the empty scene", pr.static_clutter,
-                      help="Fly-sized dark features present with no flies in shot — "
+                      help="Fly-sized dark features present with no flies in shot, "
                            "graduations, numerals, label edges. An intensity "
                            "threshold counts these as flies, roughly one for one.")
             m2.metric("Objects that move", f"{pr.moving_fraction:.0%}",
@@ -2953,7 +3026,7 @@ def page_climbing_video():
         f"background {CD.MEASURED_MAE['background']:.1f}, declutter "
         f"{CD.MEASURED_MAE['threshold_declutter']:.1f}. For scale, five repeat taps "
         f"of the SAME vial by a human differ by about "
-        f"{CD.BIOLOGICAL_FLOOR_FLIES} flies — so none of these methods is yet at the "
+        f"{CD.BIOLOGICAL_FLOOR_FLIES} flies. So none of these methods is yet at the "
         f"accuracy of the assay itself, on that laboratory's glassware.")
 
     # ── scoring rule: what "flies above the line at t" is taken to mean ──────
@@ -2969,11 +3042,10 @@ def page_climbing_video():
         "or falls, record that fly as -1 and count the next fly to cross the line "
         "as the same number.* The tally therefore steps back when a fly falls, so "
         "the net of up- and down-crossings is simply **how many are standing above "
-        "the line** — the first option, and the default."
+        "the line**. The first option, and the default."
         "\n\nThe second option is a ratchet: the most that were ever above at one "
         "moment. It never decreases, so it is always at least as large. That is a "
-        "legitimate question but it is **not** what the protocol scores, and it was "
-        "previously offered here first and captioned as though it were.")
+        "legitimate question but it is **not** what the protocol scores.")
 
     prev_t = st.slider("Preview at this many seconds after T=0", 0.0,
                        float(max(meta["duration_sec"] - t_zero_sec, 0.1)),
@@ -3012,7 +3084,7 @@ def page_climbing_video():
                              f"(expected {vc.n_flies_expected}) · above {above}",
                      width="stretch")
             if abs(disc) > DISCREPANCY_LIMIT:
-                st.error(f"{disc:+.0%} vs expected — "
+                st.error(f"{disc:+.0%} vs expected, "
                          f"{'over' if disc > 0 else 'under'}-detecting. "
                          "Adjust the size limits or the ROI.")
             elif conf < 0.80:
@@ -3021,7 +3093,7 @@ def page_climbing_video():
                 st.success(f"Detection {conf:.0%} of expected.")
 
     # ── STEP 6: run ──────────────────────────────────────────────────────────
-    st.subheader("Step 6 — Run")
+    st.subheader("Step 6: Run")
     if st.button("Run climbing assay analysis", type="primary", key="cva_run"):
         session = VideoAnalysisSession(
             video_path=video_path, fps=fps, total_frames=meta["total_frames"],
@@ -3144,7 +3216,7 @@ def page_climbing_video():
     df = st.session_state.get("cva_results")
     if df is None or df.empty:
         return
-    st.subheader("Step 7 — Results")
+    st.subheader("Step 7: Results")
 
     # TAP IS PART OF THE INDEX, NOT SOMETHING TO AVERAGE OVER SILENTLY.
     # With `index=["Genotype", "Replicate"]` alone, a five-tap recording collapsed
@@ -3160,8 +3232,8 @@ def page_climbing_video():
             "One row per tap: repeat taps of the same vial are technical "
             "replicates of the SAME flies, so they are not independent samples "
             "and must not be pooled as though they were. Their spread is the "
-            "assay's own noise floor — about three flies per vial on this "
-            "protocol — and it is the yardstick any detector error should be "
+            "assay's own noise floor. About three flies per vial on this "
+            "protocol. And it is the yardstick any detector error should be "
             "judged against.")
 
     flagged = df[df["Flagged"] == True]        # noqa: E712
@@ -3169,7 +3241,7 @@ def page_climbing_video():
         st.warning(
             f"{len(flagged)} of {len(df)} measurements differ from the expected fly "
             f"count by more than {DISCREPANCY_LIMIT:.0%}. They are exported and "
-            "labelled, not dropped — but they should not be analysed without "
+            "labelled, not dropped. But they should not be analysed without "
             "looking at them.")
         with st.expander("Show flagged measurements"):
             st.dataframe(flagged[["Genotype", "Replicate", "Time_sec",
@@ -3212,7 +3284,7 @@ def page_video_scoring():
 
     st.markdown(
         "Turns a recording of graduated cylinders into the canonical DroPhenix "
-        "table — flies **above the line** and flies **present**, per cylinder, at "
+        "table. Flies **above the line** and flies **present**, per cylinder, at "
         "each scoring time. The scale markings on a cylinder are static and the "
         "flies move, so a temporal-median background reconstructs each tube "
         "complete with its printed scale and *without* its animals; subtracting "
@@ -3266,7 +3338,7 @@ def page_video_scoring():
         video = st.session_state.get("_vs_video") or ""
         if not video:
             st.info(
-                "Load a recording to begin — upload one above, or give the path "
+                "Load a recording to begin: upload one above, or give the path "
                 "to a file on this machine.\n\n"
                 "The pipeline expects a clip that looks like this:\n\n"
                 "- the graduated cylinders standing side by side against a pale, "
@@ -3275,7 +3347,7 @@ def page_video_scoring():
                 "- the flies tapped to the bottom at the start, with the "
                 "operator's hands then out of shot\n"
                 "- the camera held still for the whole observation (a phone "
-                "propped against something solid is enough — the analysis "
+                "propped against something solid is enough. The analysis "
                 "corrects a pixel or two of settling, not a moving camera)\n"
                 "- the full height of every cylinder in frame, filmed square-on "
                 "rather than from above")
@@ -3296,7 +3368,7 @@ def page_video_scoring():
                 m[4].metric("Codec", info["codec"] or "unknown")
                 st.caption(
                     "If the duration or the frame count reads as zero, OpenCV "
-                    "decoded the container but not the stream — iPhone HEVC "
+                    "decoded the container but not the stream. IPhone HEVC "
                     "(H.265) is the usual cause. Re-export as H.264 MP4.")
 
     video = st.session_state.get("_vs_video") or ""
@@ -3376,7 +3448,7 @@ def page_video_scoring():
                         "This detection needs review before the counts can be "
                         "used. " + (det.get("reason") or "Confidence is below "
                         "the 0.70 threshold.") + " A wrong region produces a "
-                        "confidently wrong count, which is worse than no count — "
+                        "confidently wrong count, which is worse than no count. "
                         "check the annotated frame and correct the numbers below.")
                 else:
                     st.success("All cylinders and scoring lines located with "
@@ -3518,7 +3590,7 @@ def page_video_scoring():
                 blank_labels = []
                 for i, s in enumerate(valid):
                     n_in = tc[i].number_input(
-                        f"{s['label']} — flies loaded", min_value=1, max_value=500,
+                        f"{s['label']}: flies loaded", min_value=1, max_value=500,
                         value=None, step=1, key=f"vs_ntot_{i}",
                         placeholder="leave blank")
                     if n_in is None:
@@ -3531,7 +3603,7 @@ def page_video_scoring():
                         ". The detected total will be used as the denominator "
                         "for those cylinders, so the proportion climbed inherits "
                         "every counting error in the denominator as well as the "
-                        "numerator — read the stability check below before "
+                        "numerator. Read the stability check below before "
                         "trusting it.")
 
                 st.divider()
@@ -3695,8 +3767,7 @@ def page_video_scoring():
                         if not usable.empty:
                             st.markdown("#### Climbing curve")
                             import plotly.graph_objects as go
-                            palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
-                                       "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+                            palette = _series_palette()
                             fig = go.Figure()
                             for i, (lab, sub) in enumerate(
                                     usable.groupby("vial", sort=True)):
@@ -3817,7 +3888,7 @@ def page_video_scoring():
             "Instead of opening fifteen videos one at a time, re-entering the "
             "genotype and treatment for each and merging fifteen CSVs by hand, "
             "you write the metadata **once** in a manifest and the pipeline "
-            "does the rest. That matters beyond convenience — hand-merging is "
+            "does the rest. That matters beyond convenience. Hand-merging is "
             "where mislabelling happens, and a mislabelled treatment column is "
             "not recoverable from the data afterwards. Every video is scored "
             "independently, because background, regions, tap time and zoom all "
@@ -3934,7 +4005,7 @@ def page_video_scoring():
                 "missed one throws a real replicate away. If every recording "
                 "in this folder is of the same rig, set the number "
                 "explicitly. Either way the run reports a note whenever the "
-                "videos disagree with each other — read it before using the "
+                "videos disagree with each other. Read it before using the "
                 "merged table.")
 
         b_times = st.multiselect(
@@ -3963,7 +4034,7 @@ def page_video_scoring():
                 f"about **{est_min} minute(s)**. Nothing on this page can be "
                 "changed while it runs. The result is cached against the "
                 "folder, the manifest and these settings, so browsing the "
-                "tables afterwards never repeats it — but editing any of them "
+                "tables afterwards never repeats it. But editing any of them "
                 "means running it again.")
 
         ready = bool(b_folder) and n_req > 0 and bool(b_times)
@@ -4047,7 +4118,7 @@ def page_video_scoring():
                 st.caption(
                     "Each cylinder of each video is its own `VialID`, so a "
                     "folder of five three-cylinder videos gives fifteen "
-                    "independent replicates for the clustered statistics — not "
+                    "independent replicates for the clustered statistics. Not "
                     "five.")
                 st.download_button(
                     "Download merged CSV",
@@ -4178,7 +4249,7 @@ def page_video_scoring():
                 st.caption(
                     "Loading replaces whatever dataset is currently open and runs "
                     "the full pipeline. One video gives three vials at a handful "
-                    "of times — enough for the climbing curves, but the "
+                    "of times. Enough for the climbing curves, but the "
                     "hierarchical and ranking pages need several videos combined.")
 
 
@@ -4236,7 +4307,7 @@ def _render_audit(audit, where: str = ""):
         st.warning(w)
     ok = bool(getattr(audit, "ok", not errors))
     if ok and not warns:
-        st.caption(f"Validation passed{(' — ' + where) if where else ''}: "
+        st.caption(f"Validation passed{(': ' + where) if where else ''}: "
                    f"no errors, no warnings.")
     return ok
 
@@ -4287,7 +4358,7 @@ def _render_upload_integrity(df, key: str = "upl"):
             f"observation of zero climbers and a count above n is not an "
             f"observation that every fly climbed, so neither is substituted. "
             f"Those rows are excluded from each mean rather than contributing a "
-            f"fabricated number — which also means the groups they belong to "
+            f"fabricated number. Which also means the groups they belong to "
             f"rest on fewer replicates."
         )
         grp = [c for c in ("Genotype", "Treatment", "Sex") if c in bad.columns]
@@ -4404,7 +4475,7 @@ def page_csv_upload():
         veh = st.selectbox("Vehicle treatment",
             ["(auto-detect)"] + sorted(groups["treatments"]), key="csv_veh")
 
-    if st.button("Load and Run Full Analysis", type="primary", width="stretch"):
+    if st.button("Load and run the full pipeline", type="primary", width="stretch"):
         wt_sel  = None if wt  == "(auto-detect)" else wt
         veh_sel = None if veh == "(auto-detect)" else veh
         st.session_state.update({
@@ -4479,11 +4550,11 @@ def page_export():
 
     st.divider()
     st.markdown('<p class="sec-hdr">Batch Figure Export</p>', unsafe_allow_html=True)
-    st.caption("Exports all figure types at 300 DPI for manuscript preparation.")
+    st.caption("300 DPI, one file per figure type.")
     fmt     = st.radio("Format", ["png","svg","pdf"], horizontal=True)
     out_dir = st.text_input("Export directory", value="drophenix_figures")
 
-    if st.button("Export All Figures", type="primary"):
+    if st.button("Export all figures", type="primary"):
         results_dict = {
             "agg_df":         base.get("aggregated", pd.DataFrame()),
             "pi_df":          base.get("pi",  pd.DataFrame()),
@@ -4504,7 +4575,7 @@ def page_export():
 
     st.divider()
     st.markdown('<p class="sec-hdr">Full Report ZIP</p>', unsafe_allow_html=True)
-    if st.button("Build and Download ZIP"):
+    if st.button("Build and download the ZIP"):
         import zipfile
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -4556,24 +4627,41 @@ def page_home():
     except Exception:
         pass
 
-    _logo = (
-        '<img src="data:image/png;base64,' + _dpx_b64 + '"'
-        ' style="height:130px;width:130px;object-fit:contain;flex-shrink:0;'
-        'filter:drop-shadow(0 6px 18px rgba(240,165,0,0.35));">'
-        if _dpx_b64 else
-        '<div style="width:130px;height:130px;flex-shrink:0;border-radius:50%;'
-        'background:linear-gradient(135deg,#F0A500,#C47F00);'
-        'display:flex;align-items:center;justify-content:center;'
-        'font-size:1.6rem;font-weight:900;color:#fff;'
-        'box-shadow:0 6px 18px rgba(240,165,0,0.35);">DP</div>'
-    )
+    # Register N122. This was a 130px raster with an orange glow, or a
+    # gradient disc with "DP" at weight 900. A glowing logo is the loudest
+    # machine-made tell in a scientific interface, and the raster's own hue
+    # (26.3 deg) fought the chrome amber (41.2 deg) -- which is the clash the
+    # owner could see and not name. The mark is drawn, flat, in the figure
+    # palette's own vermilion.
+    # The laboratory's own logo, at a size that reads as a mark rather than an
+    # illustration, and with no coloured glow behind it.
+    try:
+        from modules.styles import glyph_img as _dpx_glyph
+        _logo = _dpx_glyph(64, chip=True)
+    except Exception:
+        _logo = ''
+    if _logo:
+        pass
+    elif _dpx_b64:
+        _logo = ('<img src="data:image/png;base64,' + _dpx_b64 + '"'
+                 ' style="height:72px;width:72px;object-fit:contain;'
+                 'flex-shrink:0;">')
+    else:
+        try:
+            from modules.styles import mark as _dpx_mark
+            _logo = ('<div style="flex-shrink:0;color:#FFFFFF;">'
+                     + _dpx_mark(72, "#FFFFFF") + '</div>')
+        except Exception:
+            _logo = ''
 
     # ── Capability pills ──────────────────────────────────────────────────
+    # Rectangular tags, not amber capsules. A cloud of glowing pills is a
+    # marketing idiom; these are a contents list.
     _pill_css = (
-        'background:rgba(240,165,0,0.14);color:#F0A500;'
-        'border:1px solid rgba(240,165,0,0.32);border-radius:20px;'
-        'font-size:.71rem;font-weight:700;padding:3px 13px;'
-        'margin:2px;display:inline-block;letter-spacing:.03em;'
+        'background:rgba(255,255,255,0.07);color:#C8D2DC;'
+        'border:1px solid rgba(255,255,255,0.14);border-radius:2px;'
+        'font-size:.72rem;font-weight:500;padding:2px 9px;'
+        'margin:2px;display:inline-block;'
     )
     _pills = [
         'Negative Geotaxis Assay', 'Lifespan / Survival (KM &middot; log-rank &middot; Cox)',
@@ -4590,34 +4678,41 @@ def page_home():
 
     # ── HERO ──────────────────────────────────────────────────────────────
     st.markdown(
-        '<div style="background:linear-gradient(135deg,#09192A 0%,#0D2137 60%,#0F2D44 100%);'
-        'border-radius:18px;padding:3rem 3.5rem;margin:0.5rem 0 2rem 0;'
-        'display:flex;align-items:center;gap:3rem;'
-        'border:1px solid rgba(240,165,0,0.22);'
-        'box-shadow:0 10px 40px rgba(0,0,0,0.30);">'
+        # `dpx-on-dark` opts this panel out of the blanket paragraph colour in
+        # styles.py. That rule is !important and so beats an inline colour,
+        # which painted this card's own lede #0F2133 on #0F2133 -- measured at
+        # 1.00:1, invisible. The border was rgba(240,165,0,.22), the RETIRED
+        # 41.2 deg amber, which composites over the navy to #3C3821, a khaki
+        # olive, wrapped directly around a 26.3 deg logo.
+        '<div class="dpx-on-dark" style="background:#0F2133;'
+        'border-radius:4px;padding:2.5rem 3rem;margin:0 0 2rem 0;'
+        'display:flex;align-items:flex-start;gap:2rem;flex-wrap:wrap;'
+        'border:1px solid rgba(255,255,255,.10);'
+        'border-top:2px solid #D55E00;'
+        'box-shadow:none;">'
         + _logo
         + '<div style="flex:1;">'
-        + '<div style="font-size:.72rem;font-weight:800;letter-spacing:.18em;'
-        'text-transform:uppercase;color:#F0A500;margin-bottom:.5rem;">'
-        'Science for Society &nbsp;&middot;&nbsp; SSSIHL &nbsp;&middot;&nbsp; SAI-Net</div>'
-        + '<div style="font-size:2.55rem;font-weight:900;color:#FFFFFF;'
+        + '<div style="font-size:.72rem;font-weight:600;letter-spacing:.18em;'
+        'text-transform:uppercase;color:#94A3B1;margin-bottom:.5rem;">'
+        'SSSIHL &nbsp;&middot;&nbsp; SAI-Net</div>'
+        + '<div style="font-size:2.55rem;font-weight:600;color:#FFFFFF;'
         'line-height:1.05;margin-bottom:.4rem;letter-spacing:-.01em;">'
-        'DroPhenix <span style="color:#F0A500;">Analytics</span>'
-        ' <span style="font-size:1rem;font-weight:600;color:#64748B;vertical-align:middle;">v3.0</span></div>'
+        'DroPhenix <span style="color:#D55E00;">Analytics</span>'
+        ' <span style="font-size:.8125rem;font-weight:500;color:#94A3B1;vertical-align:middle;">v3.0</span></div>'
         + '<div style="font-size:1.02rem;color:#94A3B8;font-weight:500;'
         'margin-bottom:1rem;letter-spacing:.01em;">'
-        'Multi-Assay Drosophila Phenotyping &amp; Cross-Strain Compound Ranking</div>'
+        'Multi-assay phenotyping and cross-strain compound ranking</div>'
         + '<p style="font-size:.9rem;color:#CBD5E1;line-height:1.8;'
         'max-width:680px;margin-bottom:1.1rem;">'
         'DroPhenix provides one reproducible, statistically rigorous workflow for '
         '<em>Drosophila melanogaster</em> neuromotor and behavioural phenotyping across '
-        '<b>six assays</b> &mdash; climbing (negative geotaxis), lifespan, Y-maze, '
+        '<b>six assays</b>. Climbing (negative geotaxis), lifespan, Y-maze, '
         'activity/sleep (DAMS), larval crawling, and grooming. It pairs assumption-aware '
         'statistics (normality/variance-gated tests, effect sizes, BH-FDR, bootstrap) with '
-        'actuarial survival analysis (Kaplan&ndash;Meier, log-rank, Cox), circadian '
+        'actuarial survival analysis (Kaplan-Meier, log-rank, Cox), circadian '
         'periodograms, age-resolved motor-decline kinetics, and a meta-analytic engine that '
         'ranks compounds <b>across strains of unequal size</b> by inverse-variance / '
-        'DerSimonian&ndash;Laird pooling. Every result is benchmarked against published data '
+        'DerSimonian-Laird pooling. Every result is benchmarked against published data '
         'and established tools.'
         '</p>'
         + '<div>' + _ph + '</div>'
@@ -4627,10 +4722,10 @@ def page_home():
 
     # ── Why DroPhenix — 3 scientific innovations ──────────────────────────
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
-        'border-bottom:3px solid #F0A500;display:inline-block;">'
-        'Why DroPhenix?</p>',
+        'border-bottom:2px solid #D55E00;display:inline-block;">'
+        'What it computes</p>',
         unsafe_allow_html=True,
     )
     _wi1, _wi2, _wi3 = st.columns(3)
@@ -4639,11 +4734,11 @@ def page_home():
             _wi1,
             'Novel Composite Metrics',
             (
-                'Three purpose-built metrics transcend the classical Performance Index. '
+                'Three metrics extend the Performance Index. '
                 'The <b>Composite Rescue Index (CRI)</b> integrates PI, AUC, and t50 '
-                'into one normalised rescue score (0&ndash;100%). '
+                'into one normalised rescue score (0-100%). '
                 'The <b>Sex Dimorphism Quotient (SDQ)</b> quantifies sex-differential '
-                'drug response &mdash; critical for translational validity. '
+                'drug response : critical for translational validity. '
                 'The <b>Therapeutic Selectivity Window (TSW)</b> measures disease-selective '
                 'rescue vs. wild-type perturbation (TSW&nbsp;&gt;&nbsp;1.0 = safe).'
             ),
@@ -4658,7 +4753,7 @@ def page_home():
                 '<b>Motor Decline Rate (MDR)</b> constant <em>k</em>, '
                 'half-life, and R&sup2;. '
                 'Delta-<em>k</em> quantifies treatment-mediated rescue of the decline rate '
-                '&mdash; a kinetic disease-modification readout not captured '
+                ': a kinetic disease-modification readout not captured '
                 'by endpoint PI alone. Motor-Survival Coupling Index (MSCI) '
                 'links motor decline to lifespan via Spearman correlation.'
             ),
@@ -4670,32 +4765,31 @@ def page_home():
                 'The <b>Translational Candidate Score (TCS)</b> integrates CRI (35%), '
                 'TSW (25%), SDQ consistency (15%), MDR rescue (15%), and trajectory '
                 'phenotype (10%) into a weighted composite that ranks treatments by '
-                'translational profile &mdash; prioritising compounds with broad, safe, '
-                'and sustained rescue over high-efficacy but sex-discordant or '
-                'WT-perturbing candidates. Outputs Tier I&ndash;V drug priority labels.'
+                'translational profile, prioritising compounds whose rescue is broad and '
+                'sustained over high-efficacy but sex-discordant or '
+                'WT-perturbing candidates. Outputs Tier I-V drug priority labels.'
             ),
         ),
     ]
     for _col, _title, _body in _innovations:
         with _col:
             st.markdown(
-                '<div style="background:#fff;border:1px solid #C5D7F0;'
-                'border-top:4px solid #F0A500;border-radius:10px;'
+                '<div style="background:#fff;border:1px solid #DCE0E6;'
+                'border-top:2px solid #D55E00;border-radius:3px;'
                 'padding:1.2rem 1.3rem;height:100%;">'
-                '<div style="font-size:.93rem;font-weight:700;color:#0D2137;'
+                '<div style="font-size:.93rem;font-weight:600;color:#0F2133;'
                 'margin-bottom:.6rem;">' + _title + '</div>'
-                '<p style="font-size:.83rem;color:#374151;line-height:1.78;margin:0;">'
+                '<p style="font-size:.83rem;color:#45515F;line-height:1.78;margin:0;">'
                 + _body + '</p></div>',
                 unsafe_allow_html=True,
             )
 
     # ── 5-step Workflow ───────────────────────────────────────────────────
-    st.markdown('<br>', unsafe_allow_html=True)
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
-        'border-bottom:3px solid #F0A500;display:inline-block;">'
-        'Analysis Workflow</p>',
+        'border-bottom:2px solid #D55E00;display:inline-block;">'
+        'Workflow</p>',
         unsafe_allow_html=True,
     )
     _steps = [
@@ -4713,32 +4807,31 @@ def page_home():
          'Every plot has filter controls, data table views, and individual figure downloads.'),
         ('5', 'Export',
          'Download all 10 metric tables (CSV) and all figures at 300&nbsp;DPI '
-         '(PNG / SVG / PDF) as a single ZIP for journal submission.'),
+         '(PNG / SVG / PDF) as a single ZIP.'),
     ]
     _scols = st.columns(5)
     for _col, (_num, _stitle, _sdesc) in zip(_scols, _steps):
         with _col:
             st.markdown(
-                '<div style="background:#fff;border:1px solid #C5D7F0;border-radius:10px;'
+                '<div style="background:#fff;border:1px solid #DCE0E6;border-radius:3px;'
                 'padding:1rem .9rem;text-align:center;height:100%;">'
                 '<div style="width:34px;height:34px;border-radius:50%;'
-                'background:#F0A500;color:#fff;font-size:.85rem;font-weight:900;'
+                'background:#1B3A5C;color:#fff;font-size:.85rem;font-weight:600;'
                 'display:flex;align-items:center;justify-content:center;'
                 'margin:0 auto .55rem;">' + _num + '</div>'
-                '<div style="font-size:.85rem;font-weight:700;color:#0D2137;'
+                '<div style="font-size:.85rem;font-weight:600;color:#0F2133;'
                 'margin-bottom:.35rem;">' + _stitle + '</div>'
                 '<div style="font-size:.78rem;color:#6B7280;line-height:1.65;">'
                 + _sdesc + '</div></div>',
                 unsafe_allow_html=True,
             )
 
-    # ── Platform Modules grid ─────────────────────────────────────────────
-    st.markdown('<br>', unsafe_allow_html=True)
+    # ── Pages grid ─────────────────────────────────────────────
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
-        'border-bottom:3px solid #F0A500;display:inline-block;">'
-        'Platform Modules</p>',
+        'border-bottom:2px solid #D55E00;display:inline-block;">'
+        'Pages</p>',
         unsafe_allow_html=True,
     )
     _MODS = [
@@ -4747,7 +4840,7 @@ def page_home():
          'flags outlier replicates, and runs the full computation pipeline with one click.'),
         ('Climbing Curves', 'Kinetics',
          'Time-resolved mean&nbsp;&plusmn;&nbsp;SEM climbing performance per group. '
-         'Computes trapezoidal AUC (0&ndash;1) and interpolated t50. '
+         'Computes trapezoidal AUC (0-1) and interpolated t50. '
          'Individual replicate overlay available.'),
         ('Core Metrics', 'Primary Outcomes',
          'Performance Index, AUC heatmaps per sex, t50 plots, '
@@ -4761,8 +4854,8 @@ def page_home():
          'fit over <b>age (days)</b>. Reports <em>k</em>, half-life, R&sup2;, and '
          '&Delta;<em>k</em> (treatment rescue). Motor-Survival Coupling Index (MSCI).'),
         ('Survival Analysis', 'Lifespan / Actuarial',
-         'Kaplan&ndash;Meier curves with Greenwood CIs, median survival, '
-         'Mantel&ndash;Cox <b>log-rank</b> (BH-FDR pairwise), and <b>Cox proportional '
+         'Kaplan-Meier curves with Greenwood CIs, median survival, '
+         'Mantel-Cox <b>log-rank</b> (BH-FDR pairwise), and <b>Cox proportional '
          'hazards</b> (HR, 95% CI). Accepts event-level or daily-cohort data.'),
         ('Y-maze', 'Cognition / Individuality',
          'Spontaneous <b>alternation</b> (% vs chance, working memory), '
@@ -4771,7 +4864,7 @@ def page_home():
         ('Activity Monitoring (DAMS)', 'Sleep &amp; Circadian',
          '<b>Sleep</b> by the &ge;5-min inactivity rule (total/day/night, bouts), '
          'and free-running <b>circadian period</b> via the chi-square '
-         '(Sokolove&ndash;Bushell) periodogram with Lomb&ndash;Scargle cross-check.'),
+         '(Sokolove-Bushell) periodogram with Lomb-Scargle cross-check.'),
         ('Larval Crawling', 'Locomotion',
          'Video centroid tracking of a single larva &rarr; crawling speed (mm&nbsp;s&#8315;&sup1;), '
          'path length, displacement, and tortuosity; plus summary-table analysis '
@@ -4781,16 +4874,16 @@ def page_home():
          'duration, grooming rate, with group statistics. Wild-type ~13% of time.'),
         ('Drug Ranking', 'Cross-Strain Meta-analysis',
          'Ranks compounds across strains of <b>unequal N</b>: per-strain Hedges&rsquo;&nbsp;<em>g</em> '
-         'pooled by inverse-variance / DerSimonian&ndash;Laird random effects, '
+         'pooled by inverse-variance / DerSimonian-Laird random effects, '
          'composited across all assays into a Therapeutic Score with heterogeneity (I&sup2;).'),
         ('Trajectory Clustering', 'Unsupervised ML',
          'DTW pairwise distance + Ward-linkage clustering. Silhouette-optimal k. '
          'Archetypes: Sustained Rescue, Transient, Progressive Decline, Plateau.'),
         ('Translational Score', 'Drug Ranking',
          'Weighted TCS integrating CRI, TSW, SDQ, MDR, and trajectory stability. '
-         'Tier I&ndash;V drug priority labels with radar visualisation.'),
+         'Tier I-V drug priority labels with radar visualisation.'),
         ('Statistical Analysis', 'Inference',
-         'Shapiro&ndash;Wilk &rarr; Levene &rarr; ANOVA/Kruskal&ndash;Wallis. '
+         'Shapiro-Wilk &rarr; Levene &rarr; ANOVA/Kruskal-Wallis. '
          'BH-FDR pairwise tests. Bootstrap 95% CI. SDQ permutation test.'),
         ('Live Recording', 'Data Acquisition',
          'OpenCV webcam recording. Configurable FPS, resolution, duration. '
@@ -4803,7 +4896,7 @@ def page_home():
          'Full pipeline with configurable WT and vehicle labels.'),
         ('Export', 'Dissemination',
          '10 metric CSVs &plus; all figures at 300&nbsp;DPI. '
-         'One-click ZIP with README for reproducible journal submission.'),
+         'ZIP with a README and a SHA-256 of every table.'),
     ]
     for _ri in range(0, len(_MODS), 4):
         _row = _MODS[_ri:_ri + 4]
@@ -4811,65 +4904,63 @@ def page_home():
         for _col, (_name, _cat, _desc) in zip(_rcols, _row):
             with _col:
                 st.markdown(
-                    '<div style="background:#fff;border:1px solid #C5D7F0;'
-                    'border-radius:10px;padding:1.05rem 1.1rem;'
+                    '<div style="background:#fff;border:1px solid #DCE0E6;'
+                    'border-radius:3px;padding:1.05rem 1.1rem;'
                     'margin-bottom:.8rem;min-height:160px;">'
                     '<div style="display:flex;align-items:center;'
                     'justify-content:space-between;margin-bottom:.45rem;">'
-                    '<span style="font-size:.9rem;font-weight:800;color:#0D2137;">'
+                    '<span style="font-size:.9rem;font-weight:600;color:#0F2133;">'
                     + _name + '</span>'
-                    '<span style="background:#EBF4FF;color:#1E40AF;font-size:.65rem;'
-                    'font-weight:700;padding:2px 9px;border-radius:20px;">'
+                    '<span style="background:#FBEEE6;color:#A84A00;font-size:.65rem;'
+                    'font-weight:600;padding:2px 9px;border-radius:2px;">'
                     + _cat + '</span></div>'
-                    '<p style="font-size:.8rem;color:#4B5563;line-height:1.72;margin:0;">'
+                    '<p style="font-size:.8rem;color:#45515F;line-height:1.72;margin:0;">'
                     + _desc + '</p></div>',
                     unsafe_allow_html=True,
                 )
         st.markdown('<div style="height:.4rem"></div>', unsafe_allow_html=True)
 
     # ── Citation block ────────────────────────────────────────────────────
-    st.markdown('<br>', unsafe_allow_html=True)
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
-        'border-bottom:3px solid #F0A500;display:inline-block;">'
+        'border-bottom:2px solid #D55E00;display:inline-block;">'
         'How to Cite</p>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div style="background:#F8FAFF;border:1px solid #C5D7F0;'
-        'border-left:5px solid #F0A500;border-radius:0 10px 10px 0;'
+        '<div style="background:#F2F4F6;border:1px solid #DCE0E6;'
+        'border-left:3px solid #D55E00;border-radius:0 3px 3px 0;'
         'padding:1.1rem 1.4rem;font-size:.84rem;'
         'color:#1a2332;line-height:1.9;">'
         'Gunanathan K, Sivaramakrishnan V. (2026). '
-        '<em>DroPhenix Analytics v2.0: An integrated computational platform for '
+        '<em>DroPhenix v3.0: An integrated computational platform for '
         'Drosophila climbing assay phenotyping and translational drug scoring.</em> '
         'SSSIHL / SAI-Net. Available at: '
-        '<a href="https://sssihl.edu.in" style="color:#1E40AF;">https://sssihl.edu.in</a>'
+        '<a href="https://sssihl.edu.in" style="color:#A84A00;">https://sssihl.edu.in</a>'
         '</div>',
         unsafe_allow_html=True,
     )
 
     # ── Research Team ─────────────────────────────────────────────────────
-    st.markdown('<br>', unsafe_allow_html=True)
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
-        'border-bottom:3px solid #F0A500;display:inline-block;">'
+        'border-bottom:2px solid #D55E00;display:inline-block;">'
         'Research Team</p>',
         unsafe_allow_html=True,
     )
     _ta, _tb = st.columns(2)
     with _ta:
         st.markdown(
-            '<div style="background:#fff;border:1px solid #C5D7F0;'
-            'border-radius:10px;padding:1.1rem 1.3rem;">'
-            '<span style="background:#DCFCE7;color:#166534;font-size:.68rem;'
-            'font-weight:700;padding:2px 10px;border-radius:20px;">'
+            '<div style="background:#fff;border:1px solid #DCE0E6;'
+            'border-radius:3px;padding:1.1rem 1.3rem;">'
+            '<span style="background:#EAF4EE;color:#1B6E3F;font-size:.68rem;'
+            'font-weight:600;padding:2px 10px;border-radius:2px;">'
             'Principal Investigator</span>'
-            '<div style="font-size:1rem;font-weight:700;color:#0D2137;margin:.45rem 0 .2rem;">'
+            '<div style="font-size:1rem;font-weight:600;color:#0F2133;margin:.45rem 0 .2rem;">'
             'Prof. Venketesh Sivaramakrishnan</div>'
-            '<div style="font-size:.8rem;color:#374151;line-height:1.65;">'
+            '<div style="font-size:.8rem;color:#45515F;line-height:1.65;">'
             'Department of Biosciences<br>'
             'Sri Sathya Sai Institute of Higher Learning (SSSIHL)<br>'
             'Puttaparthi, Andhra Pradesh, India</div></div>',
@@ -4877,12 +4968,12 @@ def page_home():
         )
     with _tb:
         st.markdown(
-            '<div style="background:#fff;border:1px solid #C5D7F0;'
-            'border-radius:10px;padding:1.1rem 1.3rem;">'
+            '<div style="background:#fff;border:1px solid #DCE0E6;'
+            'border-radius:3px;padding:1.1rem 1.3rem;">'
             '<div style="font-size:.72rem;color:#64748B;font-weight:600;margin-bottom:.3rem">Developer &amp; PhD Scholar</div>'
-            '<div style="font-size:1rem;font-weight:700;color:#0D2137;margin:.45rem 0 .2rem;">'
+            '<div style="font-size:1rem;font-weight:600;color:#0F2133;margin:.45rem 0 .2rem;">'
             'Krishnasalini Gunanathan</div>'
-            '<div style="font-size:.8rem;color:#374151;line-height:1.65;">'
+            '<div style="font-size:.8rem;color:#45515F;line-height:1.65;">'
             'Doctoral Research Scholar, Biosciences, SSSIHL<br>'
             'SAI-Net &nbsp;&middot;&nbsp; BrainSafe AI &nbsp;&middot;&nbsp; DroPhenix Analytics</div></div>',
             unsafe_allow_html=True,
@@ -4891,8 +4982,8 @@ def page_home():
     # ── Footer ────────────────────────────────────────────────────────────
     st.markdown(
         '<div style="text-align:center;font-size:.7rem;color:#94A3B8;'
-        'margin-top:2.5rem;padding-top:1rem;border-top:1px solid #C5D7F0;">'
-        + 'DroPhenix Analytics v2.0 &nbsp;&middot;&nbsp; SAI-Net '
+        'margin-top:2.5rem;padding-top:1rem;border-top:1px solid #DCE0E6;">'
+        + 'DroPhenix v3.0 &nbsp;&middot;&nbsp; SAI-Net '
         + '&nbsp;&middot;&nbsp; SSSIHL &nbsp;&middot;&nbsp; '
         + 'Science for Society &nbsp;&middot;&nbsp; GPL-3.0 '
         + '&nbsp;&middot;&nbsp; ' + _dt.now().strftime('%B %Y')
@@ -4936,7 +5027,7 @@ def _demo_lifespan_gompertz(seed: int = 7) -> "pd.DataFrame":
 
 def page_survival():
     render_header("Survival Analysis",
-                  "Actuarial lifespan analysis — Kaplan-Meier, log-rank, Cox PH")
+                  "Actuarial lifespan analysis: Kaplan-Meier, log-rank, Cox PH")
     try:
         from modules import survival as surv
     except Exception as _e:
@@ -5016,8 +5107,7 @@ def page_survival():
     show_ci = st.checkbox("Show 95% confidence bands (Greenwood / cloglog)", value=True)
 
     import plotly.graph_objects as go
-    palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
-               "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+    palette = _series_palette()
     fig = go.Figure()
     for i, g in enumerate(show):
         cur = km[g]
@@ -5177,8 +5267,7 @@ def page_ymaze():
     c3.metric("Mean entries / fly", round(float(per_fly["n_entries"].mean()), 1))
 
     import plotly.graph_objects as go
-    palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
-               "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+    palette = _series_palette()
 
     t_alt, t_tb, t_exp, t_cmp = st.tabs(
         ["Spontaneous Alternation", "Turn Bias / Handedness", "Exploration",
@@ -5262,7 +5351,7 @@ def page_ymaze():
     with t_exp:
         exp = res["exploration"]
         st.dataframe(exp, width="stretch")
-        st.caption("Total arm entries (choices) per fly — general activity / "
+        st.caption("Total arm entries (choices) per fly: general activity / "
                    "exploration read-out.")
         st.download_button("Download exploration CSV", exp.to_csv(index=False).encode(),
                            "ymaze_exploration.csv", "text/csv", key="dl_ymexp")
@@ -5327,7 +5416,7 @@ def page_dams():
             raw = dm.demo_dams()
         st.caption("Synthetic constant-darkness (DD) data: Oregon-WT ~24 h, "
                    "TDP43-vehicle disrupted (~22.5 h), drug partially rescues "
-                   "(~23.6 h) — cf. Konopka & Benzer (1971). Males sleep more "
+                   "(~23.6 h). Cf. Konopka & Benzer (1971). Males sleep more "
                    "than females (sexual dimorphism). Unequal N per group.")
     else:
         up = st.file_uploader("DAM data", type=["csv", "xlsx", "xls"], key="dm_up")
@@ -5370,8 +5459,7 @@ def page_dams():
     c3.metric("Recording (bins/fly)", int(spf["n_bins"].median()))
 
     import plotly.graph_objects as go
-    palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
-               "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+    palette = _series_palette()
 
     t_sleep, t_prof, t_per, t_cmp = st.tabs(
         ["Sleep", "Sleep Profile", "Circadian Period", "Group Comparison"])
@@ -5381,9 +5469,9 @@ def page_dams():
         ss["Group"] = ss["Genotype"] + " | " + ss["Treatment"] + " | " + ss["Sex"]
         fig = go.Figure()
         fig.add_trace(go.Bar(x=ss["Group"], y=ss["Day_sleep_min_per_day"],
-                             name="Day sleep", marker_color="#F0A500"))
+                             name="Day sleep", marker_color="#E69F00"))
         fig.add_trace(go.Bar(x=ss["Group"], y=ss["Night_sleep_min_per_day"],
-                             name="Night sleep", marker_color="#0D2137"))
+                             name="Night sleep", marker_color="#0072B2"))
         fig.update_layout(barmode="stack", yaxis_title="Sleep (min / 24 h)",
                           height=420, legend=dict(orientation="h", y=1.02),
                           margin=dict(l=40, r=20, t=30, b=90))
@@ -5477,10 +5565,10 @@ def page_dams():
                 cp = dm.chi_square_periodogram(act_rs, raw_bin * factor, 16, 32)
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=cp["periods_h"], y=cp["Qp"], mode="lines",
-                                         name="Qp", line=dict(color="#0D2137")))
+                                         name="Qp", line=dict(color="#0F2133")))
                 fig.add_trace(go.Scatter(x=cp["periods_h"], y=cp["threshold"], mode="lines",
-                                         name="significance", line=dict(color="#C0392B", dash="dash")))
-                fig.add_vline(x=cp["peak_period_h"], line_dash="dot", line_color="#F0A500",
+                                         name="significance", line=dict(color="#45515F", dash="dash")))
+                fig.add_vline(x=cp["peak_period_h"], line_dash="dot", line_color="#D55E00",
                               annotation_text=f"{cp['peak_period_h']} h")
                 fig.update_layout(xaxis_title="Test period (h)", yaxis_title="Qp",
                                   height=380, legend=dict(orientation="h", y=1.02),
@@ -5573,7 +5661,7 @@ def page_dam_pipeline():
                              type=["csv"], key="dp_map")
     with c2.expander("Need a channel map?"):
         st.caption("Make one on the **Plan a Run** page, or download this template and fill it in. "
-                   "Monitor names may be `Monitor_1`, `Monitor1`, `M1` — the first number in the "
+                   "Monitor names may be `Monitor_1`, `Monitor1`, `M1`. The first number in the "
                    "name identifies the monitor.")
         tpl = DRd_.channel_map_template(["Monitor_1", "Monitor_2"])
         tpl["Treatment"] = ""
@@ -5712,7 +5800,7 @@ def page_dam_pipeline():
     t_ans, t_fig, t_tab, t_out, t_dl = st.tabs(["Answers", "Figures", "Tables", "Outliers", "Report & downloads"])
     with t_ans:
         st.image(list(figs.values())[0], width="stretch")
-        st.caption("Filled squares survive Benjamini–Hochberg FDR at 5% in the pre-specified stratified test. "
+        st.caption("Filled squares survive Benjamini-Hochberg FDR at 5% in the pre-specified stratified test. "
                    "Grey rows are confounded with monitor and are not evidence on their own.")
         rows = []
         for fam, v in s["families"].items():
@@ -5785,7 +5873,7 @@ def page_dam_pipeline():
 # ══════════════════════════════════════════════════════════════════════════════
 def page_larval():
     render_header("Larval Crawling",
-                  "Larval locomotion — video centroid tracking + crawling metrics")
+                  "Larval locomotion: video centroid tracking + crawling metrics")
     try:
         from modules import larval as lv
     except Exception as _e:
@@ -5897,7 +5985,7 @@ def page_larval():
 # ══════════════════════════════════════════════════════════════════════════════
 def page_grooming():
     render_header("Grooming",
-                  "Grooming behaviour — % time grooming, bouts, group statistics")
+                  "Grooming behaviour: % time grooming, bouts, group statistics")
     try:
         from modules import grooming as gr
     except Exception as _e:
@@ -6002,7 +6090,7 @@ def page_drug_ranking():
 
     st.markdown(
         "Quantifies each compound's effect **per strain** (Hedges' *g*, "
-        "drug vs vehicle — corrected for unequal N), pools across strains by "
+        "drug vs vehicle. Corrected for unequal N), pools across strains by "
         "**inverse-variance / DerSimonian-Laird random-effects** meta-analysis, "
         "then combines assays into one **Therapeutic Score** and ranks compounds. "
         "Positive = beneficial (higher climbing/alternation, longer life, "
@@ -6081,7 +6169,7 @@ def page_drug_ranking():
             marker_color=["#27AE60" if p < 0.05 else "#95A5A6"
                           for p in comp["p_value"]],
             text=[f"#{r}" for r in comp["Rank"]], textposition="outside"))
-        fig.add_hline(y=0, line_color="#0D2137")
+        fig.add_hline(y=0, line_color="#0F2133")
         fig.update_layout(yaxis_title="Therapeutic Score (SMD, benefit)",
                           height=420, margin=dict(l=40, r=20, t=30, b=60))
         st.plotly_chart(fig, width="stretch")
@@ -6107,7 +6195,7 @@ def page_drug_ranking():
                 error_x=dict(type="data", array=pa2["ci_hi"] - pa2["g_pooled"],
                              arrayminus=pa2["g_pooled"] - pa2["ci_lo"]),
                 marker=dict(size=9, color="#2A7DE1")))
-            fig.add_vline(x=0, line_color="#C0392B", line_dash="dash")
+            fig.add_vline(x=0, line_color="#45515F", line_dash="dash")
             fig.update_layout(xaxis_title="Pooled Hedges' g (benefit)", height=460,
                               margin=dict(l=40, r=20, t=30, b=40))
             st.plotly_chart(fig, width="stretch")
@@ -6139,7 +6227,7 @@ def page_drug_ranking():
                 st.warning("Unequal group sizes detected. Effects use Hedges' g "
                            "(unequal-N-corrected) and strains are combined by "
                            "inverse-variance weighting, so larger strains "
-                           "contribute proportionally more — the statistically "
+                           "contribute proportionally more. The statistically "
                            "correct handling of unbalanced designs.")
             else:
                 st.success("Group sizes are approximately balanced.")
@@ -6251,7 +6339,7 @@ def _spec_frame(spec_dict: dict) -> pd.DataFrame:
 def page_plan_run():
     render_header("Plan a Run",
                   "Allocate flies to activity-monitor channels BEFORE loading "
-                  "them — the only moment a confound is still fixable")
+                  "them. The only moment a confound is still fixable")
     try:
         from modules import dam_planner as DPL
     except Exception as _e:
@@ -6262,7 +6350,7 @@ def page_plan_run():
         "Every other page in this tool tells you what your data can answer. "
         "This one decides it. If an entire age group sits in one monitor, then "
         "monitor and age are the same column of numbers, and no model can "
-        "separate a beam-sensitivity difference from an ageing effect — that is "
+        "separate a beam-sensitivity difference from an ageing effect. That is "
         "arithmetic, not a modelling choice. The layout below splits every "
         "factor across every monitor, interleaves the groups across channel "
         "positions rather than blocking them, and rotates the arrangement so a "
@@ -6339,7 +6427,7 @@ def page_plan_run():
     with tab_check:
         st.markdown(
             "Already loaded the monitors? Upload the channel map and this will "
-            "say which questions the run can answer — before you spend days "
+            "say which questions the run can answer. Before you spend days "
             "recording.")
         up = st.file_uploader("Channel map CSV", type=["csv"], key="pl_up")
         if up is not None:
@@ -6365,7 +6453,7 @@ def page_plan_run():
 
 def page_design_check():
     render_header("Design Check",
-                  "Pre-analysis design audit — replication unit, confounding, "
+                  "Pre-analysis design audit: replication unit, confounding, "
                   "blocking defects")
     try:
         from modules import design_schema as dsch
@@ -6377,9 +6465,9 @@ def page_design_check():
     df = st.session_state["df"]
 
     st.markdown(
-        "Reads the design the data actually encode — which physical **vial** or "
+        "Reads the design the data actually encode: which physical **vial** or "
         "**fly** each row came from, which time axes exist, which compound and "
-        "dose — and names the **unit of independent replication** that every "
+        "dose. And names the **unit of independent replication** that every "
         "downstream model must cluster on. Factor pairs that cannot be "
         "separated are reported as **blocking**: no model can estimate them, so "
         "the analysis stops rather than returning a number that looks fine.")
@@ -6402,7 +6490,7 @@ def page_design_check():
     blocking = rep.get("blocking", [])
     if blocking:
         st.error("BLOCKING DESIGN DEFECT. The effects below are mathematically "
-                 "inseparable — no amount of data or modelling can estimate "
+                 "inseparable. No amount of data or modelling can estimate "
                  "them separately. The design must change; the analysis must "
                  "not proceed as if it could.")
         for b in blocking:
@@ -6421,7 +6509,7 @@ def page_design_check():
     if rep.get("cluster_unit") is None:
         st.warning(
             "No replication unit could be identified. Add a `VialID` column "
-            "(one label per physical vial) — without it, flies in the same vial "
+            "(one label per physical vial). Without it, flies in the same vial "
             "are indistinguishable from independent replicates and every "
             "standard error on this dataset is too small.")
 
@@ -6481,7 +6569,7 @@ def page_design_check():
 # ══════════════════════════════════════════════════════════════════════════════
 def page_hierarchical():
     render_header("Hierarchical Statistics",
-                  "Clustered counts — ICC, design effect, beta-binomial and GEE")
+                  "Clustered counts: ICC, design effect, beta-binomial and GEE")
     try:
         from modules import hierarchical as hier
     except Exception as _e:
@@ -6545,7 +6633,7 @@ def page_hierarchical():
                 f"Treating flies as independent gives p = {rep['p_naive']:.3g}; "
                 f"clustering on {cluster_col} gives p = {rep['p_clustered']:.3g}. "
                 "These fall on opposite sides of 0.05. The clustered result is "
-                "the valid one — the naive p-value is an artefact of counting "
+                "the valid one: the naive p-value is an artefact of counting "
                 "flies as replicates of a treatment that was applied to vials.")
 
         m = st.columns(4)
@@ -6560,9 +6648,9 @@ def page_hierarchical():
 
         p1, p2 = st.columns(2)
         _pn, _pc = rep.get("p_naive", np.nan), rep.get("p_clustered", np.nan)
-        p1.metric("p — flies treated as independent (naive)",
+        p1.metric("p: flies treated as independent (naive)",
                   f"{_pn:.4g}" if pd.notna(_pn) else "N/A")
-        p2.metric(f"p — clustered on {cluster_col}",
+        p2.metric(f"p: clustered on {cluster_col}",
                   f"{_pc:.4g}" if pd.notna(_pc) else "N/A")
 
         st.markdown(f"**Verdict:** {rep.get('verdict', '')}")
@@ -6598,7 +6686,7 @@ def page_hierarchical():
     with t_bb:
         st.caption("Maximum-likelihood beta-binomial regression with a logit "
                    "link. The binomial mean structure plus one extra parameter "
-                   "rho, which is exactly the intraclass correlation — "
+                   "rho, which is exactly the intraclass correlation. "
                    "overdispersion is estimated rather than assumed away.")
         if st.button("Fit beta-binomial", key="hier_bb_run"):
             try:
@@ -6673,7 +6761,7 @@ def page_hierarchical():
         "error is too small and the corrected interval is wider. For a "
         "WITHIN-cluster predictor (age, when every vial is measured at every "
         "age) the vial random intercept absorbs between-vial variation and the "
-        "corrected interval is narrower — respecting the design buys precision.")
+        "corrected interval is narrower. Respecting the design buys precision.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6681,7 +6769,7 @@ def page_hierarchical():
 # ══════════════════════════════════════════════════════════════════════════════
 def page_survivor_bias():
     render_header("Survivor Bias",
-                  "Trajectory estimands — survivor mean, balanced panel, "
+                  "Trajectory estimands: survivor mean, balanced panel, "
                   "pattern mixture")
     try:
         from modules import survivor_bias as sb
@@ -6692,8 +6780,8 @@ def page_survivor_bias():
     st.markdown(
         "In an ageing cohort the weakest animals die first, so a phenotype "
         "measured at age *t* is measured in a progressively fitter "
-        "subpopulation. The cohort-mean curve — what almost every published "
-        "climbing figure plots — is the trajectory of a **survivor**, not of a "
+        "subpopulation. The cohort-mean curve. What almost every published "
+        "climbing figure plots. Is the trajectory of a **survivor**, not of a "
         "fly, and its decline is biased toward zero. The bias is larger in the "
         "sicker genotype, so a manipulation that kills frail flies early can "
         "look protective. This page computes three estimands on the same data "
@@ -6744,9 +6832,9 @@ def page_survivor_bias():
             st.info(
                 "This page follows the same animal across ages, so it needs an "
                 "identifier.\n\nMissing column(s):\n"
-                "- `FlyID` — the individual animal; without it there is no "
+                "- `FlyID`. The individual animal; without it there is no "
                 "individual trajectory, only a cohort mean\n"
-                "- `VialID` — accepted as a coarser unit when flies are not "
+                "- `VialID`. Accepted as a coarser unit when flies are not "
                 "tracked individually, in which case the 'individual' slope is "
                 "a per-vial slope and terminal decline within a vial is averaged "
                 "away")
@@ -6810,9 +6898,9 @@ def page_survivor_bias():
         import plotly.graph_objects as go
         fig = go.Figure()
         series = [
-            ("Survivor mean (conventional)", rep.get("survivor_mean"), "#C0392B"),
-            ("Balanced panel", rep.get("balanced_panel"), "#0D2137"),
-            ("Pattern mixture", rep.get("pattern_mixture"), "#F0A500"),
+            ("Survivor mean (conventional)", rep.get("survivor_mean"), "#D55E00"),
+            ("Balanced panel", rep.get("balanced_panel"), "#0F2133"),
+            ("Pattern mixture", rep.get("pattern_mixture"), "#E69F00"),
         ]
         plotted = 0
         for name, tab, colour in series:
@@ -7056,7 +7144,7 @@ def page_trajectory_forecast():
             "No population prior. Fewer than two completed cohorts qualified "
             f"(each needs at least {int(min_points)} ages and a stable "
             f"{family} fit). The forecast falls back to AICc-weighted model "
-            "averaging across curve families — the spread across families is "
+            "averaging across curve families. The spread across families is "
             "the model-form uncertainty, and it is wide, as it should be."
             + (f" Conformal calibration held {len(calib_pool)} cohort(s) out of "
                f"the prior, leaving only {len(prior_pool)}; turn it off, or add "
@@ -7066,7 +7154,7 @@ def page_trajectory_forecast():
             st.caption(
                 f"Split-conformal: {len(prior_pool)} cohort(s) build the prior, "
                 f"{len(calib_pool)} supply out-of-sample residuals. The two sets "
-                "must be disjoint — overlapping ones give in-sample residuals "
+                "must be disjoint. Overlapping ones give in-sample residuals "
                 "and an under-correction.")
         pm = st.columns(3)
         pm[0].metric("Prior cohorts", str(prior.n_cohorts))
@@ -7142,10 +7230,10 @@ def page_trajectory_forecast():
                 line=dict(width=0), hoverinfo="skip", showlegend=False))
             fig.add_trace(go.Scatter(
                 x=xs, y=ok["predicted"], mode="lines+markers", name="Predicted",
-                line=dict(color="#F0A500", width=2)))
+                line=dict(color="#E69F00", width=2)))
         fig.add_trace(go.Scatter(
             x=obs_t, y=obs_y, mode="markers", name="Observed",
-            marker=dict(color="#0D2137", size=9)))
+            marker=dict(color="#0F2133", size=9)))
         fig.update_layout(
             xaxis_title="Age (days)", yaxis_title="Phenotype", height=440,
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
@@ -7243,7 +7331,7 @@ def page_trajectory_forecast():
 # ══════════════════════════════════════════════════════════════════════════════
 def page_historical_controls():
     render_header("Historical Controls",
-                  "Robust meta-analytic-predictive priors — borrow control "
+                  "Robust meta-analytic-predictive priors: borrow control "
                   "information, safely")
     try:
         from modules import control_prior as cp
@@ -7256,7 +7344,7 @@ def page_historical_controls():
         "already knows how that control behaves. Borrowing it lets the same "
         "flies test more compounds, or the same experiment run with fewer "
         "flies. The danger is that historical controls are **not** exchangeable "
-        "by fiat — stocks drift, food batches change, incubators are replaced — "
+        "by fiat. Stocks drift, food batches change, incubators are replaced. "
         "and naive pooling is among the fastest ways to manufacture a false "
         "discovery. The robust MAP prior switches its own borrowing off when "
         "the concurrent control disagrees with history.")
@@ -7308,7 +7396,7 @@ def page_historical_controls():
             arms = None
 
     if arms is None:
-        st.markdown("**Historical control arms** — one row per past experiment.")
+        st.markdown("**Historical control arms**: one row per past experiment.")
         seed_tab = pd.DataFrame({
             "label": [f"EXP{i}" for i in range(1, 6)],
             "successes": [17, 18, 16, 19, 17],
@@ -7324,9 +7412,9 @@ def page_historical_controls():
         arms = arms[arms["totals"] > 0]
         arms["proportion"] = arms["successes"] / arms["totals"]
         cur1, cur2 = st.columns(2)
-        cur_s = cur1.number_input("Concurrent control — flies that climbed",
+        cur_s = cur1.number_input("Concurrent control: flies that climbed",
                                   min_value=0, value=15, step=1, key="hc_cur_s")
-        cur_n = cur2.number_input("Concurrent control — flies tested",
+        cur_n = cur2.number_input("Concurrent control: flies tested",
                                   min_value=1, value=20, step=1, key="hc_cur_n")
         hist = arms
         cur_label = "concurrent"
@@ -7368,7 +7456,7 @@ def page_historical_controls():
 
     conflict = cp.prior_data_conflict(robust, float(cur_s), float(cur_n))
     if conflict.get("conflict"):
-        st.error("PRIOR-DATA CONFLICT — DO NOT BORROW. " + conflict.get("verdict", ""))
+        st.error("PRIOR-DATA CONFLICT: DO NOT BORROW. " + conflict.get("verdict", ""))
     else:
         st.success(conflict.get("verdict", ""))
 
@@ -7427,7 +7515,7 @@ def page_historical_controls():
         st.dataframe(ctab, width="stretch")
         st.caption(conflict.get("method", "") +
                    ". The weakly-informative component is stripped before the "
-                   "test — it is designed to accommodate any observation, so "
+                   "test. It is designed to accommodate any observation, so "
                    "leaving it in would make the diagnostic unable to detect a "
                    "conflict.")
 
@@ -7531,7 +7619,7 @@ def page_dose_response():
         "Hill slope) with intervals that are comparable across experiments. "
         "EC50 intervals are computed by **profile likelihood**, because the "
         "delta method assumes a symmetry the estimate does not have and can "
-        "return a negative lower bound — an impossible dose.")
+        "return a negative lower bound. An impossible dose.")
     _template_button("toxin_dose_response_template.csv", "Toxin template", "tpl_dr2")
 
     if not _needs_columns(df, {
@@ -7559,7 +7647,7 @@ def page_dose_response():
     val_opt = c1.selectbox("Response column", vopts, key="dr2_val")
     model = c2.selectbox("Model", ["LL.4", "LL.3", "LL.2"], key="dr2_model",
                          help="LL.4 = b, c, d, e free. LL.3 fixes the lower "
-                              "asymptote at 0. LL.2 also fixes the upper at 1 — "
+                              "asymptote at 0. LL.2 also fixes the upper at 1. "
                               "the natural model for a survival curve, where e "
                               "is exactly the LC50.")
 
@@ -7640,12 +7728,12 @@ def page_dose_response():
             grid = np.linspace(0, max(dose.max(), 1.0), 200)
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=dose, y=resp, mode="markers", name="Observed",
-                                 marker=dict(color="#0D2137", size=8)))
+                                 marker=dict(color="#0F2133", size=8)))
         fig.add_trace(go.Scatter(x=grid, y=fit.predict(grid), mode="lines",
                                  name=f"{model} fit",
-                                 line=dict(color="#F0A500", width=2)))
+                                 line=dict(color="#E69F00", width=2)))
         if np.isfinite(fit.ec50) and fit.ec50 > 0:
-            fig.add_vline(x=float(fit.ec50), line=dict(color="#C0392B", dash="dash"))
+            fig.add_vline(x=float(fit.ec50), line=dict(color="#45515F", dash="dash"))
         fig.update_layout(
             xaxis_title="Dose", yaxis_title="Response", height=440,
             xaxis_type="log" if nz.size else "linear",
@@ -7730,8 +7818,8 @@ def page_dose_response():
             n_col = pd.to_numeric(work["n"], errors="coerce")[keep].to_numpy(float)
             meaning = st.selectbox(
                 "The `n` column counts",
-                ["flies scored after mortality — exposed = n + n_dead",
-                 "flies originally exposed — scored = n - n_dead"],
+                ["flies scored after mortality: exposed = n + n_dead",
+                 "flies originally exposed: scored = n - n_dead"],
                 key="dr2_nmeaning",
                 help="Which denominator `n` refers to changes the mortality "
                      "curve and therefore the LC50. It cannot be inferred from "
@@ -7795,7 +7883,7 @@ def page_dose_response():
 # ══════════════════════════════════════════════════════════════════════════════
 def page_time_of_day():
     render_header("Time-of-Day",
-                  "Circadian modulation of climbing — cosinor, and the fatigue "
+                  "Circadian modulation of climbing: cosinor, and the fatigue "
                   "confound")
     try:
         from modules import circadian_climbing as cc
@@ -7823,9 +7911,9 @@ def page_time_of_day():
             or ("ZT" in df.columns and df["ZT"].notna().any())):
         st.info(
             "This page needs a time-of-day axis.\n\nMissing column(s):\n"
-            "- `TimeOfDay` — the clock time of the assay session (`09:10`, "
+            "- `TimeOfDay`. The clock time of the assay session (`09:10`, "
             "`14:05`) or a label (`Morning`, `Afternoon`, `Evening`)\n"
-            "- `ZT` — Zeitgeber hours since lights-on, if you already have them\n\n"
+            "- `ZT`. Zeitgeber hours since lights-on, if you already have them\n\n"
             "Either one is sufficient; ZT is used directly, TimeOfDay is "
             "converted using the lights-on hour.")
         return
@@ -7843,8 +7931,8 @@ def page_time_of_day():
             "No unit of replication was found. Add a `VialID` column (or "
             "`FlyID` if flies are individually tracked and independently "
             "housed). A single subject measured at three times of day supports "
-            "no cosinor at all — three observations, three parameters, zero "
-            "residual degrees of freedom — so replication must come from the "
+            "no cosinor at all. Three observations, three parameters, zero "
+            "residual degrees of freedom. So replication must come from the "
             "number of subjects.")
         return
 
@@ -8003,7 +8091,7 @@ def page_time_of_day():
                                    key="dl_tod_sub")
                 st.caption(
                     "Each subject contributes one bivariate observation "
-                    "(beta, gamma) — an exact summary of that subject's rhythm. "
+                    "(beta, gamma). An exact summary of that subject's rhythm. "
                     "Inference is then across subjects, so three timepoints per "
                     "subject is sufficient. The population amplitude is the "
                     "length of the MEAN VECTOR, not the mean of the individual "
@@ -8013,9 +8101,9 @@ def page_time_of_day():
         st.caption(
             "HYPOTHESIS, not an established finding: in a disease genotype the "
             "circadian amplitude degrades earlier, or proportionally more, than "
-            "the MESOR. A smaller population amplitude has two explanations — "
+            "the MESOR. A smaller population amplitude has two explanations. "
             "every fly's rhythm is damped, or the flies' rhythms are intact but "
-            "desynchronised — and the population amplitude alone cannot tell "
+            "desynchronised. And the population amplitude alone cannot tell "
             "them apart.")
         if group_col == "(none)":
             st.info("Choose a grouping column above (Genotype, Treatment or "
@@ -8137,7 +8225,7 @@ def _climbing_simple_score():
         return
     dur = n_fr / fps
     fh, fw = first.shape[:2]
-    st.success(f"{up.name} — {fw}x{fh}, {fps:.2f} fps, {dur:.0f} s")
+    st.success(f"{up.name}, {fw}x{fh}, {fps:.2f} fps, {dur:.0f} s")
 
     c1, c2, c3 = st.columns(3)
     n_flies = c1.number_input("Flies per cylinder", 1, 200, 20, 1, key="cbs_n")
@@ -8163,13 +8251,13 @@ def _climbing_simple_score():
     if n_source == "UNKNOWN":
         st.warning(
             "Without the number of flies in the cylinder, a Performance Index "
-            "cannot be formed at all — it is a proportion of that number. The "
+            "cannot be formed at all. It is a proportion of that number. The "
             "counts will still be reported.")
     elif n_source == "NOMINAL":
         st.info(
             "A protocol figure is an assumption, not a count. On this "
             "laboratory's own recordings the loading stated as 20 per cylinder "
-            "was 14–25 in the operator's notes. The reading will be marked "
+            "was 14-25 in the operator's notes. The reading will be marked "
             "`DENOMINATOR_UNCERTAIN`.")
     # THE ZONE IS THE WHOLE TUBE ABOVE THE BAND BY DEFAULT. A fixed 250 px was
     # tuned on one rig and on a closer camera it stopped two-thirds of the way up
@@ -8197,7 +8285,7 @@ def _climbing_simple_score():
                               CB.BAND_DARK, 5, key="cbs_bd")
         st.caption(
             "This finds the BAND only. The flies are counted by a size-matched "
-            "blob detector — no threshold adjustment needed, and none is offered: "
+            "blob detector. No threshold adjustment needed, and none is offered: "
             "its fly diameter is a fitted value (0.07 of the cylinder width) and "
             "is sharply peaked (0.05 → MAE 9.11, 0.07 → 2.93, 0.10 → 9.82 flies), "
             "so a slider on it would be a slider on the error.")
@@ -8205,14 +8293,14 @@ def _climbing_simple_score():
             "The Fly-darkness and Min/Max blob-area sliders that used to sit here "
             "have been removed rather than left in place: once counting moved to "
             "the blob detector they no longer affected any number, and a control "
-            "that does nothing is worse than no control — this page previously "
+            "that does nothing is worse than no control. This page previously "
             "shipped exactly that defect and told users to adjust it when a count "
             "looked wrong.")
         drop_static = st.checkbox(
             "Discard detections that never move", value=False, key="cbs_static")
         st.caption(
             "Applies to the snapshot columns only. It removes printed label text "
-            "and also removes flies that cling motionless to the glass — measured "
+            "and also removes flies that cling motionless to the glass. Measured "
             "on the wild-type control it cut a correct count of 15-18 to 6-9, so "
             "it is off by default. The crossing gate does not need it.")
     fly_dark, min_a, max_a = CB.FLY_DARK, 20, 400
@@ -8223,9 +8311,9 @@ def _climbing_simple_score():
     cols_xy, step = [], fw // max(int(n_cyl), 1)
     for i in range(int(n_cyl)):
         d1, d2 = st.columns(2)
-        c0 = d1.number_input(f"Cylinder {i+1} — left column", 0, fw - 2,
+        c0 = d1.number_input(f"Cylinder {i+1}: left column", 0, fw - 2,
                              min(i * step + step // 4, fw - 2), 1, key=f"cbs_c0{i}")
-        c1_ = d2.number_input(f"Cylinder {i+1} — right column", 1, fw - 1,
+        c1_ = d2.number_input(f"Cylinder {i+1}: right column", 1, fw - 1,
                               min(i * step + 3 * step // 4, fw - 1), 1,
                               key=f"cbs_c1{i}")
         if c1_ > c0:
@@ -8250,7 +8338,7 @@ def _climbing_simple_score():
     st.caption(
         "The band is located on a 15-frame median, not on the first frame. At "
         "the tap the flies are heaped in the bottom of the cylinder and a raft "
-        "of flies is dark right across the tube — measured, reading frame 0 put "
+        "of flies is dark right across the tube. Measured, reading frame 0 put "
         "the band 322 px too low on one recording.")
 
     vis = first.copy()
@@ -8297,12 +8385,12 @@ def _climbing_simple_score():
                 f"{tw} px ({bw / max(tw, 1):.1f}x). The detector sizes a fly from "
                 f"the width it is given, so this box looks for a "
                 f"{_FB.fly_diameter(bw):.1f} px fly instead of {_FB.fly_diameter(tw):.1f} px "
-                "and will undercount. Draw the box to the glass — the green bar "
+                "and will undercount. Draw the box to the glass. The green bar "
                 "shows where it is.")
         elif bw / max(tw, 1) > 1.25:
             st.info(
                 f"Cylinder {i}: box {bw} px, glass {tw} px. Scoring uses the "
-                f"measured {tw} px, so the count is unaffected — but tightening "
+                f"measured {tw} px, so the count is unaffected. But tightening "
                 "the box makes the preview easier to read.")
 
     for i, by in enumerate(bands, 1):
@@ -8316,7 +8404,7 @@ def _climbing_simple_score():
     if not st.button("Run", type="primary", key="cbs_run"):
         return
     if not any(b is not None for b in bands):
-        st.error("No band was found on any cylinder — nothing to score.")
+        st.error("No band was found on any cylinder: nothing to score.")
         return
 
     frames = []
@@ -8339,7 +8427,7 @@ def _climbing_simple_score():
 
     scored = res[res.status == "scored"]
     if scored.empty:
-        st.error("Nothing was scored. Every cylinder refused — see the messages above.")
+        st.error("Nothing was scored. Every cylinder refused, see the messages above.")
         return
 
     # ── LAYER 3 first, because it governs whether anything below may be used.
@@ -8349,14 +8437,14 @@ def _climbing_simple_score():
         st.error("**Performance Index: NOT REPORTABLE**")
         st.markdown(
             "No reading on this video may be reported as a Performance Index. "
-            "The detections, the counts and the estimate are all shown below — "
+            "The detections, the counts and the estimate are all shown below. "
             "they are what the algorithm observed, and they are useful for "
-            "working out *why* — but none of them is a measurement of the "
+            "working out *why*. But none of them is a measurement of the "
             "animals until the reasons below are cleared.")
         for c in worst:
             if c in CB.REASONS:
                 sev, what, why = CB.REASONS[c]
-                st.markdown(f"- **`{c}`** — {what}  \n  <small>{why}</small>",
+                st.markdown(f"- **`{c}`**: {what}  \n  <small>{why}</small>",
                             unsafe_allow_html=True)
         st.caption(
             "This is not a bug and it is not conservatism for its own sake. On "
@@ -8373,7 +8461,7 @@ def _climbing_simple_score():
         st.success(f"**Performance Index reportable on {len(reportable)} of "
                    f"{len(scored)} readings.**")
 
-    st.subheader("Layer 1 — what the algorithm observed")
+    st.subheader("Layer 1: what the algorithm observed")
     st.caption(
         "Raw detector observations. These are reported whatever the verdict "
         "above, because a refusal that also hid the evidence would be useless.")
@@ -8381,12 +8469,12 @@ def _climbing_simple_score():
                               values="count_above", aggfunc="mean")
     st.line_chart(wide)
     st.caption(
-        "Detections above the band — **objects, not confirmed flies**. Measured "
+        "Detections above the band: **objects, not confirmed flies**. Measured "
         "on an empty tube (hand count 0 or 1, 8 cylinders) this detector still "
         "finds a mean of 8.0 objects, of which 7.2 never move. Read this as "
         "what the algorithm saw, not as a fly count.")
 
-    st.subheader("Layer 2 — the estimate, with its provenance")
+    st.subheader("Layer 2: the estimate, with its provenance")
     st.caption(
         "The count the estimator derives from those observations. It is not a "
         "biological result and is deliberately reported under a different name "
@@ -8400,7 +8488,7 @@ def _climbing_simple_score():
         "label is dark and fly-sized); its lower bound counts only detections "
         "that move and is necessarily too low (a fly clinging still is discarded "
         "with the print).  \n"
-        "**Accuracy, stated properly.** The midpoint's MAE of 2.20 that this page "
+        "**Held-out accuracy.** The midpoint's MAE of 2.20 that this page "
         "used to quote was measured on the 15 readings the midpoint was *chosen* "
         "on (IMG_6029 and IMG_6181) and must not be read as performance. Held "
         f"out: MAE {CB.VALIDATION_EVIDENCE['day15']['mae']:.2f} on Day 15 "
@@ -8410,7 +8498,7 @@ def _climbing_simple_score():
         "single number here: on Day 15 it conceals a false-positive floor of "
         f"{CB.VALIDATION_EVIDENCE['day15']['empty_tube_floor_cyl_weighted']:.1f} "
         "objects on an empty tube against only ~22% of real flies surviving as "
-        "separate detections — two large errors in opposite directions that "
+        "separate detections: two large errors in opposite directions that "
         "partly cancel. The slope against hand counts is "
         f"{CB.VALIDATION_EVIDENCE['day15']['slope']:.3f} where a faithful "
         "instrument would give 1.000, so a real difference in climbing is "
@@ -8421,7 +8509,7 @@ def _climbing_simple_score():
         st.warning(
             f"{len(low)} of {len(scored)} readings have a bracket wider than 7 "
             "flies. The two bounds disagree, so the midpoint carries real "
-            "uncertainty — read `count_lower` and `count_upper` rather than the "
+            "uncertainty. Read `count_lower` and `count_upper` rather than the "
             "single number.")
 
     gap = scored[scored.accounted_gap.abs() > 5]
@@ -8429,11 +8517,11 @@ def _climbing_simple_score():
         st.error(
             f"{len(gap)} of {len(scored)} readings do not account for the "
             f"{int(n_flies)} flies loaded: the two zones together found "
-            f"{gap.accounted_for.min()}–{gap.accounted_for.max()}. A sealed "
+            f"{gap.accounted_for.min()}-{gap.accounted_for.max()}. A sealed "
             "cylinder holds exactly what was put in it, so a shortfall means "
             "flies are merging in the crowd below the band and a surplus means "
             "the print is being counted above it. This is a diagnostic, not a "
-            "correction — forcing the sum to match was tested and made the "
+            "correction. Forcing the sum to match was tested and made the "
             "answer worse (MAE 4.66 against 2.20).")
         st.dataframe(gap[["cylinder", "time_sec", "count_above", "count_below",
                           "accounted_for", "accounted_gap"]], width="stretch")
@@ -8464,7 +8552,7 @@ def _climbing_simple_validate():
 
     st.caption(
         "Upload the bench sheet with your hand counts filled in, and the CSV the "
-        "Score tab exported. Nothing here changes the scoring — it only measures "
+        "Score tab exported. Nothing here changes the scoring. It only measures "
         "it.")
 
     tmpl = Path("data/validation/hand_count_template.csv")
@@ -8476,7 +8564,7 @@ def _climbing_simple_validate():
         st.caption(
             "Take this to the bench. Pause each recording at 10 s, 30 s and 60 s "
             "and write the number of flies you can see above the black band. "
-            "Leave a row blank if you cannot count it confidently — a guessed "
+            "Leave a row blank if you cannot count it confidently. A guessed "
             "hand count is worse than a missing one, because it becomes the "
             "yardstick everything else is judged against.")
 
@@ -8545,7 +8633,7 @@ def _climbing_simple_validate():
                        mime="text/plain", key="cbv_dl")
     if "IS within" in report:
         st.success(f"MAE is at or below the {NOISE_FLOOR_FLIES}-fly noise floor of "
-                   "the assay itself — the tool is as accurate as the measurement "
+                   "the assay itself. The tool is as accurate as the measurement "
                    "it replaces.")
     elif "IS NOT within" in report:
         st.warning(f"MAE exceeds the {NOISE_FLOOR_FLIES}-fly noise floor. The "

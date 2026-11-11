@@ -368,6 +368,69 @@ def page_names() -> List[str]:
     return re.findall(r'"([^"]+)"', m.group(1)) if m else []
 
 
+def test_palette_and_label_api() -> None:
+    """
+    The user-selectable palette and label overrides (modules/visualizer.py).
+
+    Two properties matter and neither is cosmetic. Every offered palette must
+    be COLOURBLIND-SAFE, because an unrestricted colour picker in a scientific
+    tool is a way to produce a figure a reviewer cannot read; and an unknown
+    palette name must RAISE rather than fall back, because a figure drawn in a
+    palette the caller did not ask for carries no record of which palette it
+    used.
+    """
+    from modules import visualizer as V
+    print("\nPalette and label API")
+    try:
+        before = list(V.ACTIVE_PALETTE)
+        ok_names = sorted(V.PALETTES)
+        check("at least three palettes are offered", len(ok_names) >= 3,
+               ", ".join(ok_names))
+
+        # every palette entry is a valid 6-digit hex colour
+        bad = [(n, c) for n, cols in V.PALETTES.items() for c in cols
+               if not (isinstance(c, str) and len(c) == 7 and c.startswith("#"))]
+        check("every palette colour is a #rrggbb hex value", not bad, str(bad[:3]))
+
+        # the greyscale palette must be monochrome, or it is not greyscale
+        import re
+        greys = V.PALETTES["print_grey"][:6]
+        non_grey = [c for c in greys
+                    if not (c[1:3] == c[3:5] == c[5:7])]
+        check("print_grey is genuinely monochrome (R==G==B)",
+               not non_grey, str(non_grey))
+
+        # and ordered by lightness, so it survives a black-and-white printer
+        lum = [int(c[1:3], 16) for c in greys]
+        check("print_grey is ordered by lightness",
+               lum == sorted(lum), str(lum))
+
+        V.set_palette("print_grey")
+        check("set_palette changes the colour actually used",
+               V.palette_colour(0) == V.PALETTES["print_grey"][0],
+               V.palette_colour(0))
+
+        raised = False
+        try:
+            V.set_palette("neon-disco")
+        except ValueError:
+            raised = True
+        check("an unknown palette name RAISES rather than falling back",
+               raised, "ValueError raised" if raised else "NO exception was raised")
+
+        V.set_labels({"TDP43": "TDP-43"})
+        check("label overrides are applied", V.display_label("TDP43") == "TDP-43",
+               V.display_label("TDP43"))
+        check("names without an override are unchanged",
+               V.display_label("Oregon-R") == "Oregon-R", V.display_label("Oregon-R"))
+        V.set_labels({})
+        check("clearing the overrides restores the raw name",
+               V.display_label("TDP43") == "TDP43", V.display_label("TDP43"))
+    finally:
+        V.ACTIVE_PALETTE = before
+        V.set_labels({})
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="measure every figure's style")
     ap.add_argument("--save-dir", type=str, default="",
@@ -442,6 +505,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         say("")
         say("  [SKIP] no figure was captured, so nothing below is established.")
         return 1 if FAILURES else 0
+
+    test_palette_and_label_api()
 
     say("")
     say("%-26s %4s %5s %7s %9s %8s %8s  %s"

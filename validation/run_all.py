@@ -250,6 +250,7 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           "validate_app_pages",
           "validate_figure_style",
           "validate_readme_claims",
+          "validate_fly_tripwire",
           "validate_motor_decline", "validate_translational_score",
           "validate_freeclimber_benchmark",
           # FreeClimber's DETECTION method, reimplemented, so that the two
@@ -310,6 +311,63 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           "validate_p0_block_d"]
 
 
+#: Exit code a child uses to say "this suite is absent or its deps are missing".
+_SKIP_RC = 77
+
+#: Per-suite wall-clock cap. The slowest honest suite in this repository takes
+#: a few minutes; an hour means something is wedged, and a wedged suite that
+#: never returns is indistinguishable from a passing one until the run is
+#: abandoned.
+_SUITE_TIMEOUT_S = 3600
+
+
+def _run_isolated(name: str):
+    """
+    Run one suite in a child process. Returns its exit code, or None to fall
+    back to the in-process path if a child could not be started at all.
+
+    `_SKIP_RC` preserves the existing SKIP semantics: the child reports it for
+    a suite that is not in this checkout (they are kept out of the public
+    repository when built on unpublished recordings) or whose optional
+    dependency is absent.
+    """
+    import subprocess
+    root = str(Path(__file__).resolve().parent.parent)
+    code = chr(10).join([
+        "import sys, importlib",
+        f"sys.path.insert(0, {root!r})",
+        "try:",
+        f"    m = importlib.import_module('validation.{name}')",
+        "except ImportError as e:",
+        "    miss = getattr(e, 'name', None) or str(e)",
+        f"    print('[{name}] SKIPPED: ' + str(miss))",
+        f"    sys.exit({_SKIP_RC})",
+        "sys.exit(int(m.main() or 0))",
+    ])
+    try:
+        r = subprocess.run([sys.executable, "-c", code], cwd=root,
+                           timeout=_SUITE_TIMEOUT_S)
+        rc = r.returncode
+    except subprocess.TimeoutExpired:
+        print(f"[{name}] TIMED OUT after {_SUITE_TIMEOUT_S}s -- counted as a FAILURE.")
+        return 1
+    except Exception as exc:
+        print(f"[{name}] could not be started in a child process ({exc!r}); "
+              f"falling back to running it in this process.")
+        return None
+    if rc == _SKIP_RC:
+        return _SKIP_RC
+    if rc != 0:
+        # A negative code on POSIX, or a large one on Windows, is a native
+        # abort rather than a suite reporting failure. Name it, because the two
+        # need different fixes.
+        if rc < 0 or rc > 128:
+            print(f"[{name}] CRASHED the interpreter (exit {rc}). This is a "
+                  f"native abort, not a failed check -- the suite established "
+                  f"NOTHING and is counted as a FAILURE.")
+    return rc
+
+
 def main() -> int:
     results = {}
     skipped = {}
@@ -320,6 +378,32 @@ def main() -> int:
         # remaining suite mid-run, with no summary printed at all. That is only
         # ever an environment problem, so it is reported as SKIPPED and the run
         # continues; a suite that imports and then fails is still a FAILURE.
+        # Register N123. Each suite runs in its OWN PROCESS.
+        #
+        # It used to run in THIS one, via importlib, and `except Exception`
+        # below caught Python exceptions. It cannot catch a NATIVE abort: a
+        # segfault inside OpenCV's video decoder kills the interpreter
+        # outright. Measured on 2026-11-11 -- a run died inside
+        # `validate_climbing_video`, the log stopped mid-suite with no
+        # traceback and no summary, the remaining 41 suites never ran, and the
+        # shell reported exit 0 because the next command in the pipeline
+        # succeeded. A runner that can silently discard 70% of its suites while
+        # looking successful is worth less than no runner, and this is the
+        # third time today a green signal has established nothing.
+        #
+        # A child process turns that into one suite's FAILURE. The cost is
+        # about a second of interpreter start-up per suite; the benefit is that
+        # the summary is now a complete account of every suite in SUITES.
+        rc_isolated = _run_isolated(name)
+        if rc_isolated is not None:
+            if rc_isolated == _SKIP_RC:
+                print(f"[{name}] SKIPPED: not present, or a dependency is missing.")
+                skipped[name] = "not present / missing dependency"
+            else:
+                results[name] = (rc_isolated == 0)
+            print()
+            continue
+
         try:
             mod = importlib.import_module(f"validation.{name}")
         except ImportError as e:

@@ -44,9 +44,94 @@ def _style():
     })
 _style()
 
+# --- Figure style: palette and labels the user can change ---------------------
+#
+# Why this exists. Every figure was hard-wired to the Wong palette and to the
+# group names exactly as they appear in the data. Two things follow that a user
+# cannot work around: a journal that wants greyscale, or a reader with a
+# different kind of colour vision, has no alternative palette; and a group
+# called `TDP43_hemi_M` in the spreadsheet is called that in every figure
+# caption, where it should read "TDP-43 (hemizygous, male)".
+#
+# All palettes below are colourblind-safe by construction, because an
+# unrestricted colour picker in a scientific tool is a way to produce a figure
+# that a reviewer cannot read. `print_grey` is ordered by LIGHTNESS so it
+# survives a black-and-white printer, which is the one case colour cannot help.
+PALETTES = {
+    #: Wong, B. (2011) Nature Methods 8:441. The default and the house standard.
+    "wong": ["#E69F00", "#56B4E9", "#009E73", "#F0E442",
+             "#0072B2", "#D55E00", "#CC79A7", "#000000"],
+    #: Okabe & Ito, reordered to lead with the two most separable hues, for
+    #: figures with only two or three series.
+    "okabe_ito": ["#0072B2", "#D55E00", "#009E73", "#CC79A7",
+                  "#E69F00", "#56B4E9", "#F0E442", "#000000"],
+    #: Viridis anchors. Perceptually uniform and safe for every common form of
+    #: colour vision deficiency; use when the series are ORDERED (doses, ages).
+    "viridis": ["#440154", "#414487", "#2A788E", "#22A884",
+                "#7AD151", "#FDE725", "#808080", "#000000"],
+    #: Monochrome, ordered light to dark. For a journal that prints greyscale.
+    "print_grey": ["#111111", "#444444", "#6E6E6E", "#919191",
+                   "#B4B4B4", "#D2D2D2", "#000000", "#777777"],
+}
+
+#: The palette in force. Rebound by `set_palette`; `WONG` stays the canonical
+#: list so existing imports and the figure-style suite keep working.
+ACTIVE_PALETTE: list = list(WONG)
+
+#: Display-name overrides, applied wherever a group is labelled on a figure.
+LABEL_OVERRIDES: dict = {}
+
+
+def set_palette(name_or_colours) -> list:
+    """
+    Choose the palette for subsequent figures. Accepts a name or an explicit list.
+
+    Streamlit re-runs a script top to bottom, so a page sets this once before
+    drawing and the choice applies to everything it draws. An unknown name is a
+    ValueError rather than a silent fallback: a figure drawn in a palette the
+    caller did not ask for is worse than an error, because nothing on the figure
+    records which palette it used.
+    """
+    global ACTIVE_PALETTE
+    if isinstance(name_or_colours, str):
+        key = name_or_colours.strip().lower()
+        if key not in PALETTES:
+            raise ValueError(
+                f"unknown palette {name_or_colours!r}; "
+                f"choose one of {sorted(PALETTES)}")
+        ACTIVE_PALETTE = list(PALETTES[key])
+    else:
+        cols = [str(c) for c in name_or_colours if str(c).strip()]
+        if not cols:
+            raise ValueError("an explicit palette must contain at least one colour")
+        ACTIVE_PALETTE = cols
+    return list(ACTIVE_PALETTE)
+
+
+def set_labels(mapping: dict) -> dict:
+    """Override how group names are printed on figures. {} clears the overrides."""
+    global LABEL_OVERRIDES
+    LABEL_OVERRIDES = {str(k): str(v) for k, v in dict(mapping or {}).items()}
+    return dict(LABEL_OVERRIDES)
+
+
+def display_label(name) -> str:
+    """The name as it should appear on a figure, after any override."""
+    s = str(name)
+    return LABEL_OVERRIDES.get(s, s)
+
+
+def palette_colour(idx: int) -> str:
+    """Colour `idx` of the active palette, cycling."""
+    pal = ACTIVE_PALETTE or WONG
+    return pal[int(idx) % len(pal)]
+
+
 # --- Helpers ------------------------------------------------------------------
 def _col(label:str, idx:int)->str:
-    return TREATMENT_COLOURS.get(label, WONG[idx % len(WONG)])
+    # An explicit per-treatment colour still wins, so "Untreated" stays grey in
+    # every palette; otherwise take the active palette rather than always Wong.
+    return TREATMENT_COLOURS.get(label, palette_colour(idx))
 
 def _to_bytes(fig, fmt="png")->bytes:
     buf=io.BytesIO()
@@ -607,8 +692,8 @@ def tcs_radar(axes_labels,radar_data,title="Translational Candidate Score -- Rad
     ax.yaxis.set_tick_params(labelsize=FT_ANNOT)
     for i,(lbl,vals) in enumerate(radar_data.items()):
         v=list(vals)+[vals[0]]
-        ax.plot(ang_c,v,color=WONG[i%len(WONG)],linewidth=1.8,label=lbl)
-        ax.fill(ang_c,v,color=WONG[i%len(WONG)],alpha=0.10)
+        ax.plot(ang_c,v,color=palette_colour(i),linewidth=1.8,label=display_label(lbl))
+        ax.fill(ang_c,v,color=palette_colour(i),alpha=0.10)
     ax.set_title(title,fontsize=FT_TITLE,pad=18)
     ax.legend(loc="upper right",bbox_to_anchor=(1.38,1.15),fontsize=FT_LEGEND,frameon=False)
     fig.tight_layout(); return fig,_to_bytes(fig)
@@ -764,7 +849,7 @@ def trajectory_pca(cluster_result,use_umap=False,title=None):
     fig,ax=plt.subplots(figsize=FS_SINGLE)
     for cid in sorted(emb["Cluster"].unique()):
         cg=emb[emb["Cluster"]==cid]
-        color=WONG[(int(cid)-1)%len(WONG)]
+        color=palette_colour(int(cid)-1)
         ax.scatter(cg[xcol],cg[ycol],color=color,s=62,
                    edgecolors="black",linewidth=0.5,label="Cluster "+str(cid),zorder=3)
         for _,row in cg.iterrows():
