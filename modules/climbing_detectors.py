@@ -124,6 +124,7 @@ from . import fly_blob as FB
 
 __all__ = [
     "BACKENDS", "BACKEND_LABELS", "MEASURED_TOTAL_MAE",
+    "PAIRED_SET_BACKENDS",
     "FootageProbe", "probe_footage",
     "recommend_backend", "count_with_backend", "static_mask",
     "score_crossings", "SCORING_MODES", "timepoint_diagnostics",
@@ -154,7 +155,18 @@ MOTION_FLOOR = 0.10
 #: six recordings (see `validation/validate_climbing_detectors.py`). The default
 #: backend is chosen from this table, not from argument.
 MEASURED_MAE = {"blob": 3.53, "threshold": 6.26, "background": 6.54,
-                "threshold_declutter": 9.15, "threshold_masked": 7.49}
+                "threshold_declutter": 9.15, "threshold_masked": 7.49,
+                # Register N126. Measured on a DIFFERENT set from the entries
+                # above -- 112 cells from 56 vials with the cached crops, not
+                # the 24 paired measurements on six recordings -- so it is not
+                # directly comparable with them and is excluded from the
+                # noise-floor check below for that reason, not a flattering one.
+                "blob_ratio": 2.624}
+
+#: Backends whose entry in MEASURED_MAE comes from the 24 paired measurements on
+#: six recordings, and which are therefore comparable with each other.
+PAIRED_SET_BACKENDS = ("blob", "threshold", "background",
+                       "threshold_declutter", "threshold_masked")
 
 #: `blob`'s entry above was measured on 110 cells from 22 vials HELD OUT from its own
 #: fitting, against the same laboratory hand counts; the threshold scored 5.42 on
@@ -173,14 +185,26 @@ _BLOB_MAE_IS_HELD_OUT = True
 #: laboratory's above-the-line hand counts -- a quantity that laboratory records
 #: cumulatively, and which therefore cannot separate a detector's error from a
 #: definitional difference. A sealed vial's fly count can.
-MEASURED_TOTAL_MAE = {"blob": 2.69, "threshold": 8.38}
+#: Total-count MAE against the flies LOADED into a sealed cylinder. `blob`'s
+#: entry was 2.69, a second copy of the literal whose cache had been lost
+#: (N112); it is now the re-derived 3.286 from
+#: `scripts/rebuild_fly_blob_holdout.py`, which matches `fly_blob.MEASURED`.
+#: `blob_ratio` has no entry here on purpose: its total is the cohort size by
+#: construction, so a "total-count error" for it would be zero and meaningless,
+#: and recording a degenerate zero would make it win the comparison below.
+MEASURED_TOTAL_MAE = {"blob": 3.286, "threshold": 8.38}
 DEFAULT_BACKEND = "blob"
 
-BACKENDS = ("blob", "threshold", "background", "threshold_declutter",
-            "threshold_masked")
+BACKENDS = ("blob", "blob_ratio", "threshold", "background",
+            "threshold_declutter", "threshold_masked")
 BACKEND_LABELS = {
     "blob": ("Size-matched blob detection (recommended; finds flies by their SIZE, "
              "separates touching flies, ignores printed lines by their shape)"),
+    "blob_ratio": (
+        "Size-matched blob detection, scored as a FRACTION of the flies loaded "
+        "(needs the cohort size; monotone across arms where plain blob "
+        "counting saturates — MAE 2.62 against 3.59, and it preserved all "
+        "six arm orderings where blob counting inverted two)"),
     "threshold": "Adaptive threshold (no motion needed; miscounts printed marks)",
     "background": "Median background (ignores printed marks; needs the flies to move)",
     "threshold_declutter": "Adaptive threshold minus static clutter (experimental)",
@@ -433,6 +457,37 @@ def count_with_backend(backend: str, frame_bgr: np.ndarray, background: np.ndarr
     """
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}; choose from {BACKENDS}.")
+
+    if backend == "blob_ratio":
+        # Register N126. Counts the FRACTION of fly-mass above the line and
+        # multiplies by the cohort size, rather than counting bodies. Merging
+        # destroys absolute counts but acts on both sides of the line, so the
+        # ratio is far better conditioned. Measured on 112 hand-counted cells:
+        # MAE 2.624 against blob counting's 3.589, RMSE 3.287 against 4.436,
+        # and it is the first candidate in six to preserve all six arm
+        # orderings. It does NOT clear the register's spread criterion (58.5%
+        # against 69%), which is why `blob` remains the default.
+        n_loaded = int((params or {}).get("n_loaded", 0) or 0)
+        g = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        y0, y1 = int(vial.y_top), int(vial.y_bottom)
+        x0, x1 = int(vial.x0), int(vial.x1)
+        sub, bsub = g[y0:y1, x0:x1], background[y0:y1, x0:x1]
+        if sub.size == 0 or bsub.shape != sub.shape:
+            return {"n_total": 0, "n_above": 0, "n_below": 0, "backend": backend,
+                    "note": "the region falls outside the frame"}
+        r = FB.count_above_by_ratio(sub, bsub, int(vial.line_y) - y0,
+                                    n_loaded, params)
+        if not r["usable"]:
+            # The caller gets a refusal rather than a number, because this
+            # estimator without the cohort size is not a degraded count -- it
+            # is not a count at all.
+            return {"n_total": 0, "n_above": 0, "n_below": 0,
+                    "backend": backend, "note": r["reason"]}
+        above = r["n_above"]
+        return {"n_total": float(n_loaded), "n_above": above,
+                "n_below": float(n_loaded) - above, "backend": backend,
+                "note": (f"fraction above the line {r['fraction_above']:.3f} "
+                         f"of {n_loaded} loaded")}
 
     if backend == "blob":
         # Size-matched detection. Needs the same region of the temporal median, which

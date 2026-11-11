@@ -144,33 +144,43 @@ PARAMS: Dict[str, float] = {
     "mark_r_frac": 0.35,
 }
 
-#: Held-out performance, for callers that report their own uncertainty.
+#: Held-out performance. RE-DERIVED, and re-derivable (register N128).
 #:
-#: PROVENANCE IS LOST -- DO NOT CITE THIS AS AN ESTABLISHED FIGURE (register N112)
-#: ------------------------------------------------------------------------------
-#: These numbers were measured on a 110-cell / 22-vial sealed-vial hold-out set
-#: whose cached crops lived in a Claude-session temp directory. The directory
-#: survives; the cache does not, and no committed script rebuilds it -- the
-#: generator was ad-hoc, which is why the path was a temp directory in the first
-#: place. Searched and ruled out as substitutes: `.cache/climbing_cells.npz`
-#: (112 cells, but ABOVE-LINE climbing counts, not vial totals) and
-#: `_DroPhenix_analysis/hd_all_vials.csv` (a different estimator entirely --
-#: climbing_band bracket midpoint, MAE 6.53, and its own provenance file marks
-#: it `usable_for_science: false`).
+#: This was a literal asserting MAE 2.69 over 110 cells and 22 vials, measured
+#: on a cache that lived in a Claude-session temp directory and is GONE. No
+#: committed script ever built it, so the re-derivation was lost for the authors
+#: too, and `validate_fly_blob` reported PASS while establishing nothing (N112).
 #:
-#: So no suite currently re-derives these values, for anyone, and
-#: `validate_fly_blob` section C now FAILS on a machine holding the recordings
-#: rather than passing silently. Until the hold-out cache is rebuilt from the
-#: videos by a committed script, treat every figure below as UNVERIFIED and
-#: report the detector's accuracy from `validate_climbing_video`-style
-#: measurements that can be reproduced.
+#: Rebuilt by `scripts/rebuild_fly_blob_holdout.py` from `.cache/climbing_cells.npz`,
+#: which exists, and re-derived from pixels by `validate_fly_blob` section C on
+#: any machine that holds it. The per-cell record is committed at
+#: `data/validation/fly_blob_holdout_rebuilt.csv`, so the claim is auditable
+#: even where the 46 MB cache is absent.
 #:
-#: `provenance` records the status so a caller can refuse to quote it.
-MEASURED = {"mae_total": 2.69, "bias_total": -1.60, "within3": 0.673,
-            "n_held_out_cells": 110, "n_held_out_vials": 22,
-            "compare_threshold_mae": 8.38,
-            "provenance": "LOST -- not re-derivable; see register N112",
-            "verified": False}
+#: THE OLD MAE IS NOT REPRODUCED, AND IS NOT CLAIMED TO BE. The old bias of
+#: -1.60 re-derives to -1.554, agreeing to 0.05, which is strong evidence this
+#: is the same measurement on overlapping footage. The old MAE of 2.69 does not:
+#: it covered 110 cells from 22 vials, and what survives is 112 cells from 56.
+#: The original subset is identified nowhere in the repository and cannot be
+#: reconstructed, so claiming the old figure as reproduced would be false.
+#:
+#: TWO ACCURACIES, which the old single heading conflated:
+#:   *_total  how many animals it finds in the whole cylinder vs the number
+#:            loaded. Weaker ground truth: "flies loaded" assumes none are dead
+#:            at the bottom, occluded, or outside the crop, which a frame cannot
+#:            confirm.
+#:   *_above  how many it places above the scoring line vs a person scoring the
+#:            same frame. This is the number the assay uses, and the better
+#:            grounded of the two. It re-derives to 3.589, which is exactly the
+#:            bar the register sets for any replacement detector.
+MEASURED = {
+    "n_cells": 112, "n_vials": 56,
+    "mae_total": 3.286, "bias_total": -1.554, "within3_total": 0.625,
+    "mae_above": 3.589, "bias_above": -1.25, "within3_above": 0.545,
+    "provenance": "re-derived 2026-11-11 from .cache/climbing_cells.npz by "
+                  "scripts/rebuild_fly_blob_holdout.py; see register N128",
+    "verified": True,
+}
 
 
 def fly_diameter(vial_width_px: float, params: Optional[dict] = None) -> float:
@@ -228,6 +238,111 @@ def mark_map(background: np.ndarray, d: float,
         r = max(int(float(p["mark_r_frac"]) * d), 2)
         m[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] = True
     return m
+
+
+#: Measured performance of `count_above_by_ratio` on the same 112 hand-counted
+#: cells that produced the register's bar. See the docstring for what it does
+#: and does not clear.
+RATIO_MEASURED = {
+    "mae": 2.624, "rmse": 3.287, "bias": +0.26,
+    "arm_spread_pct": 58.5, "worst_arm_inversion_flies": 0.0,
+    "n_cells": 112, "verified": True,
+}
+
+
+def count_above_by_ratio(frame_gray: np.ndarray, background_gray: np.ndarray,
+                         line_y: int, n_loaded: int,
+                         params: Optional[dict] = None,
+                         d: Optional[float] = None) -> dict:
+    """
+    Flies above the line, estimated as a FRACTION of a known number loaded.
+
+    THE RE-FRAMING
+    --------------
+    Every previous attempt on the counting ceiling asked "how many flies are
+    above the line", which is the question merging makes unanswerable: two
+    flies closer than 1.2 diameters are one maximum, so the count saturates.
+
+    The number of flies loaded is not unknown. It is in the manifest, the
+    operator records it, and this laboratory's own data carries it. So the
+    question can be re-posed as "what FRACTION of the animals are above the
+    line", and the count recovered as `n_loaded * fraction`.
+
+    Why that escapes the ceiling: merging destroys absolute counts, but it acts
+    on BOTH sides of the line. Two flies merging above leave the mass above
+    unchanged; two merging below leave the mass below unchanged. A ratio of two
+    similarly-corrupted quantities is far better conditioned than either, for
+    the same reason a ratiometric dye beats a single-channel one.
+
+    The mass is summed over the ACCEPTED peaks, so it inherits the minmass and
+    eccentricity filtering that rejects the drawn scoring line, glare and tube
+    structure. Summing raw thresholded pixels instead was measured and
+    over-counts sparse cells roughly fivefold.
+
+    WHAT IT CLEARS, AND WHAT IT DOES NOT -- measured on 112 hand-counted cells
+    --------------------------------------------------------------------------
+    =========================  ========  =========  =========  ==============
+    estimator                       MAE       RMSE     spread   worst inversion
+    =========================  ========  =========  =========  ==============
+    fly_blob peak counting        3.589      4.436      69.5%       2.9 flies
+    this, n x mass fraction       2.624      3.287      58.5%       0.0 flies
+    =========================  ========  =========  =========  ==============
+
+    It beats the published bar on MAE and RMSE, and it is the first candidate in
+    six that preserves ALL SIX arm orderings -- its per-arm means are
+    6.85, 9.88, 13.92, 14.03, 14.32, 14.91 against a true
+    4.17, 7.73, 12.07, 12.91, 15.00, 17.95, monotone throughout. Peak counting
+    collapses the top FOUR arms into 12.5-12.9 and inverts two pairs.
+
+    It does NOT clear the bar's spread criterion: it recovers 58.5% of the
+    between-arm range against the required 69%. The compression is monotone,
+    and monotone calibration was tried -- isotonic and quadratic, both fitted
+    leave-one-ARM-out -- which recovered the spread (71.1% and 66.7%) and
+    REINTRODUCED a 5.9-fly inversion. The uncalibrated estimator is therefore
+    the better instrument, and the calibration is recorded as refuted.
+
+    So this is NOT a replacement for `detect`, and it does not take the live
+    path. It is offered for the case the bar was written for -- comparing arms
+    -- where a monotone estimator that never reverses an ordering is worth more
+    than a flatter one that does.
+
+    IT NEEDS `n_loaded` TO BE RIGHT
+    -------------------------------
+    The estimate scales linearly with it, so a mis-recorded cohort size is a
+    proportional error in every count from that vial. `usable` is False when
+    `n_loaded` is missing or non-positive; the caller must not substitute a
+    guess.
+    """
+    P = dict(PARAMS); P.update(params or {})
+    h, w = frame_gray.shape[:2]
+    if d is None:
+        d = fly_diameter(w, P)
+    out = {"n_above": float("nan"), "fraction_above": float("nan"),
+           "n_loaded": n_loaded, "usable": False, "reason": "",
+           "mass_above": 0.0, "mass_below": 0.0}
+    if not n_loaded or n_loaded <= 0:
+        out["reason"] = ("the number of flies loaded is required: this "
+                         "estimates a FRACTION and cannot produce a count "
+                         "without it")
+        return out
+    try:
+        pts = detect(frame_gray, background_gray, P, d=d)
+    except Exception as exc:
+        out["reason"] = f"detection failed: {exc}"
+        return out
+    above = sum(m for (_x, cy, m) in pts if cy < line_y)
+    below = sum(m for (_x, cy, m) in pts if cy >= line_y)
+    total = float(above) + float(below)
+    out["mass_above"], out["mass_below"] = float(above), float(below)
+    if total <= 0:
+        out["reason"] = ("no fly-like signal anywhere in the region, so there "
+                         "is no fraction to take; this is a failed measurement "
+                         "rather than zero flies above the line")
+        return out
+    frac = float(above) / total
+    out.update({"fraction_above": frac,
+                "n_above": float(n_loaded) * frac, "usable": True})
+    return out
 
 
 def detect(frame_gray: np.ndarray, background_gray: np.ndarray,
