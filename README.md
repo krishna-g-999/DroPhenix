@@ -69,7 +69,7 @@ DroPhenix addresses all four gaps through a suite of purpose-built composite met
 - **Trajectory forecasting** — empirical-Bayes population priors from completed cohorts, forward-in-time validation against four trivial baselines, split-conformal interval calibration, and decision-relevant endpoints (onset age, healthspan, days gained)
 - **Historical control arms** — robust meta-analytic-predictive priors with prior-data conflict detection, effective sample size in flies, and simulated operating characteristics
 - **Dose-response** — log-logistic fitting with profile-likelihood EC50 intervals, hormesis testing, and mortality-confounding diagnostics
-- **Validation & Benchmarking** — `validation/run_all.py` (58 suites vs published data and analytic ground truth; the runner prints its own suite and check counts, and `validate_readme_claims` fails if this number drifts) and `comparison_study.py` (vs 7 established tools)
+- **Validation & Benchmarking** — `validation/run_all.py` (59 suites vs published data and analytic ground truth; the runner prints its own suite and check counts, and `validate_readme_claims` fails if this number drifts) and `comparison_study.py` (vs 7 established tools)
 - **Export** — CSV, PNG, SVG, PDF, ZIP bundle
 
 ---
@@ -130,7 +130,7 @@ drophenix/
 ├── requirements.txt
 ├── packages.txt
 └── validation/
-    ├── run_all.py          # Master runner — 58 suites, exit 0 = all passed
+    ├── run_all.py          # Master runner — 59 suites, exit 0 = all passed
     └── comparison_study.py # Head-to-head vs 7 established tools
 ```
 

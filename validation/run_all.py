@@ -250,6 +250,7 @@ SUITES = ["validate_stats", "validate_survival", "validate_ymaze",
           "validate_app_pages",
           "validate_figure_style",
           "validate_readme_claims",
+          "validate_fly_tripwire",
           "validate_motor_decline", "validate_translational_score",
           "validate_freeclimber_benchmark",
           # FreeClimber's DETECTION method, reimplemented, so that the two
