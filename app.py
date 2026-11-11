@@ -77,7 +77,7 @@ def _write_config():
         p.write_text(
             '[theme]\n'
             'base                   = "light"\n'
-            'primaryColor           = "#1B3A5C"\n'
+            'primaryColor           = "#A84A00"\n'
             'backgroundColor        = "#F2F4F6"\n'
             'secondaryBackgroundColor = "#FFFFFF"\n'
             'textColor              = "#0F2133"\n'
@@ -1280,10 +1280,37 @@ def page_trajectory_clustering():
         st.warning(f"Clustering: {err}")
         if st.button("Run trajectory clustering", type="primary"):
             base = st.session_state["base_metrics"]
-            agg  = base.get("aggregated", pd.DataFrame())
-            if not agg.empty:
+            # Register N124. This used to pass `aggregated`, which
+            # `normalizer.compute_all_metrics` builds by grouping on
+            # Genotype/Sex/Treatment/TIME -- so it has NO Age column, ever, for
+            # any dataset. `cluster_trajectories` defaults to `time_col="Age"`,
+            # so the page could only ever raise
+            #   ValueError: trajectory_cluster: no Age column in the PI table
+            # It has never worked. Found by clicking the button during the
+            # page-by-page audit; rendering the page alone does not reach it.
+            #
+            # `normalised` keeps one row per vial per timepoint WITH Age, so the
+            # longitudinal table is built from that.
+            agg = base.get("aggregated", pd.DataFrame())
+            norm = base.get("normalised", pd.DataFrame())
+            traj = pd.DataFrame()
+            if (not norm.empty and "Age" in norm.columns
+                    and norm["Age"].notna().any() and "PI" in norm.columns):
+                keys = [c for c in ("Genotype", "Sex", "Treatment")
+                        if c in norm.columns] + ["Age"]
+                traj = (norm.groupby(keys, as_index=False)["PI"].mean()
+                            .rename(columns={"PI": "PI_mean"}))
+            if traj.empty:
+                st.warning(
+                    "Trajectory clustering needs an **Age** column: it clusters "
+                    "the shape of decline across ages, so a dataset scored at a "
+                    "single age has no trajectory to cluster. Add `Age` to the "
+                    "input, or use the Climbing Curves page for within-assay "
+                    "kinetics.")
+                return
+            if not traj.empty:
                 with st.spinner("Running DTW clustering..."):
-                    cr = cluster_trajectories(agg if "PI_mean" in agg.columns else agg.rename(columns={"Pct_mean": "PI_mean"}))
+                    cr = cluster_trajectories(traj)
                 st.session_state["cluster_result"] = cr
                 if cr.get("error"):
                     st.error(cr["error"])
@@ -4577,12 +4604,26 @@ def page_home():
     # (26.3 deg) fought the chrome amber (41.2 deg) -- which is the clash the
     # owner could see and not name. The mark is drawn, flat, in the figure
     # palette's own vermilion.
+    # The laboratory's own logo, at a size that reads as a mark rather than an
+    # illustration, and with no coloured glow behind it.
     try:
-        from modules.styles import mark as _dpx_mark
-        _logo = ('<div style="flex-shrink:0;color:#FFFFFF;">'
-                 + _dpx_mark(96, "#FFFFFF") + '</div>')
+        from modules.styles import glyph_img as _dpx_glyph
+        _logo = _dpx_glyph(64, chip=True)
     except Exception:
         _logo = ''
+    if _logo:
+        pass
+    elif _dpx_b64:
+        _logo = ('<img src="data:image/png;base64,' + _dpx_b64 + '"'
+                 ' style="height:72px;width:72px;object-fit:contain;'
+                 'flex-shrink:0;">')
+    else:
+        try:
+            from modules.styles import mark as _dpx_mark
+            _logo = ('<div style="flex-shrink:0;color:#FFFFFF;">'
+                     + _dpx_mark(72, "#FFFFFF") + '</div>')
+        except Exception:
+            _logo = ''
 
     # ── Capability pills ──────────────────────────────────────────────────
     # Rectangular tags, not amber capsules. A cloud of glowing pills is a
@@ -4608,11 +4649,18 @@ def page_home():
 
     # ── HERO ──────────────────────────────────────────────────────────────
     st.markdown(
-        '<div style="background:linear-gradient(135deg,#09192A 0%,#0D2137 60%,#0F2D44 100%);'
-        'border-radius:18px;padding:3rem 3.5rem;margin:0.5rem 0 2rem 0;'
-        'display:flex;align-items:center;gap:3rem;'
-        'border:1px solid rgba(240,165,0,0.22);'
-        'box-shadow:0 10px 40px rgba(0,0,0,0.30);">'
+        # `dpx-on-dark` opts this panel out of the blanket paragraph colour in
+        # styles.py. That rule is !important and so beats an inline colour,
+        # which painted this card's own lede #0F2133 on #0D2137 -- measured at
+        # 1.00:1, invisible. The border was rgba(240,165,0,.22), the RETIRED
+        # 41.2 deg amber, which composites over the navy to #3C3821, a khaki
+        # olive, wrapped directly around a 26.3 deg logo.
+        '<div class="dpx-on-dark" style="background:#0F2133;'
+        'border-radius:4px;padding:2.5rem 3rem;margin:0 0 2rem 0;'
+        'display:flex;align-items:flex-start;gap:2rem;flex-wrap:wrap;'
+        'border:1px solid rgba(255,255,255,.10);'
+        'border-top:2px solid #D55E00;'
+        'box-shadow:none;">'
         + _logo
         + '<div style="flex:1;">'
         + '<div style="font-size:.72rem;font-weight:800;letter-spacing:.18em;'
@@ -4621,7 +4669,7 @@ def page_home():
         + '<div style="font-size:2.55rem;font-weight:900;color:#FFFFFF;'
         'line-height:1.05;margin-bottom:.4rem;letter-spacing:-.01em;">'
         'DroPhenix <span style="color:#D55E00;">Analytics</span>'
-        ' <span style="font-size:1rem;font-weight:600;color:#64748B;vertical-align:middle;">v3.0</span></div>'
+        ' <span style="font-size:.8125rem;font-weight:500;color:#94A3B1;vertical-align:middle;">v3.0</span></div>'
         + '<div style="font-size:1.02rem;color:#94A3B8;font-weight:500;'
         'margin-bottom:1rem;letter-spacing:.01em;">'
         'Multi-assay phenotyping and cross-strain compound ranking</div>'

@@ -76,7 +76,7 @@ from pathlib import Path
 import streamlit as st
 
 #: Set True to go back to the raster logo everywhere.
-USE_RASTER_MARK = False
+USE_RASTER_MARK = True
 
 #: The mark: a graticule (the reticle of a microscope eyepiece) with a
 #: climbing-assay step trace across it. Two ideas that are both true of this
@@ -116,7 +116,56 @@ def mark(size: int = 28, colour: str = "currentColor") -> str:
             f'style="display:block;flex:0 0 auto;">')
 
 
+@st.cache_data(show_spinner=False)
+def _glyph_b64(retina: bool = True) -> str:
+    """
+    The logo CROPPED to its ring-fly-flame detail, which is the part that
+    survives small sizes.
+
+    Measured on the original 1254x1254 file: the full mark carries SEVEN motifs
+    (ring, fly, flame, phoenix, helix, bar chart, line chart) plus a wordmark
+    and a tagline. At the 28-30px it is shown at on 37 page headers and in the
+    sidebar, the emblem gets about 13px of height for all of that, and nothing
+    resolves. The crop keeps the ring, the fly and the flame and discards the
+    rest; the fly is the one element a Drosophila reviewer recognises instantly.
+
+    Two further measured facts drive this. The file is opaque RGB with an
+    off-white ground (mean 254.2, only 13.7% exactly white), so it paints a
+    white box on the navy sidebar; and keying the white out destroys the mark,
+    because the ring and helix are #112133 against a #0F2133 sidebar -- a
+    contrast ratio of 1.0. The glyph therefore sits on a white CHIP on navy.
+
+    Crop box on the original: (178, 264, 666, 752).
+    """
+    name = "drophenix_glyph@2x.png" if retina else "drophenix_glyph.png"
+    try:
+        q = Path(__file__).resolve().parent.parent / "logs" / name
+        if q.exists():
+            return base64.b64encode(q.read_bytes()).decode()
+    except Exception:
+        pass
+    return ""
+
+
+def glyph_img(size: int = 28, chip: bool = False) -> str:
+    """The glyph as an <img>, optionally on the white chip a dark ground needs."""
+    b64 = _glyph_b64()
+    inner = (f'<img src="data:image/png;base64,{b64}" '
+             f'style="width:{int(size)}px;height:{int(size)}px;display:block;" '
+             f'alt="DroPhenix">') if b64 else mark(size, "#FFFFFF")
+    if not chip:
+        return inner
+    pad = max(int(round(size * 0.14)), 3)
+    return (f'<span style="flex:0 0 auto;display:flex;align-items:center;'
+            f'justify-content:center;width:{size+2*pad}px;height:{size+2*pad}px;'
+            f'border-radius:{max(int(size*0.19),4)}px;background:#FFFFFF;'
+            f'box-shadow:inset 0 0 0 1px rgba(15,33,51,.10);">{inner}</span>')
+
+
+@st.cache_data(show_spinner=False)
 def _logo_b64() -> str:
+    """The full logo, base64. Cached: it is a 1,025,182-byte read and encode,
+    and `render_header` runs on every rerun of every page."""
     try:
         p = Path(__file__).resolve().parent.parent / "logs" / "Drophenix_Logo.png"
         if p.exists():
@@ -135,14 +184,22 @@ _CSS = """
 
   /* Borders. 1.33:1 is correct for a divider (decorative under WCAG 1.4.11);
      controls get the stronger value. */
-  --dpx-border:#DCE0E6; --dpx-border-strong:#848F9C; --dpx-border-focus:#1B3A5C;
+  --dpx-border:#DCE0E6; --dpx-border-strong:#848F9C; --dpx-border-focus:#8A3D00;
 
   /* Text. Ratios against --dpx-canvas: 14.81, 7.34, 4.72. All pass AA. */
+  /* #0F2133 is a 1.5% match to the logo's own ink #112133 (211.8 deg), so the
+     chrome is logo-led in BOTH hues, not just the orange. */
   --dpx-text-primary:#0F2133; --dpx-text-secondary:#45515F;
+  /* The logo's own chart-bar grey, 211.4 deg: figure furniture and rules. */
+  --dpx-grey-figure:#6F7984;
   --dpx-text-muted:#626E7B;   --dpx-text-invert:#FFFFFF;
 
-  /* Interactive, text-bearing. 11.63:1 on white. */
-  --dpx-accent:#1B3A5C; --dpx-accent-hover:#27527F; --dpx-accent-weak:#E7EBF1;
+  /* Interactive, text-bearing. LOGO-LED: #A84A00 sits at hue 26.4 deg, within
+     0.1 deg of the logo's own 26.3, and passes AA both ways (5.76:1 on white,
+     and 5.76:1 for white text on it). The earlier navy was accessible but made
+     the page a different colour from the mark at the top of it, which is the
+     thing that looked wrong. */
+  --dpx-accent:#A84A00; --dpx-accent-hover:#8A3D00; --dpx-accent-weak:#FBEEE6;
 
   /* Brand mark only, never behind or as text: 3.87:1 on white. Wong vermilion,
      0.2 degrees from the logo's own hue. */
@@ -178,8 +235,11 @@ _CSS = """
     background:var(--dpx-canvas) !important; color:var(--dpx-text-primary) !important; }
 }
 
-[data-testid="stAppViewBlockContainer"]{
-  padding:var(--dpx-s6) var(--dpx-s6) var(--dpx-s8) !important;
+[data-testid="stMainBlockContainer"],[data-testid="stAppViewBlockContainer"]{
+  /* 72px clears Streamlit's own 60px fixed header with one 12px gap. Its
+     default is 96px, which left the page title floating a line and a half
+     below the header -- visible as "the header is not at the top". */
+  padding:72px var(--dpx-s6) var(--dpx-s8) !important;
   max-width:1480px !important;
 }
 [data-testid="stVerticalBlock"]{ gap:.6rem !important; }
@@ -200,9 +260,21 @@ _CSS = """
   font-size:.9375rem !important; font-weight:var(--dpx-w-semibold) !important;
   color:var(--dpx-text-secondary) !important;
   margin:var(--dpx-s4) 0 var(--dpx-s1) 0 !important; }
+/* The colour here is deliberately NOT !important, while the metrics are.
+   An author !important declaration beats an INLINE one, so a blanket
+   `color: ... !important` on every paragraph painted the Home hero's own lede
+   #0F2133 on a #0D2137 card -- measured at 1.00:1, invisible -- and no inline
+   style could rescue it. The first attempt at a fix was worse: forcing
+   `color:inherit !important` on the panel's descendants overrode their inline
+   colours too, so the title, eyebrow and strapline disappeared as well. The
+   rule simply must not be !important for colour; its specificity already beats
+   Streamlit's own base styles, and an author who sets an inline colour on a
+   dark card then gets what they asked for. */
 [data-testid="stMain"],[data-testid="stMain"] p,[data-testid="stMain"] li{
   font-size:.9375rem !important; line-height:1.55 !important;
-  color:var(--dpx-text-primary) !important; }
+  color:var(--dpx-text-primary); }
+/* A dark panel states its own text colour, so anything inheriting lands light. */
+[data-testid="stMain"] .dpx-on-dark{ color:#CBD5E1; }
 [data-testid="stMain"] .stCaption,
 [data-testid="stMain"] [data-testid="stCaptionContainer"],
 [data-testid="stMain"] [data-testid="stCaptionContainer"] p{
@@ -230,20 +302,48 @@ section[data-testid="stSidebar"] p,section[data-testid="stSidebar"] span,
 section[data-testid="stSidebar"] div,section[data-testid="stSidebar"] small,
 section[data-testid="stSidebar"] label{ color:var(--dpx-nav-text) !important; }
 section[data-testid="stSidebar"] .stRadio > div > label{
-  display:block !important; padding:6px 12px !important;
-  border-radius:var(--dpx-r-sm) !important;
-  border-left:2px solid transparent !important;
-  font-size:.8125rem !important; font-weight:var(--dpx-w-normal) !important;
+  display:block !important; padding:7px 12px !important;
+  border-radius:var(--dpx-r-md) !important;
+  border-left:3px solid transparent !important;
+  /* The options are navigation, not prose: medium by default so they read as
+     controls, semibold when active. */
+  font-size:.8125rem !important; font-weight:var(--dpx-w-medium) !important;
   line-height:1.4 !important; margin:0 !important; cursor:pointer !important;
   color:var(--dpx-nav-text) !important;
   transition:background .12s ease,color .12s ease !important; }
 section[data-testid="stSidebar"] .stRadio > div > label:hover{
   background:rgba(255,255,255,.06) !important; color:var(--dpx-nav-active) !important; }
+/* The active option is a filled box in the logo's own colour, not a tint of
+   white. A 3px rail alone was too quiet to find at a glance in a 32-item list. */
+/* Measured, as a SURFACE against the #0F2133 sidebar and as a text background:
+     #D55E00  4.22:1 surface / 3.87:1 white text  -- text fails AA
+     #A84A00  2.83:1 surface / 5.76:1 white text  -- surface fails 1.4.11's 3:1
+     #FFF4EC 15.09:1 surface / 7.06:1 #8A3D00     -- both pass comfortably
+   A pale warm plate is the brightest thing available in a dark sidebar, so it
+   is also the strongest highlight, and it still carries the logo's hue (25.3
+   deg). Darkening the saturated fill trades a text failure for a surface one
+   and makes the box sink into the navy. */
 section[data-testid="stSidebar"] .stRadio > div > label:has(input:checked){
-  background:rgba(255,255,255,.09) !important;
+  background:#FFF4EC !important;
   border-left-color:var(--dpx-brand) !important;
-  color:var(--dpx-nav-active) !important;
-  font-weight:var(--dpx-w-semibold) !important; }
+  color:#8A3D00 !important;
+  font-weight:var(--dpx-w-semibold) !important;
+  box-shadow:none !important; }
+section[data-testid="stSidebar"] .stRadio > div > label:has(input:checked):hover{
+  background:#FFE8D6 !important; }
+/* Streamlit renders each option's text in a <p> inside the label, and that <p>
+   carries its own weight and size. Setting them on the label alone changes
+   nothing visible -- measured: label 500, inner <p> still 400. */
+section[data-testid="stSidebar"] .stRadio > div > label p,
+section[data-testid="stSidebar"] .stRadio > div > label [data-testid="stMarkdownContainer"]{
+  font-weight:var(--dpx-w-medium) !important;
+  font-size:.8125rem !important;
+  color:inherit !important;
+  margin:0 !important; }
+section[data-testid="stSidebar"] .stRadio > div > label:has(input:checked) p,
+section[data-testid="stSidebar"] .stRadio > div > label:has(input:checked) [data-testid="stMarkdownContainer"]{
+  font-weight:var(--dpx-w-semibold) !important;
+  color:#8A3D00 !important; }
 section[data-testid="stSidebar"] .stRadio > div > label > div:first-child{ display:none !important; }
 section[data-testid="stSidebar"] .stRadio [data-testid="stWidgetLabel"]{ display:none !important; }
 section[data-testid="stSidebar"] hr{
@@ -254,7 +354,13 @@ section[data-testid="stSidebar"] hr{
   background:transparent; border-bottom:1px solid var(--dpx-border);
   border-radius:0; box-shadow:none;
   padding:0 0 var(--dpx-s3) 0; margin:0 0 var(--dpx-s6) 0;
-  display:flex; align-items:baseline; gap:var(--dpx-s3); }
+  display:flex; align-items:center; gap:var(--dpx-s3); }
+/* A replaced element's baseline is its BOTTOM margin edge, so under
+   align-items:baseline the mark's bottom landed on the title's baseline and it
+   floated above the cap height, making the header taller than its own text.
+   The title and subtitle keep their baseline relationship in their own row. */
+.dpx-page-header-text{ display:flex; align-items:baseline; gap:var(--dpx-s3);
+  min-width:0; flex-wrap:wrap; }
 .dpx-page-header-title{
   font-size:1.5rem; font-weight:var(--dpx-w-semibold);
   color:var(--dpx-text-primary); line-height:1.2; letter-spacing:-.012em; }
@@ -361,11 +467,20 @@ def render_sidebar_brand() -> None:
     `try/except ImportError` whose fallback is bare amber text. The function was
     never defined, so the fallback always fired. Defining it is the fix.
     """
+    # The laboratory's own logo when it is available, the drawn mark otherwise.
+    # The raster is scaled to 30px here rather than shown at its native 1254px:
+    # the earlier 130px treatment with a coloured drop-shadow was most of what
+    # made the page look unserious.
+    # The file's own wordmark is NOT used. Measured: the letters "Dro" have a
+    # median value of RGB(221,221,221) against a 254 ground, so the logo reads
+    # as "Phenix" with a ghost in front of it on any light surface, and at 30px
+    # its cap height is under 4px. The name is set in live type instead.
+    glyph = glyph_img(28, chip=True)
     st.markdown(
         '<div style="display:flex;align-items:center;gap:10px;'
         'padding:18px 14px 14px;border-bottom:1px solid rgba(255,255,255,.1);'
         'margin-bottom:10px;color:#FFFFFF;">'
-        + mark(28, "#FFFFFF")
+        + glyph
         + '<div style="line-height:1.15;">'
           '<div style="font-size:.95rem;font-weight:600;color:#FFFFFF;'
           'letter-spacing:-.005em;">DroPhenix</div>'
@@ -392,12 +507,13 @@ def render_header(title: str, subtitle: str = "", extra: str = "",
         bits.append(f'<div class="dpx-page-header-sub">{extra}</div>')
     lead = ""
     if raster or USE_RASTER_MARK:
-        b64 = _logo_b64()
-        if b64:
-            lead = (f'<img src="data:image/png;base64,{b64}" '
-                    f'style="height:28px;width:auto;margin-right:10px;">')
+        # The CROPPED glyph, not the full three-band logo: at 28px the full mark
+        # gives its emblem about 13px of height for seven motifs and resolves
+        # into a smudge. The crop keeps the ring, the fly and the flame.
+        lead = glyph_img(26, chip=False)
     st.markdown(
-        '<div class="dpx-page-header">' + lead + "".join(bits) + "</div>",
+        '<div class="dpx-page-header">' + lead
+        + '<div class="dpx-page-header-text">' + "".join(bits) + '</div></div>',
         unsafe_allow_html=True,
     )
 
