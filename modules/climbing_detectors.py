@@ -124,6 +124,7 @@ from . import fly_blob as FB
 
 __all__ = [
     "BACKENDS", "BACKEND_LABELS", "MEASURED_TOTAL_MAE",
+    "PAIRED_SET_BACKENDS",
     "FootageProbe", "probe_footage",
     "recommend_backend", "count_with_backend", "static_mask",
     "score_crossings", "SCORING_MODES", "timepoint_diagnostics",
@@ -154,7 +155,18 @@ MOTION_FLOOR = 0.10
 #: six recordings (see `validation/validate_climbing_detectors.py`). The default
 #: backend is chosen from this table, not from argument.
 MEASURED_MAE = {"blob": 3.53, "threshold": 6.26, "background": 6.54,
-                "threshold_declutter": 9.15, "threshold_masked": 7.49}
+                "threshold_declutter": 9.15, "threshold_masked": 7.49,
+                # Register N126. Measured on a DIFFERENT set from the entries
+                # above -- 112 cells from 56 vials with the cached crops, not
+                # the 24 paired measurements on six recordings -- so it is not
+                # directly comparable with them and is excluded from the
+                # noise-floor check below for that reason, not a flattering one.
+                "blob_ratio": 2.624}
+
+#: Backends whose entry in MEASURED_MAE comes from the 24 paired measurements on
+#: six recordings, and which are therefore comparable with each other.
+PAIRED_SET_BACKENDS = ("blob", "threshold", "background",
+                       "threshold_declutter", "threshold_masked")
 
 #: `blob`'s entry above was measured on 110 cells from 22 vials HELD OUT from its own
 #: fitting, against the same laboratory hand counts; the threshold scored 5.42 on
@@ -173,7 +185,14 @@ _BLOB_MAE_IS_HELD_OUT = True
 #: laboratory's above-the-line hand counts -- a quantity that laboratory records
 #: cumulatively, and which therefore cannot separate a detector's error from a
 #: definitional difference. A sealed vial's fly count can.
-MEASURED_TOTAL_MAE = {"blob": 2.69, "threshold": 8.38}
+#: Total-count MAE against the flies LOADED into a sealed cylinder. `blob`'s
+#: entry was 2.69, a second copy of the literal whose cache had been lost
+#: (N112); it is now the re-derived 3.286 from
+#: `scripts/rebuild_fly_blob_holdout.py`, which matches `fly_blob.MEASURED`.
+#: `blob_ratio` has no entry here on purpose: its total is the cohort size by
+#: construction, so a "total-count error" for it would be zero and meaningless,
+#: and recording a degenerate zero would make it win the comparison below.
+MEASURED_TOTAL_MAE = {"blob": 3.286, "threshold": 8.38}
 DEFAULT_BACKEND = "blob"
 
 BACKENDS = ("blob", "blob_ratio", "threshold", "background",
