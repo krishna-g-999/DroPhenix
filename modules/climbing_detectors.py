@@ -176,11 +176,16 @@ _BLOB_MAE_IS_HELD_OUT = True
 MEASURED_TOTAL_MAE = {"blob": 2.69, "threshold": 8.38}
 DEFAULT_BACKEND = "blob"
 
-BACKENDS = ("blob", "threshold", "background", "threshold_declutter",
-            "threshold_masked")
+BACKENDS = ("blob", "blob_ratio", "threshold", "background",
+            "threshold_declutter", "threshold_masked")
 BACKEND_LABELS = {
     "blob": ("Size-matched blob detection (recommended; finds flies by their SIZE, "
              "separates touching flies, ignores printed lines by their shape)"),
+    "blob_ratio": (
+        "Size-matched blob detection, scored as a FRACTION of the flies loaded "
+        "(needs the cohort size; monotone across arms where plain blob "
+        "counting saturates — MAE 2.62 against 3.59, and it preserved all "
+        "six arm orderings where blob counting inverted two)"),
     "threshold": "Adaptive threshold (no motion needed; miscounts printed marks)",
     "background": "Median background (ignores printed marks; needs the flies to move)",
     "threshold_declutter": "Adaptive threshold minus static clutter (experimental)",
@@ -433,6 +438,37 @@ def count_with_backend(backend: str, frame_bgr: np.ndarray, background: np.ndarr
     """
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}; choose from {BACKENDS}.")
+
+    if backend == "blob_ratio":
+        # Register N126. Counts the FRACTION of fly-mass above the line and
+        # multiplies by the cohort size, rather than counting bodies. Merging
+        # destroys absolute counts but acts on both sides of the line, so the
+        # ratio is far better conditioned. Measured on 112 hand-counted cells:
+        # MAE 2.624 against blob counting's 3.589, RMSE 3.287 against 4.436,
+        # and it is the first candidate in six to preserve all six arm
+        # orderings. It does NOT clear the register's spread criterion (58.5%
+        # against 69%), which is why `blob` remains the default.
+        n_loaded = int((params or {}).get("n_loaded", 0) or 0)
+        g = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        y0, y1 = int(vial.y_top), int(vial.y_bottom)
+        x0, x1 = int(vial.x0), int(vial.x1)
+        sub, bsub = g[y0:y1, x0:x1], background[y0:y1, x0:x1]
+        if sub.size == 0 or bsub.shape != sub.shape:
+            return {"n_total": 0, "n_above": 0, "n_below": 0, "backend": backend,
+                    "note": "the region falls outside the frame"}
+        r = FB.count_above_by_ratio(sub, bsub, int(vial.line_y) - y0,
+                                    n_loaded, params)
+        if not r["usable"]:
+            # The caller gets a refusal rather than a number, because this
+            # estimator without the cohort size is not a degraded count -- it
+            # is not a count at all.
+            return {"n_total": 0, "n_above": 0, "n_below": 0,
+                    "backend": backend, "note": r["reason"]}
+        above = r["n_above"]
+        return {"n_total": float(n_loaded), "n_above": above,
+                "n_below": float(n_loaded) - above, "backend": backend,
+                "note": (f"fraction above the line {r['fraction_above']:.3f} "
+                         f"of {n_loaded} loaded")}
 
     if backend == "blob":
         # Size-matched detection. Needs the same region of the temporal median, which

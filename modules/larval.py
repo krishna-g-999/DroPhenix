@@ -54,12 +54,85 @@ GROUP_KEYS = ["Genotype", "Treatment", "Sex"]
 # ──────────────────────────────────────────────────────────────────────────────
 # Video centroid tracking
 # ──────────────────────────────────────────────────────────────────────────────
-def track_larva(video_path: str, px_per_mm: Optional[float] = None,
-                min_area: int = 30, max_frames: Optional[int] = None) -> dict:
+#: A blob larger than this fraction of the frame is not a larva. Measured on
+#: real dark-field footage (Zenodo 8208884): with the wrong polarity the
+#: "largest dark blob" was 1,048,393 px of a 1,048,576 px frame -- 100.0% --
+#: centred at the image centre, and a full trajectory was returned for it.
+MAX_LARVA_FRAME_FRACTION = 0.05
+
+
+def _choose_polarity(blur, min_area: int, frame_px: float) -> str:
     """
-    Track a single larva's centroid through a video. Returns
-      {'trajectory': DataFrame[frame, t_s, x_px, y_px], 'summary': {...}, 'fps': ...}
-    The larva is the largest dark blob (Otsu inverse threshold) per frame.
+    Decide whether the larva is DARK on a light plate or BRIGHT on a dark one.
+
+    Threshold the frame both ways and keep the polarity whose largest
+    qualifying blob is a plausible larva SIZE -- big enough to clear
+    `min_area`, small enough to be an animal rather than the background. If
+    both qualify, prefer the smaller largest-blob, since the wrong polarity
+    typically selects something enormous. If neither does, fall back to "dark",
+    which is the historical behaviour, so nothing silently changes for footage
+    this cannot judge.
+    """
+    import cv2
+    best, best_area = None, None
+    for mode, flag in (("dark", cv2.THRESH_BINARY_INV), ("bright", cv2.THRESH_BINARY)):
+        _t, mask = cv2.threshold(blur, 0, 255, flag + cv2.THRESH_OTSU)
+        cnts, _h = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        areas = [cv2.contourArea(c) for c in cnts]
+        areas = [a for a in areas
+                 if a >= min_area and a <= MAX_LARVA_FRAME_FRACTION * frame_px]
+        if not areas:
+            continue
+        a = max(areas)
+        if best_area is None or a < best_area:
+            best, best_area = mode, a
+    return best or "dark"
+
+
+def track_larva(video_path: str, px_per_mm: Optional[float] = None,
+                min_area: int = 30, max_frames: Optional[int] = None,
+                polarity: str = "auto") -> dict:
+    """
+    Track a single larva's centroid through a video.
+
+    Returns {'trajectory': DataFrame[frame, t_s, x_px, y_px], 'summary': {...},
+    'fps': ..., 'polarity': ..., 'n_rejected_oversize': ...}.
+
+    POLARITY IS NOT AN ASSUMPTION ANY MORE (register N127)
+    -------------------------------------------------------
+    This used to take "the largest DARK blob (Otsu inverse threshold)"
+    unconditionally, which assumes a dark larva on a light plate. Half the
+    published larval footage is the other way round: dark-field illumination,
+    where larvae are BRIGHT on a near-black background.
+
+    Tested on real dark-field video for the first time (Zenodo 8208884, 1024x1024,
+    10 fps, several larvae): the inverse threshold selected a blob covering
+    **100.0% of the frame** -- the background itself -- with its centroid pinned
+    near (511, 512), and `track_larva` returned 600 frames of trajectory with a
+    median step of 1.1 px. It looked entirely plausible. Nothing refused, and
+    nothing in the output said the "larva" was the whole image. The correct
+    polarity on the same frame finds six larva-sized objects of 20-45 px.
+
+    `polarity` is therefore "auto" by default: the first frames are thresholded
+    both ways and the polarity whose largest blob is a plausible SIZE wins.
+    Pass "dark" or "bright" to force it.
+
+    AND AN OVERSIZE BLOB IS NOW REFUSED
+    ------------------------------------
+    Whatever the polarity, a blob covering more than
+    `MAX_LARVA_FRAME_FRACTION` of the frame is rejected for that frame rather
+    than tracked, and the count is returned in `n_rejected_oversize`. A
+    trajectory built from the background is not a degraded measurement, it is
+    an artefact, and it should not be possible to get one silently.
+
+    WHAT THIS STILL DOES NOT DO
+    ----------------------------
+    It tracks ONE larva, by taking the largest qualifying blob each frame, with
+    no identity continuity. On footage containing several animals it will swap
+    between them: on the real video above, 7 of 599 steps exceeded 50 px, up to
+    270 px in 100 ms, which is physically impossible for a larva and is the
+    signature of a swap. Multi-animal footage needs a tracker with identity,
+    which this is not.
     """
     import cv2
     cap = cv2.VideoCapture(str(video_path))   # default backend for files
@@ -81,6 +154,12 @@ def track_larva(video_path: str, px_per_mm: Optional[float] = None,
     fps = fps_raw
     rows = []
     fidx = 0
+    mode = str(polarity or "auto").strip().lower()
+    if mode not in ("auto", "dark", "bright"):
+        cap.release()
+        raise ValueError(f"polarity must be 'auto', 'dark' or 'bright', not {polarity!r}")
+    frame_px = None
+    n_oversize = 0
     try:
         while True:
             ret, frame = cap.read()
@@ -88,9 +167,22 @@ def track_larva(video_path: str, px_per_mm: Optional[float] = None,
                 break
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             blur = cv2.GaussianBlur(gray, (5, 5), 0)
-            _, mask = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            if frame_px is None:
+                frame_px = float(gray.shape[0] * gray.shape[1])
+            if mode == "auto":
+                mode = _choose_polarity(blur, min_area, frame_px)
+            flag = (cv2.THRESH_BINARY_INV if mode == "dark" else cv2.THRESH_BINARY)
+            _, mask = cv2.threshold(blur, 0, 255, flag + cv2.THRESH_OTSU)
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cnts = [c for c in cnts if cv2.contourArea(c) >= min_area]
+            # An object larger than a few percent of the frame is the plate, the
+            # background or the whole image -- not a larva. Reject it for this
+            # frame and record that it happened.
+            big = [c for c in cnts
+                   if cv2.contourArea(c) > MAX_LARVA_FRAME_FRACTION * frame_px]
+            n_oversize += len(big)
+            cnts = [c for c in cnts
+                    if cv2.contourArea(c) <= MAX_LARVA_FRAME_FRACTION * frame_px]
             if cnts:
                 c = max(cnts, key=cv2.contourArea)
                 M = cv2.moments(c)
@@ -103,7 +195,38 @@ def track_larva(video_path: str, px_per_mm: Optional[float] = None,
 
     traj = pd.DataFrame(rows)
     summary = _trajectory_metrics(traj, fps, px_per_mm)
-    return {"trajectory": traj, "summary": summary, "fps": fps}
+
+    # IDENTITY SWAPS, MADE VISIBLE (register N127).
+    # This takes the largest qualifying blob each frame with no identity
+    # continuity, so on footage containing more than one animal it swaps
+    # between them. A swap is a step far larger than the animal can travel in
+    # one frame, and it is indistinguishable from a real movement in the
+    # trajectory itself -- so it is counted here instead. Measured on real
+    # multi-animal dark-field video: 7 of 599 steps above 50 px, one of 270 px
+    # in 100 ms, which no larva can do.
+    n_jumps, jump_frac, note = 0, 0.0, ""
+    if len(traj) > 10:
+        dx = np.diff(traj["x_px"].to_numpy(dtype=float))
+        dy = np.diff(traj["y_px"].to_numpy(dtype=float))
+        step = np.hypot(dx, dy)
+        med = float(np.median(step)) if step.size else 0.0
+        # 10x the median step is the threshold: a crawling larva's frame-to-frame
+        # displacement is roughly constant, so an order-of-magnitude excursion is
+        # a different animal, not a faster one.
+        thr = max(10.0 * med, 1.0)
+        n_jumps = int((step > thr).sum())
+        jump_frac = float(n_jumps) / float(step.size)
+    if n_jumps:
+        note = (f"{n_jumps} of {max(len(traj) - 1, 1)} steps "
+                f"({100 * jump_frac:.1f}%) are too large for one larva in one "
+                f"frame. This tracker follows the largest blob and has NO "
+                f"identity continuity, so these are swaps between animals. "
+                f"Treat this trajectory as unusable for speed or path length "
+                f"unless the footage contains a single larva.")
+    return {"trajectory": traj, "summary": summary, "fps": fps,
+            "polarity": mode, "n_rejected_oversize": n_oversize,
+            "n_identity_jumps": n_jumps, "identity_jump_fraction": jump_frac,
+            "single_larva_ok": bool(n_jumps == 0), "note": note}
 
 
 PAUSE_SPEED_MM_S = 0.1   # absolute immobility threshold; see _trajectory_metrics

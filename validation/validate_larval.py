@@ -66,7 +66,55 @@ def main() -> int:
     boolchk("Demo TDP43 slower than WT", tdv < wt, "TDP43<WT", f"{tdv:.2f}<{wt:.2f}")
     boolchk("Demo drug rescues speed", tdd > tdv, "drug>veh", f"{tdd:.2f}>{tdv:.2f}")
 
+    # ── C. Polarity and the oversize refusal (register N127) ─────────────────
+    _check_polarity_and_refusal(results)
+
     print("=" * 72)
+
+def _check_polarity_and_refusal(results):
+    """
+    Register N127. The tracker took the largest DARK blob unconditionally, which
+    assumes a dark larva on a light plate. On real dark-field footage -- bright
+    larvae on a near-black background, which is half of the published larval
+    video -- the inverse threshold selected a blob covering 100.0% of the frame
+    and a full trajectory was returned for the BACKGROUND, with nothing
+    refusing and nothing in the output saying so.
+
+    This builds both polarities synthetically and checks that the right one is
+    chosen, and that an object the size of the frame is rejected rather than
+    tracked.
+    """
+    import cv2, tempfile, os
+    import numpy as np
+    W = H = 200
+    for polarity in ("dark", "bright"):
+        path = os.path.join(tempfile.mkdtemp(), f"{polarity}.mp4")
+        vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (W, H))
+        for i in range(40):
+            bg = 20 if polarity == "bright" else 235
+            fr = np.full((H, W, 3), bg, np.uint8)
+            cx, cy = 40 + 2 * i, 100
+            col = (240, 240, 240) if polarity == "bright" else (15, 15, 15)
+            cv2.circle(fr, (cx, cy), 6, col, -1)
+            vw.write(fr)
+        vw.release()
+        try:
+            r = L.track_larva(path, max_frames=40)
+            got = r.get("polarity")
+            results.append((f"polarity auto-detected on a {polarity} larva",
+                            polarity, got, got == polarity))
+            # the background must never be the tracked object
+            big = r.get("n_rejected_oversize", 0)
+            tr = r.get("trajectory")
+            moved = (len(tr) > 5 and
+                     float(tr["x_px"].max() - tr["x_px"].min()) > 20)
+            results.append((f"a real {polarity} larva is tracked, not the frame",
+                            "moves >20 px", f"{len(tr)} frames, oversize rejected {big}",
+                            bool(moved)))
+        except Exception as e:
+            results.append((f"polarity {polarity}", "runs", repr(e)[:40], False))
+
+
     print("DroPhenix larval.py validation (video tracking + crawling biology)")
     print("=" * 72)
     print(f"{'Check':<38}{'Expected':>16}{'Got':>12}{'Pass':>6}")
