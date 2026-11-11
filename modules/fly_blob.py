@@ -144,33 +144,43 @@ PARAMS: Dict[str, float] = {
     "mark_r_frac": 0.35,
 }
 
-#: Held-out performance, for callers that report their own uncertainty.
+#: Held-out performance. RE-DERIVED, and re-derivable (register N128).
 #:
-#: PROVENANCE IS LOST -- DO NOT CITE THIS AS AN ESTABLISHED FIGURE (register N112)
-#: ------------------------------------------------------------------------------
-#: These numbers were measured on a 110-cell / 22-vial sealed-vial hold-out set
-#: whose cached crops lived in a Claude-session temp directory. The directory
-#: survives; the cache does not, and no committed script rebuilds it -- the
-#: generator was ad-hoc, which is why the path was a temp directory in the first
-#: place. Searched and ruled out as substitutes: `.cache/climbing_cells.npz`
-#: (112 cells, but ABOVE-LINE climbing counts, not vial totals) and
-#: `_DroPhenix_analysis/hd_all_vials.csv` (a different estimator entirely --
-#: climbing_band bracket midpoint, MAE 6.53, and its own provenance file marks
-#: it `usable_for_science: false`).
+#: This was a literal asserting MAE 2.69 over 110 cells and 22 vials, measured
+#: on a cache that lived in a Claude-session temp directory and is GONE. No
+#: committed script ever built it, so the re-derivation was lost for the authors
+#: too, and `validate_fly_blob` reported PASS while establishing nothing (N112).
 #:
-#: So no suite currently re-derives these values, for anyone, and
-#: `validate_fly_blob` section C now FAILS on a machine holding the recordings
-#: rather than passing silently. Until the hold-out cache is rebuilt from the
-#: videos by a committed script, treat every figure below as UNVERIFIED and
-#: report the detector's accuracy from `validate_climbing_video`-style
-#: measurements that can be reproduced.
+#: Rebuilt by `scripts/rebuild_fly_blob_holdout.py` from `.cache/climbing_cells.npz`,
+#: which exists, and re-derived from pixels by `validate_fly_blob` section C on
+#: any machine that holds it. The per-cell record is committed at
+#: `data/validation/fly_blob_holdout_rebuilt.csv`, so the claim is auditable
+#: even where the 46 MB cache is absent.
 #:
-#: `provenance` records the status so a caller can refuse to quote it.
-MEASURED = {"mae_total": 2.69, "bias_total": -1.60, "within3": 0.673,
-            "n_held_out_cells": 110, "n_held_out_vials": 22,
-            "compare_threshold_mae": 8.38,
-            "provenance": "LOST -- not re-derivable; see register N112",
-            "verified": False}
+#: THE OLD MAE IS NOT REPRODUCED, AND IS NOT CLAIMED TO BE. The old bias of
+#: -1.60 re-derives to -1.554, agreeing to 0.05, which is strong evidence this
+#: is the same measurement on overlapping footage. The old MAE of 2.69 does not:
+#: it covered 110 cells from 22 vials, and what survives is 112 cells from 56.
+#: The original subset is identified nowhere in the repository and cannot be
+#: reconstructed, so claiming the old figure as reproduced would be false.
+#:
+#: TWO ACCURACIES, which the old single heading conflated:
+#:   *_total  how many animals it finds in the whole cylinder vs the number
+#:            loaded. Weaker ground truth: "flies loaded" assumes none are dead
+#:            at the bottom, occluded, or outside the crop, which a frame cannot
+#:            confirm.
+#:   *_above  how many it places above the scoring line vs a person scoring the
+#:            same frame. This is the number the assay uses, and the better
+#:            grounded of the two. It re-derives to 3.589, which is exactly the
+#:            bar the register sets for any replacement detector.
+MEASURED = {
+    "n_cells": 112, "n_vials": 56,
+    "mae_total": 3.286, "bias_total": -1.554, "within3_total": 0.625,
+    "mae_above": 3.589, "bias_above": -1.25, "within3_above": 0.545,
+    "provenance": "re-derived 2026-11-11 from .cache/climbing_cells.npz by "
+                  "scripts/rebuild_fly_blob_holdout.py; see register N128",
+    "verified": True,
+}
 
 
 def fly_diameter(vial_width_px: float, params: Optional[dict] = None) -> float:

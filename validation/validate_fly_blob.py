@@ -207,83 +207,81 @@ def test_B_size_selectivity() -> None:
 
 
 def test_C_real_footage() -> None:
-    print("\nC. Real footage: detected total vs flies actually loaded (sealed vial)")
-    npz, meta_csv = CACHE / "vial_cache_big.npz", CACHE / "vial_cache_big_meta.csv"
-    if not (npz.exists() and meta_csv.exists()):
-        # Register N112. This used to `return` after printing a SKIP, and the
-        # suite then reported PASS -- certifying nothing while appearing to
-        # certify the accuracy of the detector behind every climbing count.
-        #
-        # Which outcome is right depends on whether the data COULD be here. On a
-        # clean runner with no laboratory recordings this is a genuine skip, the
-        # same convention the rest of the suite uses. On a machine that holds the
-        # recordings, an absent cache means the re-derivation is broken and that
-        # is a FAILURE, because `fly_blob.MEASURED` is asserted as fact and this
-        # is the only thing that checks it.
-        try:
-            from validation import lab_data as _LD
-            lab_present = _LD.climbing_root() is not None
-        except Exception:
-            lab_present = False
-        if lab_present:
-            check("the held-out cache needed to re-derive fly_blob.MEASURED "
-                  "is present", False,
-                  f"not found at {CACHE}. This machine HAS the laboratory "
-                  f"recordings, so the re-derivation should be possible: the "
-                  f"cache must be rebuilt. Until then fly_blob.MEASURED "
-                  f"(MAE {FB.MEASURED['mae_total']}) is NOT re-derived by any "
-                  f"suite -- see register N112. Set "
-                  f"DROPHENIX_FLY_BLOB_CACHE to point at an existing cache.")
-        else:
-            print("  [SKIP] no laboratory recordings on this machine, so the "
-                  "held-out cache cannot exist here; section C established "
-                  "NOTHING about detector accuracy, and fly_blob.MEASURED is "
-                  "unverified in this run (register N112)")
+    """
+    The detector's hold-out accuracy, RE-DERIVED FROM PIXELS (register N128).
+
+    This used to read `vial_cache_big.npz` from a Claude-session temp
+    directory. That file is gone and no committed script ever built it, so the
+    re-derivation `run_all.py` advertises for this suite was lost for the
+    authors as well as for a stranger -- and the suite still reported PASS
+    (N112).
+
+    It now re-derives from `.cache/climbing_cells.npz`, which exists and is
+    rebuildable by `scripts/rebuild_fly_blob_holdout.py`. Both accuracies in
+    `MEASURED` are recomputed here and compared with the literal, so the
+    literal can no longer drift away from the code.
+
+    On a machine without the cache this SKIPS and says it established nothing,
+    rather than passing.
+    """
+    print("\nC. Hold-out accuracy, re-derived from the cached cells")
+    cells = Path(__file__).resolve().parents[1] / ".cache" / "climbing_cells.npz"
+    record = (Path(__file__).resolve().parents[1] / "data" / "validation"
+              / "fly_blob_holdout_rebuilt.csv")
+    if not cells.exists():
+        print(f"  [SKIP] {cells.name} is not on this machine, so section C "
+              f"established NOTHING about detector accuracy.")
+        if record.exists():
+            print(f"         The committed record at {record.name} states what "
+                  f"was measured where the cache is present; it is a RECORD, "
+                  f"not a re-derivation.")
         return
-    import pandas as pd
-    from modules import climbing_video_analyzer as CVA
 
-    cache = np.load(npz)
-    meta = pd.read_csv(meta_csv)
-    meta["aspect"] = meta.box_h / meta.box_w.clip(lower=1)
-    dropped = meta[meta.aspect < 2.5].key.nunique()
-    meta = meta[meta.aspect >= 2.5]
-    vids = sorted(meta.video.unique())
-    rng = np.random.default_rng(20260821)
-    tune = set(rng.choice(vids, size=max(1, len(vids) // 2), replace=False))
-    test = meta[~meta.video.isin(tune)]
-    print(f"      {dropped} vials excluded: the automatic finder put a box across "
-          f"most of the frame (aspect < 2.5), which is a geometry failure, not a "
-          f"detection one")
+    import json
+    z = np.load(cells, allow_pickle=False)
+    meta = json.loads(str(z["meta"]))
+    tot, loaded, above, hand, vials = [], [], [], [], set()
+    for m in meta:
+        pts = FB.detect(z[m["key"] + "_gray"], z[m["key"] + "_bg"], None)
+        line = int(m["line_in_crop"])
+        tot.append(len(pts))
+        above.append(sum(1 for (_x, cy, _mm) in pts if cy < line))
+        loaded.append(float(m.get("n_flies", 0)))
+        hand.append(float(m["hand"]))
+        vials.add((m["video"], m["vial"]))
+    tot = np.asarray(tot, float); loaded = np.asarray(loaded, float)
+    above = np.asarray(above, float); hand = np.asarray(hand, float)
 
-    blob, thr = [], []
-    for key, grp in test.groupby("key"):
-        bg = cache[key + "|bg"]
-        fr = cache[key + "|fr"]
-        h, w = bg.shape[:2]
-        cfg = CVA.VialConfig(vial_id=1, genotype="x", replicate=1,
-                             n_flies_expected=20, roi_x=0, roi_y=0, roi_w=w,
-                             roi_h=h, line_y_frac=0.5, fly_color="dark")
-        for _, r in grp.iterrows():
-            f = fr[int(r.t_index)]
-            blob.append(len(FB.detect(f, bg)) - r.n_flies)
-            thr.append(len(CVA.detect_flies_in_roi(
-                cv2.cvtColor(f, cv2.COLOR_GRAY2BGR), cfg,
-                CVA.DEFAULT_DETECTION_PARAMS)[0]) - r.n_flies)
-    b, t = np.array(blob, float), np.array(thr, float)
-    print(f"      {len(b)} held-out cells from {test.key.nunique()} vials")
-    print(f"      blob      MAE {np.abs(b).mean():5.2f}  bias {b.mean():+6.2f}  "
-          f"within 3 {(np.abs(b) <= 3).mean():5.1%}")
-    print(f"      threshold MAE {np.abs(t).mean():5.2f}  bias {t.mean():+6.2f}  "
-          f"within 3 {(np.abs(t) <= 3).mean():5.1%}")
-    check("size-matched detection beats the intensity threshold on held-out vials",
-          np.abs(b).mean() < np.abs(t).mean(),
-          f"MAE {np.abs(b).mean():.2f} vs {np.abs(t).mean():.2f}")
-    check("its bias is smaller than the assay's own 3-fly noise floor",
-          abs(b.mean()) < 3.0, f"bias {b.mean():+.2f}")
-    check(f"the published MAE of {FB.MEASURED['mae_total']} is reproduced within 0.5",
-          abs(np.abs(b).mean() - FB.MEASURED["mae_total"]) < 0.5,
-          f"measured {np.abs(b).mean():.2f}, published {FB.MEASURED['mae_total']}")
+    M = FB.MEASURED
+    check(f"the cell count matches MEASURED ({M['n_cells']})",
+          len(meta) == M["n_cells"], f"{len(meta)} cells")
+    check(f"the vial count matches MEASURED ({M['n_vials']})",
+          len(vials) == M["n_vials"], f"{len(vials)} vials")
+
+    et, ea = tot - loaded, above - hand
+    for label, err, keys in (
+            ("n_total vs flies loaded", et,
+             ("mae_total", "bias_total", "within3_total")),
+            ("n_above vs the hand count", ea,
+             ("mae_above", "bias_above", "within3_above"))):
+        mae = float(np.mean(np.abs(err)))
+        bias = float(np.mean(err))
+        w3 = float(np.mean(np.abs(err) <= 3))
+        check(f"{label}: MAE re-derives to the stated {M[keys[0]]}",
+              abs(mae - M[keys[0]]) < 0.05, f"re-derived {mae:.3f}")
+        check(f"{label}: bias re-derives to the stated {M[keys[1]]}",
+              abs(bias - M[keys[1]]) < 0.05, f"re-derived {bias:.3f}")
+        check(f"{label}: within-3 re-derives to the stated {M[keys[2]]}",
+              abs(w3 - M[keys[2]]) < 0.02, f"re-derived {w3:.3f}")
+
+    # The old literal's MAE is NOT reproduced and must not be reinstated.
+    check("MEASURED no longer claims the unreproducible 2.69",
+          abs(M["mae_total"] - 2.69) > 0.1,
+          f"mae_total is {M['mae_total']}, re-derived; the 2.69 covered a "
+          f"22-vial subset that is identified nowhere in the repository")
+    check("MEASURED declares its provenance and is marked verified",
+          bool(M.get("verified")) and "re-derived" in str(M.get("provenance", "")),
+          str(M.get("provenance", ""))[:70])
 
 
 def test_E_ratio_estimator() -> None:
