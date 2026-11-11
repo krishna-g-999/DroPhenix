@@ -717,12 +717,47 @@ _DEMO_SURVIVAL: dict = {
     ("FUS",     "Spermine+Pantothenate","Female"): 42.7,
 }
 
-_TCOLOURS = {
-    "Untreated":             "#94A3B8",
-    "Spermine":              "#3B82F6",
-    "Pantothenate":          "#F0A500",
-    "Spermine+Pantothenate": "#22C55E",
-}
+def _series_palette() -> list:
+    """
+    The series palette for plotly charts: the SAME colourblind-safe set the
+    matplotlib figures use.
+
+    This was an 8-colour list hardcoded in four places, none of whose members
+    were Wong colours, led by the retired #F0A500 amber. Charts drawn with it
+    were not colourblind-safe, and a reader comparing a plotly chart to a
+    matplotlib figure saw the same group in two different colours. Ordered to
+    lead with the two most separable hues, since most of these charts carry
+    two or three series.
+    """
+    try:
+        from modules.visualizer import PALETTES
+        return list(PALETTES["okabe_ito"])
+    except Exception:
+        return ["#0072B2", "#D55E00", "#009E73", "#CC79A7",
+                "#E69F00", "#56B4E9", "#F0E442", "#000000"]
+
+
+# Register N125. These duplicated `visualizer.TREATMENT_COLOURS` and had
+# drifted from it: the same treatment was a different colour in a plotly chart
+# than in a matplotlib figure on the same report. Measured disagreement --
+#   Untreated   #94A3B8 here vs #666666 there
+#   Spermine    #3B82F6 (Tailwind blue) vs #0072B2 (Wong blue)
+#   Pantothenate #F0A500 (the RETIRED amber) vs #009E73 (Wong green)
+#   Spermine+Pantothenate #22C55E vs #D55E00
+# so colour carried no consistent meaning across a single document, which is
+# the standing warning `validate_figure_style` has been printing. There is one
+# source of truth now, and it is the colourblind-safe one.
+def _treatment_colours() -> dict:
+    try:
+        from modules.visualizer import TREATMENT_COLOURS as _TC
+        return dict(_TC)
+    except Exception:
+        return {"Untreated": "#666666", "Vehicle": "#666666",
+                "Spermine": "#0072B2", "Pantothenate": "#009E73",
+                "Spermine+Pantothenate": "#D55E00"}
+
+
+_TCOLOURS = _treatment_colours()
 _GSYMBOLS = {"Oregon": "circle", "TDP43": "square", "FUS": "triangle-up"}
 
 
@@ -754,12 +789,7 @@ _DEMO_SURVIVAL_DATA = {
     ("FUS",     "Spermine+Pantothenate", "Male"):   40.1,
     ("FUS",     "Spermine+Pantothenate", "Female"): 42.7,
 }
-_MDR_TCOLOURS = {
-    "Untreated":             "#94A3B8",
-    "Spermine":              "#3B82F6",
-    "Pantothenate":          "#F0A500",
-    "Spermine+Pantothenate": "#22C55E",
-}
+_MDR_TCOLOURS = _treatment_colours()
 
 
 def _render_msci_results(msci_df, mdr_df):
@@ -801,7 +831,7 @@ def _render_msci_results(msci_df, mdr_df):
             fig.add_trace(go.Scatter(
                 x=xr, y=np.polyval(coef, xr),
                 mode="lines", name="Trend",
-                line=dict(color="#0D2137", dash="dash", width=1.5),
+                line=dict(color="#0F2133", dash="dash", width=1.5),
             ))
         fig.update_layout(
             title="k vs Lifespan - MSCI Scatter",
@@ -809,7 +839,7 @@ def _render_msci_results(msci_df, mdr_df):
             yaxis_title="Mean Lifespan (days)",
             height=380,
             plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
-            font=dict(color="#0D2137"),
+            font=dict(color="#0F2133"),
         )
         st.plotly_chart(fig, width='stretch')
     except Exception:
@@ -1142,7 +1172,7 @@ def _render_mdr_plotly(filt: pd.DataFrame, sel_sex: str) -> None:
             tracegroupgap=4,
         ),
         margin=dict(l=60, r=180, t=60, b=50),
-        font=dict(family="sans-serif", color="#0D2137"),
+        font=dict(family="sans-serif", color="#0F2133"),
     )
     fig.update_yaxes(title_text="PI (mean)", row=1, col=1)
     st.plotly_chart(fig, width='stretch')
@@ -1252,7 +1282,7 @@ def _render_msci(msci_df: pd.DataFrame) -> None:
             fig.add_trace(go.Scatter(
                 x=x_rng, y=P.polyval(x_rng, c_fit),
                 mode="lines", name="Trend",
-                line=dict(color="#0D2137", dash="dash", width=1.5),
+                line=dict(color="#0F2133", dash="dash", width=1.5),
                 showlegend=True,
             ))
         fig.update_layout(
@@ -1261,7 +1291,7 @@ def _render_msci(msci_df: pd.DataFrame) -> None:
             yaxis_title="Mean Lifespan (days)",
             height=400,
             plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
-            font=dict(color="#0D2137"),
+            font=dict(color="#0F2133"),
             legend=dict(bordercolor="#C5D7F0", borderwidth=1),
         )
         st.plotly_chart(fig, width='stretch')
@@ -3737,8 +3767,7 @@ def page_video_scoring():
                         if not usable.empty:
                             st.markdown("#### Climbing curve")
                             import plotly.graph_objects as go
-                            palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
-                                       "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+                            palette = _series_palette()
                             fig = go.Figure()
                             for i, (lab, sub) in enumerate(
                                     usable.groupby("vial", sort=True)):
@@ -4651,7 +4680,7 @@ def page_home():
     st.markdown(
         # `dpx-on-dark` opts this panel out of the blanket paragraph colour in
         # styles.py. That rule is !important and so beats an inline colour,
-        # which painted this card's own lede #0F2133 on #0D2137 -- measured at
+        # which painted this card's own lede #0F2133 on #0F2133 -- measured at
         # 1.00:1, invisible. The border was rgba(240,165,0,.22), the RETIRED
         # 41.2 deg amber, which composites over the navy to #3C3821, a khaki
         # olive, wrapped directly around a 26.3 deg logo.
@@ -4663,10 +4692,10 @@ def page_home():
         'box-shadow:none;">'
         + _logo
         + '<div style="flex:1;">'
-        + '<div style="font-size:.72rem;font-weight:800;letter-spacing:.18em;'
+        + '<div style="font-size:.72rem;font-weight:600;letter-spacing:.18em;'
         'text-transform:uppercase;color:#94A3B1;margin-bottom:.5rem;">'
         'SSSIHL &nbsp;&middot;&nbsp; SAI-Net</div>'
-        + '<div style="font-size:2.55rem;font-weight:900;color:#FFFFFF;'
+        + '<div style="font-size:2.55rem;font-weight:600;color:#FFFFFF;'
         'line-height:1.05;margin-bottom:.4rem;letter-spacing:-.01em;">'
         'DroPhenix <span style="color:#D55E00;">Analytics</span>'
         ' <span style="font-size:.8125rem;font-weight:500;color:#94A3B1;vertical-align:middle;">v3.0</span></div>'
@@ -4693,7 +4722,7 @@ def page_home():
 
     # ── Why DroPhenix — 3 scientific innovations ──────────────────────────
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
         'border-bottom:2px solid #D55E00;display:inline-block;">'
         'What it computes</p>',
@@ -4745,20 +4774,19 @@ def page_home():
     for _col, _title, _body in _innovations:
         with _col:
             st.markdown(
-                '<div style="background:#fff;border:1px solid #C5D7F0;'
-                'border-top:2px solid #D55E00;border-radius:10px;'
+                '<div style="background:#fff;border:1px solid #DCE0E6;'
+                'border-top:2px solid #D55E00;border-radius:3px;'
                 'padding:1.2rem 1.3rem;height:100%;">'
-                '<div style="font-size:.93rem;font-weight:700;color:#0D2137;'
+                '<div style="font-size:.93rem;font-weight:600;color:#0F2133;'
                 'margin-bottom:.6rem;">' + _title + '</div>'
-                '<p style="font-size:.83rem;color:#374151;line-height:1.78;margin:0;">'
+                '<p style="font-size:.83rem;color:#45515F;line-height:1.78;margin:0;">'
                 + _body + '</p></div>',
                 unsafe_allow_html=True,
             )
 
     # ── 5-step Workflow ───────────────────────────────────────────────────
-    st.markdown('<br>', unsafe_allow_html=True)
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
         'border-bottom:2px solid #D55E00;display:inline-block;">'
         'Workflow</p>',
@@ -4785,13 +4813,13 @@ def page_home():
     for _col, (_num, _stitle, _sdesc) in zip(_scols, _steps):
         with _col:
             st.markdown(
-                '<div style="background:#fff;border:1px solid #C5D7F0;border-radius:10px;'
+                '<div style="background:#fff;border:1px solid #DCE0E6;border-radius:3px;'
                 'padding:1rem .9rem;text-align:center;height:100%;">'
                 '<div style="width:34px;height:34px;border-radius:50%;'
                 'background:#1B3A5C;color:#fff;font-size:.85rem;font-weight:600;'
                 'display:flex;align-items:center;justify-content:center;'
                 'margin:0 auto .55rem;">' + _num + '</div>'
-                '<div style="font-size:.85rem;font-weight:700;color:#0D2137;'
+                '<div style="font-size:.85rem;font-weight:600;color:#0F2133;'
                 'margin-bottom:.35rem;">' + _stitle + '</div>'
                 '<div style="font-size:.78rem;color:#6B7280;line-height:1.65;">'
                 + _sdesc + '</div></div>',
@@ -4799,9 +4827,8 @@ def page_home():
             )
 
     # ── Pages grid ─────────────────────────────────────────────
-    st.markdown('<br>', unsafe_allow_html=True)
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
         'border-bottom:2px solid #D55E00;display:inline-block;">'
         'Pages</p>',
@@ -4877,33 +4904,32 @@ def page_home():
         for _col, (_name, _cat, _desc) in zip(_rcols, _row):
             with _col:
                 st.markdown(
-                    '<div style="background:#fff;border:1px solid #C5D7F0;'
-                    'border-radius:10px;padding:1.05rem 1.1rem;'
+                    '<div style="background:#fff;border:1px solid #DCE0E6;'
+                    'border-radius:3px;padding:1.05rem 1.1rem;'
                     'margin-bottom:.8rem;min-height:160px;">'
                     '<div style="display:flex;align-items:center;'
                     'justify-content:space-between;margin-bottom:.45rem;">'
-                    '<span style="font-size:.9rem;font-weight:800;color:#0D2137;">'
+                    '<span style="font-size:.9rem;font-weight:600;color:#0F2133;">'
                     + _name + '</span>'
-                    '<span style="background:#EBF4FF;color:#1E40AF;font-size:.65rem;'
-                    'font-weight:700;padding:2px 9px;border-radius:20px;">'
+                    '<span style="background:#FBEEE6;color:#A84A00;font-size:.65rem;'
+                    'font-weight:600;padding:2px 9px;border-radius:2px;">'
                     + _cat + '</span></div>'
-                    '<p style="font-size:.8rem;color:#4B5563;line-height:1.72;margin:0;">'
+                    '<p style="font-size:.8rem;color:#45515F;line-height:1.72;margin:0;">'
                     + _desc + '</p></div>',
                     unsafe_allow_html=True,
                 )
         st.markdown('<div style="height:.4rem"></div>', unsafe_allow_html=True)
 
     # ── Citation block ────────────────────────────────────────────────────
-    st.markdown('<br>', unsafe_allow_html=True)
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
         'border-bottom:2px solid #D55E00;display:inline-block;">'
         'How to Cite</p>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div style="background:#F8FAFF;border:1px solid #C5D7F0;'
+        '<div style="background:#F2F4F6;border:1px solid #DCE0E6;'
         'border-left:3px solid #D55E00;border-radius:0 3px 3px 0;'
         'padding:1.1rem 1.4rem;font-size:.84rem;'
         'color:#1a2332;line-height:1.9;">'
@@ -4911,15 +4937,14 @@ def page_home():
         '<em>DroPhenix v3.0: An integrated computational platform for '
         'Drosophila climbing assay phenotyping and translational drug scoring.</em> '
         'SSSIHL / SAI-Net. Available at: '
-        '<a href="https://sssihl.edu.in" style="color:#1E40AF;">https://sssihl.edu.in</a>'
+        '<a href="https://sssihl.edu.in" style="color:#A84A00;">https://sssihl.edu.in</a>'
         '</div>',
         unsafe_allow_html=True,
     )
 
     # ── Research Team ─────────────────────────────────────────────────────
-    st.markdown('<br>', unsafe_allow_html=True)
     st.markdown(
-        '<p style="font-size:1.08rem;font-weight:800;color:#0D2137;'
+        '<p style="font-size:1.08rem;font-weight:600;color:#0F2133;'
         'margin:0.4rem 0 1rem;padding-bottom:.35rem;'
         'border-bottom:2px solid #D55E00;display:inline-block;">'
         'Research Team</p>',
@@ -4928,14 +4953,14 @@ def page_home():
     _ta, _tb = st.columns(2)
     with _ta:
         st.markdown(
-            '<div style="background:#fff;border:1px solid #C5D7F0;'
-            'border-radius:10px;padding:1.1rem 1.3rem;">'
-            '<span style="background:#DCFCE7;color:#166534;font-size:.68rem;'
-            'font-weight:700;padding:2px 10px;border-radius:20px;">'
+            '<div style="background:#fff;border:1px solid #DCE0E6;'
+            'border-radius:3px;padding:1.1rem 1.3rem;">'
+            '<span style="background:#EAF4EE;color:#1B6E3F;font-size:.68rem;'
+            'font-weight:600;padding:2px 10px;border-radius:2px;">'
             'Principal Investigator</span>'
-            '<div style="font-size:1rem;font-weight:700;color:#0D2137;margin:.45rem 0 .2rem;">'
+            '<div style="font-size:1rem;font-weight:600;color:#0F2133;margin:.45rem 0 .2rem;">'
             'Prof. Venketesh Sivaramakrishnan</div>'
-            '<div style="font-size:.8rem;color:#374151;line-height:1.65;">'
+            '<div style="font-size:.8rem;color:#45515F;line-height:1.65;">'
             'Department of Biosciences<br>'
             'Sri Sathya Sai Institute of Higher Learning (SSSIHL)<br>'
             'Puttaparthi, Andhra Pradesh, India</div></div>',
@@ -4943,12 +4968,12 @@ def page_home():
         )
     with _tb:
         st.markdown(
-            '<div style="background:#fff;border:1px solid #C5D7F0;'
-            'border-radius:10px;padding:1.1rem 1.3rem;">'
+            '<div style="background:#fff;border:1px solid #DCE0E6;'
+            'border-radius:3px;padding:1.1rem 1.3rem;">'
             '<div style="font-size:.72rem;color:#64748B;font-weight:600;margin-bottom:.3rem">Developer &amp; PhD Scholar</div>'
-            '<div style="font-size:1rem;font-weight:700;color:#0D2137;margin:.45rem 0 .2rem;">'
+            '<div style="font-size:1rem;font-weight:600;color:#0F2133;margin:.45rem 0 .2rem;">'
             'Krishnasalini Gunanathan</div>'
-            '<div style="font-size:.8rem;color:#374151;line-height:1.65;">'
+            '<div style="font-size:.8rem;color:#45515F;line-height:1.65;">'
             'Doctoral Research Scholar, Biosciences, SSSIHL<br>'
             'SAI-Net &nbsp;&middot;&nbsp; BrainSafe AI &nbsp;&middot;&nbsp; DroPhenix Analytics</div></div>',
             unsafe_allow_html=True,
@@ -4957,7 +4982,7 @@ def page_home():
     # ── Footer ────────────────────────────────────────────────────────────
     st.markdown(
         '<div style="text-align:center;font-size:.7rem;color:#94A3B8;'
-        'margin-top:2.5rem;padding-top:1rem;border-top:1px solid #C5D7F0;">'
+        'margin-top:2.5rem;padding-top:1rem;border-top:1px solid #DCE0E6;">'
         + 'DroPhenix v3.0 &nbsp;&middot;&nbsp; SAI-Net '
         + '&nbsp;&middot;&nbsp; SSSIHL &nbsp;&middot;&nbsp; '
         + 'Science for Society &nbsp;&middot;&nbsp; GPL-3.0 '
@@ -5082,8 +5107,7 @@ def page_survival():
     show_ci = st.checkbox("Show 95% confidence bands (Greenwood / cloglog)", value=True)
 
     import plotly.graph_objects as go
-    palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
-               "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+    palette = _series_palette()
     fig = go.Figure()
     for i, g in enumerate(show):
         cur = km[g]
@@ -5243,8 +5267,7 @@ def page_ymaze():
     c3.metric("Mean entries / fly", round(float(per_fly["n_entries"].mean()), 1))
 
     import plotly.graph_objects as go
-    palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
-               "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+    palette = _series_palette()
 
     t_alt, t_tb, t_exp, t_cmp = st.tabs(
         ["Spontaneous Alternation", "Turn Bias / Handedness", "Exploration",
@@ -5436,8 +5459,7 @@ def page_dams():
     c3.metric("Recording (bins/fly)", int(spf["n_bins"].median()))
 
     import plotly.graph_objects as go
-    palette = ["#0D2137", "#F0A500", "#2A7DE1", "#C0392B",
-               "#27AE60", "#8E44AD", "#16A085", "#D35400"]
+    palette = _series_palette()
 
     t_sleep, t_prof, t_per, t_cmp = st.tabs(
         ["Sleep", "Sleep Profile", "Circadian Period", "Group Comparison"])
@@ -5447,9 +5469,9 @@ def page_dams():
         ss["Group"] = ss["Genotype"] + " | " + ss["Treatment"] + " | " + ss["Sex"]
         fig = go.Figure()
         fig.add_trace(go.Bar(x=ss["Group"], y=ss["Day_sleep_min_per_day"],
-                             name="Day sleep", marker_color="#F0A500"))
+                             name="Day sleep", marker_color="#E69F00"))
         fig.add_trace(go.Bar(x=ss["Group"], y=ss["Night_sleep_min_per_day"],
-                             name="Night sleep", marker_color="#0D2137"))
+                             name="Night sleep", marker_color="#0072B2"))
         fig.update_layout(barmode="stack", yaxis_title="Sleep (min / 24 h)",
                           height=420, legend=dict(orientation="h", y=1.02),
                           margin=dict(l=40, r=20, t=30, b=90))
@@ -5543,10 +5565,10 @@ def page_dams():
                 cp = dm.chi_square_periodogram(act_rs, raw_bin * factor, 16, 32)
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=cp["periods_h"], y=cp["Qp"], mode="lines",
-                                         name="Qp", line=dict(color="#0D2137")))
+                                         name="Qp", line=dict(color="#0F2133")))
                 fig.add_trace(go.Scatter(x=cp["periods_h"], y=cp["threshold"], mode="lines",
-                                         name="significance", line=dict(color="#C0392B", dash="dash")))
-                fig.add_vline(x=cp["peak_period_h"], line_dash="dot", line_color="#F0A500",
+                                         name="significance", line=dict(color="#45515F", dash="dash")))
+                fig.add_vline(x=cp["peak_period_h"], line_dash="dot", line_color="#D55E00",
                               annotation_text=f"{cp['peak_period_h']} h")
                 fig.update_layout(xaxis_title="Test period (h)", yaxis_title="Qp",
                                   height=380, legend=dict(orientation="h", y=1.02),
@@ -6147,7 +6169,7 @@ def page_drug_ranking():
             marker_color=["#27AE60" if p < 0.05 else "#95A5A6"
                           for p in comp["p_value"]],
             text=[f"#{r}" for r in comp["Rank"]], textposition="outside"))
-        fig.add_hline(y=0, line_color="#0D2137")
+        fig.add_hline(y=0, line_color="#0F2133")
         fig.update_layout(yaxis_title="Therapeutic Score (SMD, benefit)",
                           height=420, margin=dict(l=40, r=20, t=30, b=60))
         st.plotly_chart(fig, width="stretch")
@@ -6173,7 +6195,7 @@ def page_drug_ranking():
                 error_x=dict(type="data", array=pa2["ci_hi"] - pa2["g_pooled"],
                              arrayminus=pa2["g_pooled"] - pa2["ci_lo"]),
                 marker=dict(size=9, color="#2A7DE1")))
-            fig.add_vline(x=0, line_color="#C0392B", line_dash="dash")
+            fig.add_vline(x=0, line_color="#45515F", line_dash="dash")
             fig.update_layout(xaxis_title="Pooled Hedges' g (benefit)", height=460,
                               margin=dict(l=40, r=20, t=30, b=40))
             st.plotly_chart(fig, width="stretch")
@@ -6876,9 +6898,9 @@ def page_survivor_bias():
         import plotly.graph_objects as go
         fig = go.Figure()
         series = [
-            ("Survivor mean (conventional)", rep.get("survivor_mean"), "#C0392B"),
-            ("Balanced panel", rep.get("balanced_panel"), "#0D2137"),
-            ("Pattern mixture", rep.get("pattern_mixture"), "#F0A500"),
+            ("Survivor mean (conventional)", rep.get("survivor_mean"), "#D55E00"),
+            ("Balanced panel", rep.get("balanced_panel"), "#0F2133"),
+            ("Pattern mixture", rep.get("pattern_mixture"), "#E69F00"),
         ]
         plotted = 0
         for name, tab, colour in series:
@@ -7208,10 +7230,10 @@ def page_trajectory_forecast():
                 line=dict(width=0), hoverinfo="skip", showlegend=False))
             fig.add_trace(go.Scatter(
                 x=xs, y=ok["predicted"], mode="lines+markers", name="Predicted",
-                line=dict(color="#F0A500", width=2)))
+                line=dict(color="#E69F00", width=2)))
         fig.add_trace(go.Scatter(
             x=obs_t, y=obs_y, mode="markers", name="Observed",
-            marker=dict(color="#0D2137", size=9)))
+            marker=dict(color="#0F2133", size=9)))
         fig.update_layout(
             xaxis_title="Age (days)", yaxis_title="Phenotype", height=440,
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
@@ -7706,12 +7728,12 @@ def page_dose_response():
             grid = np.linspace(0, max(dose.max(), 1.0), 200)
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=dose, y=resp, mode="markers", name="Observed",
-                                 marker=dict(color="#0D2137", size=8)))
+                                 marker=dict(color="#0F2133", size=8)))
         fig.add_trace(go.Scatter(x=grid, y=fit.predict(grid), mode="lines",
                                  name=f"{model} fit",
-                                 line=dict(color="#F0A500", width=2)))
+                                 line=dict(color="#E69F00", width=2)))
         if np.isfinite(fit.ec50) and fit.ec50 > 0:
-            fig.add_vline(x=float(fit.ec50), line=dict(color="#C0392B", dash="dash"))
+            fig.add_vline(x=float(fit.ec50), line=dict(color="#45515F", dash="dash"))
         fig.update_layout(
             xaxis_title="Dose", yaxis_title="Response", height=440,
             xaxis_type="log" if nz.size else "linear",
